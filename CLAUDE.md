@@ -56,3 +56,22 @@ Read docs/OVERVIEW.md
 **次のステップ**: 各 Phase の詳細計画を順次詰める。実装は Phase 1（環境構築）から開始予定。
 
 重要: この現在の状況についてはプロジェクトの進捗と共に適宜更新します。
+
+---
+
+## 参照リソース
+
+### wasm3（ローカル）
+
+wasm3 のソースコードを `third_party/wasm3/` に Git Submodule として配置している。
+WebAssembly Runtime の実装を参照する際は、ネットワーク通信なしにこのローカルコピーを使用すること。
+
+主要ファイル:
+
+| ファイル | 内容 |
+|---|---|
+| `third_party/wasm3/source/m3_core.h` | 型定義・主要データ構造 |
+| `third_party/wasm3/source/m3_env.h` | VM 環境・モジュール構造 |
+| `third_party/wasm3/source/m3_exec.c` | インタープリタのメインループ |
+| `third_party/wasm3/source/m3_parse.c` | バイナリパーサー |
+| `third_party/wasm3/source/m3_compile.c` | コンパイル・中間表現 |
