@@ -2,6 +2,20 @@
 
 Embedded Swift で実装する WebAssembly Runtime（Raspberry Pi Pico 2 / RP2350 向け）。
 
+## 構成
+
+```
+swift-embedded-wasm/
+├── Sources/WasmRuntime/   # 共有ロジック（macOS / Pico 両方でコンパイル）
+├── Tests/WasmRuntimeTests/# macOS 上でのテスト（swift test）
+├── src/main.swift         # Pico 固有のエントリポイント
+├── Package.swift          # macOS 向けビルド定義（テスト・開発用）
+└── Makefile               # Pico 向けクロスコンパイル定義
+```
+
+`Sources/WasmRuntime/` 以下のコードは macOS（SwiftPM）と Pico（Makefile）の両方でコンパイルされます。
+Pico 固有のハードウェア操作は `src/main.swift` に分離します。
+
 ## ビルド
 
 ### 前提条件
@@ -10,6 +24,14 @@ Embedded Swift で実装する WebAssembly Runtime（Raspberry Pi Pico 2 / RP235
 |---|---|---|
 | [swiftly](https://github.com/swiftlang/swiftly) | Swift ツールチェーン管理 | `curl -L https://swiftlang.github.io/swiftly/swiftly-install.sh \| bash` |
 | Swift 6.x (embedded stdlib 付き) | Embedded Swift コンパイル | `swiftly install latest` |
+
+### macOS でのテスト（Pico 不要）
+
+```sh
+swift test
+```
+
+`Sources/WasmRuntime/` の共有ロジックを macOS 上でテストできます。実機なしで開発・検証する際のメインの手段です。
 
 ### Swift コンパイルのみ（Pico SDK 不要）
 

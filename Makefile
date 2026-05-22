@@ -27,8 +27,10 @@ MODULE_NAME := Main
 SRC_DIR   := src
 BUILD_DIR := build
 
-# ビルド対象の Swift ソース（複数ファイルは空白区切りで追加）
-SWIFT_SRCS := $(SRC_DIR)/main.swift
+# ビルド対象の Swift ソース
+# Sources/WasmRuntime/ 以下は macOS (SwiftPM) と共有するロジック層
+# src/main.swift は Pico 固有のエントリポイント
+SWIFT_SRCS := $(SRC_DIR)/main.swift $(wildcard Sources/WasmRuntime/*.swift)
 
 # --- ターゲット設定 -----------------------------------------------------------
 #
@@ -130,9 +132,30 @@ RP2350_FAMILY_ID := 0xe48bff57
 # ターゲット定義
 # =============================================================================
 
-.PHONY: all compile build flash clean help check-sdk check-tools check-toolchain
+.PHONY: all compile build flash clean help check-sdk check-tools check-toolchain test swift-test
 
 all: compile
+
+# ---------------------------------------------------------------------------
+# test — ロジック検証（macOS）+ Embedded Swift ビルド検証（Pico 向け）
+#
+# 2 段階で検証する:
+#   1. swift test  : macOS 上でユニットテストを実行（高速、Pico 実機不要）
+#   2. make compile: 同じソースが Embedded Swift でもコンパイルできることを確認
+#
+# swift test が失敗した時点で compile は実行されない。
+# ロジックが正しく、かつ Embedded 互換であることを一度に保証できる。
+# ---------------------------------------------------------------------------
+test: swift-test compile
+	@echo ""
+	@echo "✓ すべてのチェックが通りました"
+	@echo "  [1/2] swift test : macOS ロジック検証"
+	@echo "  [2/2] compile    : Embedded Swift ビルド検証"
+
+swift-test:
+	@echo "--- [1/2] swift test (macOS) ---"
+	@swift test
+	@echo ""
 
 # ---------------------------------------------------------------------------
 # compile — Swift → .o のみ
@@ -295,6 +318,7 @@ help:
 	@echo "=== Embedded Swift × Raspberry Pi Pico 2 (RP2350) ==="
 	@echo ""
 	@echo "ターゲット:"
+	@echo "  test             swift test (macOS) + compile (Embedded) の両方を検証"
 	@echo "  compile          Swift → .o のみ（ツールチェーン確認、Pico SDK 不要）"
 	@echo "  build            完全ビルド → .elf / .bin / .uf2 生成（Pico SDK 必要）"
 	@echo "  flash            .uf2 を BOOTSEL マウント済みの Pico にコピー"
