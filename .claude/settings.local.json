@@ -3,7 +3,10 @@
     "allow": [
       "Bash(swift test *)",
       "Bash(make compile *)",
-      "Bash(make test *)"
+      "Bash(make test *)",
+      "Bash(make setup-hooks *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
     ]
   }
 }

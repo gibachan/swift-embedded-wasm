@@ -132,9 +132,10 @@ RP2350_FAMILY_ID := 0xe48bff57
 # ターゲット定義
 # =============================================================================
 
-.PHONY: all compile build flash clean help check-sdk check-tools check-toolchain test swift-test
+.PHONY: all compile build flash clean help check-sdk check-tools check-toolchain test swift-test setup-hooks
 
-all: compile
+# デフォルトは test — 素の `make` で両環境のチェックを行う
+all: test
 
 # ---------------------------------------------------------------------------
 # test — ロジック検証（macOS）+ Embedded Swift ビルド検証（Pico 向け）
@@ -313,15 +314,28 @@ check-sdk:
 clean:
 	rm -rf $(BUILD_DIR)
 
+# ---------------------------------------------------------------------------
+# setup-hooks — Git pre-commit フックをインストールする
+#
+# scripts/pre-commit を .git/hooks/pre-commit にコピーし実行権限を付与する。
+# 一度だけ実行すれば、以後はコミット時に自動で Embedded ビルドが検証される。
+# ---------------------------------------------------------------------------
+setup-hooks:
+	@cp scripts/pre-commit .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "✓ pre-commit フックをインストールしました"
+	@echo "  Sources/WasmRuntime/ を変更してコミットすると自動で Embedded ビルドを検証します"
+
 help:
 	@echo ""
 	@echo "=== Embedded Swift × Raspberry Pi Pico 2 (RP2350) ==="
 	@echo ""
 	@echo "ターゲット:"
-	@echo "  test             swift test (macOS) + compile (Embedded) の両方を検証"
+	@echo "  test             swift test (macOS) + compile (Embedded) の両方を検証 [デフォルト]"
 	@echo "  compile          Swift → .o のみ（ツールチェーン確認、Pico SDK 不要）"
 	@echo "  build            完全ビルド → .elf / .bin / .uf2 生成（Pico SDK 必要）"
 	@echo "  flash            .uf2 を BOOTSEL マウント済みの Pico にコピー"
+	@echo "  setup-hooks      Git pre-commit フックをインストール（初回のみ）"
 	@echo "  clean            $(BUILD_DIR)/ を削除"
 	@echo "  check-toolchain  ツールチェーンの設定を診断"
 	@echo ""

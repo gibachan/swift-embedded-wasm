@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# Git pre-commit hook — Embedded Swift ビルド検証
+#
+# Sources/WasmRuntime/ に加えた変更が Embedded Swift でもコンパイルできることを
+# コミット前に自動検証する。失敗すればコミットをブロックする。
+#
+# インストール: make setup-hooks
+
+# ステージされた Swift ファイルが Sources/WasmRuntime/ に含まれているか確認
+# 含まれていない場合はスキップ（無関係な変更でのオーバーヘッドを避ける）
+if ! git diff --cached --name-only | grep -q "^Sources/WasmRuntime/"; then
+  exit 0
+fi
+
+echo "--- pre-commit: Embedded Swift ビルド検証 ---"
+make compile
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+  echo ""
+  echo "エラー: Embedded Swift のビルドが失敗したためコミットを中断しました。"
+  echo "  Foundation などの Embedded 非対応ライブラリを import していないか確認してください。"
+  echo ""
+  echo "  スキップするには: git commit --no-verify（非推奨）"
+  exit 1
+fi
+
+echo ""
