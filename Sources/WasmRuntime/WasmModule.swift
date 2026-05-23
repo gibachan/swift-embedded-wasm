@@ -87,19 +87,22 @@ struct WasmModule: Sendable {
   let memories: [MemoryType]   // Memory section
   let exports: [Export]        // Export section
   let code: [FunctionBody]     // Code section
+  let start: UInt32?           // Start section: インスタンス化時に自動実行する関数インデックス
 
   init(
     types: [FunctionType],
     functions: [UInt32],
     memories: [MemoryType],
     exports: [Export],
-    code: [FunctionBody]
+    code: [FunctionBody],
+    start: UInt32? = nil
   ) {
     self.types = types
     self.functions = functions
     self.memories = memories
     self.exports = exports
     self.code = code
+    self.start = start
   }
 }
 

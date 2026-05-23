@@ -14,8 +14,13 @@
 struct WasmInterpreter: Sendable {
   let module: WasmModule
 
-  init(module: WasmModule) {
+  // Wasm 仕様: start 関数はインスタンス化時に自動実行される。
+  // start が失敗した場合はインスタンス化そのものを失敗として扱う。
+  init(module: WasmModule) throws(WasmError) {
     self.module = module
+    if let startIdx = module.start {
+      _ = try call(functionIndex: Int(startIdx), args: [])
+    }
   }
   
   // MARK: - Public

@@ -22,6 +22,7 @@ struct WasmParser {
     var memories: [MemoryType] = []
     var exports: [Export] = []
     var code: [FunctionBody] = []
+    var start: UInt32? = nil
 
     while !stream.isExhausted {
       let id = try readByte()
@@ -32,6 +33,7 @@ struct WasmParser {
       case 3:  functions = try parseFunctionSection()
       case 5:  memories  = try parseMemorySection()
       case 7:  exports   = try parseExportSection()
+      case 8:  start     = try parseStartSection()
       case 10: code      = try parseCodeSection()
       default:
         // 未知のセクションはサイズ分スキップ（Wasm 仕様: 拡張性のため必須）
@@ -39,7 +41,7 @@ struct WasmParser {
       }
     }
 
-    return WasmModule(types: types, functions: functions, memories: memories, exports: exports, code: code)
+    return WasmModule(types: types, functions: functions, memories: memories, exports: exports, code: code, start: start)
   }
   
   // MARK: - Header
@@ -78,6 +80,14 @@ struct WasmParser {
     return types
   }
   
+  /// Start section (id=8): インスタンス化時に自動実行する関数インデックス
+  ///
+  /// 形式: [func_index: u32]
+  /// Wasm 仕様: インスタンス化完了直後、エクスポートへのアクセス前に呼び出される。
+  private mutating func parseStartSection() throws(WasmError) -> UInt32 {
+    return try readU32()
+  }
+
   /// Memory section (id=5): Linear Memory の定義
   ///
   /// 形式: [count] ([limtype] [min] ([max])?)*

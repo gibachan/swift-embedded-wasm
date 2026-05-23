@@ -2,13 +2,21 @@ import Testing
 @testable import WasmRuntime
 
 // memory.wasm のバイナリをそのまま埋め込む
-// (module (memory 1)) → magic + version + Memory section のみ
+// (module (memory 1) (func $start) (start $start))
 private let memoryWasm: [UInt8] = [
   // magic + version
   0x00, 0x61, 0x73, 0x6d,
   0x01, 0x00, 0x00, 0x00,
+  // Type section (id=1, size=4): () -> ()
+  0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+  // Function section (id=3, size=2): func[0] = type[0]
+  0x03, 0x02, 0x01, 0x00,
   // Memory section (id=5, size=3): memory[0] = {min:1, max:none}
   0x05, 0x03, 0x01, 0x00, 0x01,
+  // Start section (id=8, size=1): start = func[0]
+  0x08, 0x01, 0x00,
+  // Code section (id=10, size=4): func[0] = end のみ
+  0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
 ]
 
 // i32-add.wasm のバイナリをそのまま埋め込む
@@ -72,6 +80,17 @@ struct WasmParserTests {
     #expect(module.memories[0].max == nil)
   }
 
+  @Test func parsesStartSection() throws {
+    let module = try parseModule(memoryWasm)
+    #expect(module.start == 0)
+  }
+
+  @Test func instantiatesWithStart() throws {
+    let module = try parseModule(memoryWasm)
+    // start 関数（() -> ()）がインスタンス化時にエラーなく実行される
+    _ = try WasmInterpreter(module: module)
+  }
+
   @Test func rejectsInvalidMagic() throws {
     var bad = i32AddWasm
     bad[0] = 0xFF
@@ -91,7 +110,7 @@ struct WasmInterpreterTests {
   
   @Test func i32Add() throws {
     let module = try parseModule(i32AddWasm)
-    let interp = WasmInterpreter(module: module)
+    let interp = try WasmInterpreter(module: module)
     
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(3), .i32(4)])
     
@@ -100,7 +119,7 @@ struct WasmInterpreterTests {
   
   @Test func i32AddWithNegatives() throws {
     let module = try parseModule(i32AddWasm)
-    let interp = WasmInterpreter(module: module)
+    let interp = try WasmInterpreter(module: module)
     
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(-10), .i32(3)])
     #expect(result == [.i32(-7)])
@@ -108,7 +127,7 @@ struct WasmInterpreterTests {
   
   @Test func i32AddWrapsAround() throws {
     let module = try parseModule(i32AddWasm)
-    let interp = WasmInterpreter(module: module)
+    let interp = try WasmInterpreter(module: module)
     
     // Wasm の i32.add はオーバーフロー時にラップアラウンドする
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(Int32.max), .i32(1)])
@@ -117,7 +136,7 @@ struct WasmInterpreterTests {
   
   @Test func throwsOnUnknownExport() throws {
     let module = try parseModule(i32AddWasm)
-    let interp = WasmInterpreter(module: module)
+    let interp = try WasmInterpreter(module: module)
     
     #expect(throws: WasmError.functionNotFound) {
       try interp.callExport(nameBytes: Array("nonexistent".utf8), args: [])
@@ -126,7 +145,7 @@ struct WasmInterpreterTests {
   
   @Test func throwsOnArgumentCountMismatch() throws {
     let module = try parseModule(i32AddWasm)
-    let interp = WasmInterpreter(module: module)
+    let interp = try WasmInterpreter(module: module)
     
     #expect(throws: WasmError.argumentCountMismatch) {
       try interp.callExport(nameBytes: i32AddName, args: [.i32(1)])
