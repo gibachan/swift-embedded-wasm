@@ -19,16 +19,18 @@ struct WasmParser {
     
     var types: [FunctionType] = []
     var functions: [UInt32] = []
+    var memories: [MemoryType] = []
     var exports: [Export] = []
     var code: [FunctionBody] = []
-    
+
     while !stream.isExhausted {
       let id = try readByte()
       let size = try readU32()
-      
+
       switch id {
       case 1:  types     = try parseTypeSection()
       case 3:  functions = try parseFunctionSection()
+      case 5:  memories  = try parseMemorySection()
       case 7:  exports   = try parseExportSection()
       case 10: code      = try parseCodeSection()
       default:
@@ -36,8 +38,8 @@ struct WasmParser {
         for _ in 0..<Int(size) { _ = try readByte() }
       }
     }
-    
-    return WasmModule(types: types, functions: functions, exports: exports, code: code)
+
+    return WasmModule(types: types, functions: functions, memories: memories, exports: exports, code: code)
   }
   
   // MARK: - Header
@@ -76,6 +78,27 @@ struct WasmParser {
     return types
   }
   
+  /// Memory section (id=5): Linear Memory の定義
+  ///
+  /// 形式: [count] ([limtype] [min] ([max])?)*
+  /// limtype: 0x00 = min のみ、0x01 = min と max の両方
+  private mutating func parseMemorySection() throws(WasmError) -> [MemoryType] {
+    let count = try readU32()
+    var memories: [MemoryType] = []
+    for _ in 0..<count {
+      let limtype = try readByte()
+      let min = try readU32()
+      let max: UInt32?
+      switch limtype {
+      case 0x00: max = nil
+      case 0x01: max = try readU32()
+      default:   throw .invalidLimitType(limtype)
+      }
+      memories.append(MemoryType(min: min, max: max))
+    }
+    return memories
+  }
+
   /// Function section (id=3): 各関数が参照する type index の配列
   private mutating func parseFunctionSection() throws(WasmError) -> [UInt32] {
     let count = try readU32()

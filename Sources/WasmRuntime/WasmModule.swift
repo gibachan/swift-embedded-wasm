@@ -43,6 +43,14 @@ struct FunctionBody: Sendable {
   }
 }
 
+// MARK: - Memory
+
+/// Wasm Linear Memory の制限（ページ数、1 ページ = 64 KiB）
+struct MemoryType: Sendable, Equatable {
+  let min: UInt32
+  let max: UInt32?  // nil = 無制限
+}
+
 // MARK: - Exports
 
 enum ExportKind: UInt8, Sendable {
@@ -76,17 +84,20 @@ struct Export: Sendable {
 struct WasmModule: Sendable {
   let types: [FunctionType]    // Type section
   let functions: [UInt32]      // Function section: 各関数が参照する type index
+  let memories: [MemoryType]   // Memory section
   let exports: [Export]        // Export section
   let code: [FunctionBody]     // Code section
 
   init(
     types: [FunctionType],
     functions: [UInt32],
+    memories: [MemoryType],
     exports: [Export],
     code: [FunctionBody]
   ) {
     self.types = types
     self.functions = functions
+    self.memories = memories
     self.exports = exports
     self.code = code
   }

@@ -6,6 +6,7 @@ enum WasmError: Error, Equatable, Sendable {
   case unexpectedEnd                    // バイト列が途中で終了
   case invalidValueType(UInt8)          // 未知の value type バイト
   case invalidExportKind(UInt8)         // 未知の export kind バイト
+  case invalidLimitType(UInt8)          // 未知の limit type バイト（memory/table）
   case invalidInstruction(UInt8)        // 未知の opcode
   case leb128Error(LEB128Error)         // LEB128 デコード失敗
   

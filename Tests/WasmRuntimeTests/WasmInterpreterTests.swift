@@ -1,6 +1,16 @@
 import Testing
 @testable import WasmRuntime
 
+// memory.wasm のバイナリをそのまま埋め込む
+// (module (memory 1)) → magic + version + Memory section のみ
+private let memoryWasm: [UInt8] = [
+  // magic + version
+  0x00, 0x61, 0x73, 0x6d,
+  0x01, 0x00, 0x00, 0x00,
+  // Memory section (id=5, size=3): memory[0] = {min:1, max:none}
+  0x05, 0x03, 0x01, 0x00, 0x01,
+]
+
 // i32-add.wasm のバイナリをそのまま埋め込む
 // xxd wasm/i32-add.wasm で確認した 45 バイト
 private let i32AddWasm: [UInt8] = [
@@ -55,6 +65,13 @@ struct WasmParserTests {
     #expect(module.code[0].instructions.count == 4)
   }
   
+  @Test func parsesMemorySection() throws {
+    let module = try parseModule(memoryWasm)
+    #expect(module.memories.count == 1)
+    #expect(module.memories[0].min == 1)
+    #expect(module.memories[0].max == nil)
+  }
+
   @Test func rejectsInvalidMagic() throws {
     var bad = i32AddWasm
     bad[0] = 0xFF
