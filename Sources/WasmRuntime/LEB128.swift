@@ -9,7 +9,7 @@
 // 参照:
 //   https://webassembly.github.io/spec/core/binary/values.html#integers
 
-public enum LEB128Error: Error, Equatable {
+enum LEB128Error: Error, Equatable {
   // 値が型のビット幅を超える（例: UInt32 に 5 バイト目に余分なビットがある）
   case overflow
   // Wasm 仕様違反: 冗長なエンコード（末尾に不要バイトが存在する）
@@ -22,7 +22,7 @@ public enum LEB128Error: Error, Equatable {
 
 /// バイトを 1 つずつ読み出す抽象。
 /// プロトコルで抽象化することで、実装をゼロコピーのバッファ読み出しに差し替えられる。
-public protocol ByteStream {
+protocol ByteStream {
   mutating func consume() throws(LEB128Error) -> UInt8
 }
 
@@ -30,21 +30,21 @@ public protocol ByteStream {
 ///
 /// Embedded Swift 環境ではヒープアロケーション不要で使用できる。
 /// バッファの生存期間は呼び出し元が管理すること。
-public struct BufferStream {
-  public let buffer: UnsafeBufferPointer<UInt8>
-  public private(set) var offset: Int
+struct BufferStream {
+  private let buffer: UnsafeBufferPointer<UInt8>
+  private(set) var offset: Int
   
-  public init(_ buffer: UnsafeBufferPointer<UInt8>, offset: Int = 0) {
+  init(_ buffer: UnsafeBufferPointer<UInt8>, offset: Int = 0) {
     self.buffer = buffer
     self.offset = offset
   }
   
-  public var isExhausted: Bool { offset >= buffer.count }
+  var isExhausted: Bool { offset >= buffer.count }
 }
 
 extension BufferStream: ByteStream {
   @inline(__always)
-  public mutating func consume() throws(LEB128Error) -> UInt8 {
+  mutating func consume() throws(LEB128Error) -> UInt8 {
     guard offset < buffer.count else { throw .insufficientBytes }
     defer { offset += 1 }
     return buffer[offset]
@@ -64,8 +64,7 @@ extension BufferStream: ByteStream {
 /// エラー:
 ///   - integerRepresentationTooLong: 型ビット幅を超えるビットが非ゼロ、または継続バイトが多すぎる
 ///   - insufficientBytes: バイト列が途中で終わった
-@inlinable
-public func decodeULEB128<T: FixedWidthInteger & UnsignedInteger, S: ByteStream>(
+func decodeULEB128<T: FixedWidthInteger & UnsignedInteger, S: ByteStream>(
   from stream: inout S
 ) throws(LEB128Error) -> T {
   let firstByte = try stream.consume()
@@ -115,8 +114,7 @@ public func decodeULEB128<T: FixedWidthInteger & UnsignedInteger, S: ByteStream>
 /// 実装メモ:
 ///   符号付き整数の左シフトはトラップになる可能性があるため &<< (overflow shift) を使用する。
 ///   例: Int32(0x78) &<< 28 は 0x80000000 となり、通常の << ではオーバーフロートラップになる。
-@inlinable
-public func decodeSLEB128<T: FixedWidthInteger & SignedInteger, S: ByteStream>(
+func decodeSLEB128<T: FixedWidthInteger & SignedInteger, S: ByteStream>(
   from stream: inout S
 ) throws(LEB128Error) -> T {
   var result: T = 0

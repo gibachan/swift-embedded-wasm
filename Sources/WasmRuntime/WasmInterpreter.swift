@@ -11,10 +11,10 @@
 //   i32.add     → stack: [7]    ← pop 2, push (3+4)
 //   end         → return stack top 1 value = [7]
 
-public struct WasmInterpreter: Sendable {
-  public let module: WasmModule
-  
-  public init(module: WasmModule) {
+struct WasmInterpreter: Sendable {
+  let module: WasmModule
+
+  init(module: WasmModule) {
     self.module = module
   }
   
@@ -24,7 +24,7 @@ public struct WasmInterpreter: Sendable {
   ///
   /// String の == 比較は Unicode 正規化テーブルを要求するため使用しない。
   /// nameBytes どうしのバイト比較で照合する。
-  public func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value] {
+  func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value] {
     guard let export = module.exports.first(where: { $0.nameBytes == nameBytes && $0.kind == .function }) else {
       throw .functionNotFound
     }
@@ -32,7 +32,7 @@ public struct WasmInterpreter: Sendable {
   }
   
   /// 関数インデックスで関数を呼び出す
-  public func call(functionIndex: Int, args: [Value]) throws(WasmError) -> [Value] {
+  func call(functionIndex: Int, args: [Value]) throws(WasmError) -> [Value] {
     let typeIndex = Int(module.functions[functionIndex])
     let funcType = module.types[typeIndex]
     let body = module.code[functionIndex]

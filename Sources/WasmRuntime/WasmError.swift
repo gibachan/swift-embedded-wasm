@@ -1,5 +1,5 @@
 /// パーサーとインタプリタが共通で使うエラー型
-public enum WasmError: Error, Equatable, Sendable {
+enum WasmError: Error, Equatable, Sendable {
   // --- パーサー ---
   case invalidMagic                     // マジックバイトが \0asm でない
   case invalidVersion                   // バージョンが 1 でない

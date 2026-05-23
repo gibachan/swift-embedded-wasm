@@ -2,20 +2,19 @@
 //
 // Wasm バイナリは「セクション」の列で構成される。
 // 各セクションは [id: u8][size: u32(leb128)][content] の形式。
-// パーサーは必要なセクションだけ読み取り、残りはスキップする。
 //
 // 参照: https://webassembly.github.io/spec/core/binary/modules.html
 
-public struct WasmParser {
+struct WasmParser {
   private var stream: BufferStream
   
-  public init(_ buffer: UnsafeBufferPointer<UInt8>) {
+  init(_ buffer: UnsafeBufferPointer<UInt8>) {
     self.stream = BufferStream(buffer)
   }
   
   // MARK: - Public
   
-  public mutating func parse() throws(WasmError) -> WasmModule {
+  mutating func parse() throws(WasmError) -> WasmModule {
     try validateHeader()
     
     var types: [FunctionType] = []

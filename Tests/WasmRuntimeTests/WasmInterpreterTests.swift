@@ -1,5 +1,5 @@
 import Testing
-import WasmRuntime
+@testable import WasmRuntime
 
 // i32-add.wasm のバイナリをそのまま埋め込む
 // xxd wasm/i32-add.wasm で確認した 45 バイト
