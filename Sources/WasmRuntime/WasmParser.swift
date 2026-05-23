@@ -158,28 +158,57 @@ struct WasmParser {
         let vt = try readValueType()
         for _ in 0..<n { locals.append(vt) }
       }
-      
-      var instructions: [Instruction] = []
-      loop: while true {
-        let opcode = try readByte()
-        switch opcode {
-        case 0x20:  // local.get
-          instructions.append(.localGet(try readU32()))
-        case 0x6A:  // i32.add
-          instructions.append(.i32Add)
-        case 0x0B:  // end
-          instructions.append(.end)
-          break loop
-        default:
-          throw .invalidInstruction(opcode)
-        }
-      }
-      
+
+      let instructions = try parseInstructions()
       bodies.append(FunctionBody(locals: locals, instructions: instructions))
     }
     return bodies
   }
   
+  /// 命令列を再帰的にパースする。0x0B (end) を読んだ時点で返る。
+  ///
+  /// block / loop は再帰呼び出しで内部命令列を取得する。
+  /// これにより構造的制御フローを [Instruction] のネスト構造として表現できる。
+  private mutating func parseInstructions() throws(WasmError) -> [Instruction] {
+    var instructions: [Instruction] = []
+    while true {
+      let opcode = try readByte()
+      switch opcode {
+      case 0x02:  // block: 前向きジャンプ用ブロック
+        let bt = try readBlockType()
+        instructions.append(.block(bt, try parseInstructions()))
+      case 0x03:  // loop: br(0) でブロック先頭に戻れるブロック
+        let bt = try readBlockType()
+        instructions.append(.loop(bt, try parseInstructions()))
+      case 0x0B:  // end: このブロックの終端 → 呼び出し元へ返る
+        return instructions
+      case 0x0C:  // br
+        instructions.append(.br(try readU32()))
+      case 0x0D:  // br_if
+        instructions.append(.brIf(try readU32()))
+      case 0x20:  // local.get
+        instructions.append(.localGet(try readU32()))
+      case 0x21:  // local.set
+        instructions.append(.localSet(try readU32()))
+      case 0x41:  // i32.const (符号付き LEB128)
+        instructions.append(.i32Const(try readI32()))
+      case 0x46:  // i32.eq
+        instructions.append(.i32Eq)
+      case 0x6A:  // i32.add
+        instructions.append(.i32Add)
+      default:
+        throw .invalidInstruction(opcode)
+      }
+    }
+  }
+
+  private mutating func readBlockType() throws(WasmError) -> BlockType {
+    let byte = try readByte()
+    if byte == 0x40 { return .void }
+    guard let vt = ValueType(rawValue: byte) else { throw .invalidValueType(byte) }
+    return .value(vt)
+  }
+
   // MARK: - Primitives
   
   @inline(__always)
@@ -195,6 +224,15 @@ struct WasmParser {
   private mutating func readU32() throws(WasmError) -> UInt32 {
     do {
       return try decodeULEB128(from: &stream)
+    } catch {
+      throw .leb128Error(error)
+    }
+  }
+
+  @inline(__always)
+  private mutating func readI32() throws(WasmError) -> Int32 {
+    do {
+      return try decodeSLEB128(from: &stream)
     } catch {
       throw .leb128Error(error)
     }
