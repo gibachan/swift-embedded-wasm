@@ -92,6 +92,8 @@ target_compile_options(pico-ble PUBLIC
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:
         -target armv6m-none-none-eabi
         -enable-experimental-feature Embedded
+        -enable-upcoming-feature NonisolatedNonsendingByDefault
+        -enable-upcoming-feature InferIsolatedConformances
         -parse-as-library
         -module-name pico_ble
 
