@@ -7,12 +7,16 @@ enum WasmError: Error, Equatable, Sendable {
   case invalidValueType(UInt8)          // 未知の value type バイト
   case invalidExportKind(UInt8)         // 未知の export kind バイト
   case invalidLimitType(UInt8)          // 未知の limit type バイト（memory/table）
+  case invalidImportKind(UInt8)         // 未知の import kind バイト
   case invalidInstruction(UInt8)        // 未知の opcode
   case leb128Error(LEB128Error)         // LEB128 デコード失敗
-  
+
   // --- インタプリタ ---
   case functionNotFound                 // 指定名の export が存在しない
   case argumentCountMismatch            // 引数の個数が型シグネチャと不一致
   case stackUnderflow                   // 必要な値がスタックにない
   case typeMismatch                     // スタック上の値の型が命令と不一致
+  case importNotFound                   // ホスト側が提供していない import がある
+  case memoryAccessOutOfBounds          // memory へのアクセスが範囲外
+  case divisionByZero                   // 0 除算（rem_u など）
 }
