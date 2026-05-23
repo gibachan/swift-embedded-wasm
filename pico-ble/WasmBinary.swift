@@ -5,7 +5,7 @@
 // UnsafeRawBufferPointer を取り出してパーサーに渡せる。
 //
 // バイト列の更新方法:
-//   $ xxd -i wasm/i32-add.wasm
+//   $ xxd -i Tests/wasm/i32-add.wasm
 // の出力を参考に手動で書き換える。
 
 // (module

@@ -12,7 +12,8 @@ let package = Package(
     .testTarget(
       name: "WasmRuntimeTests",
       dependencies: ["WasmRuntime"],
-      path: "Tests/WasmRuntimeTests"
+      path: "Tests/WasmRuntimeTests",
+      resources: [.copy("wasm")]
     ),
   ]
 )
