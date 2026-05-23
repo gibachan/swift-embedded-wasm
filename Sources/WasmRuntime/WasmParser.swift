@@ -292,6 +292,9 @@ struct WasmParser {
       case 0x46:  // i32.eq
         instructions.append(.i32Eq)
 
+      case 0x4E:  // i32.ge_s
+        instructions.append(.i32GeS)
+
       case 0x6A:  // i32.add
         instructions.append(.i32Add)
 

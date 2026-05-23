@@ -162,4 +162,36 @@ struct WasmInterpreterTests {
       "Fizz", "Buzz", "11", "Fizz", "13", "14", "FizzBuzz",
     ])
   }
+
+  @Test func blinkLoopCallsBlinkNTimes() throws {
+    var blinkCount = 0
+
+    let module = try parseModule("blink-loop")
+    let hostImports: [HostImport] = [
+      .function("env", "blink", { _, _ in
+        blinkCount += 1
+        return []
+      }),
+    ]
+
+    let interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    _ = try interp.callExport(nameBytes: Array("blink_loop".utf8), args: [.i32(5)])
+    #expect(blinkCount == 5)
+  }
+
+  @Test func blinkLoopWithZeroDoesNotBlink() throws {
+    var blinkCount = 0
+
+    let module = try parseModule("blink-loop")
+    let hostImports: [HostImport] = [
+      .function("env", "blink", { _, _ in
+        blinkCount += 1
+        return []
+      }),
+    ]
+
+    let interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    _ = try interp.callExport(nameBytes: Array("blink_loop".utf8), args: [.i32(0)])
+    #expect(blinkCount == 0)
+  }
 }

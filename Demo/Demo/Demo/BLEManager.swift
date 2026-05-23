@@ -45,30 +45,25 @@ final class BLEManager: NSObject {
 
   // MARK: - データ送信
 
-  // LED のON/OFFをPicoに送信する。
+  // LED を count 回点滅させる指示を Pico に送信する。
   //
-  // Pico側（attWriteCallback）は8バイト（Int32 × 2, little-endian）を期待し、
-  // 2値の合計が偶数なら LED ON、奇数なら LED OFF として動作する。
-  //   LED ON  → a=0, b=0 → sum=0（偶数）
-  //   LED OFF → a=1, b=0 → sum=1（奇数）
-  func sendLED(on: Bool) {
+  // Pico 側（attWriteCallback）は 4 バイト（Int32, little-endian）を受け取り、
+  // blink-loop.wasm でその回数だけ LED を点滅させる。
+  func sendBlinkCount(_ count: Int) {
     guard let peripheral, let characteristic else {
       log.append("❌ Not ready")
       return
     }
-    let a: Int32 = on ? 0 : 1
-    let b: Int32 = 0
-    var bytes = [UInt8](repeating: 0, count: 8)
-    bytes[0] = UInt8(UInt32(bitPattern: a) & 0xFF)
-    bytes[1] = UInt8((UInt32(bitPattern: a) >> 8) & 0xFF)
-    bytes[2] = UInt8((UInt32(bitPattern: a) >> 16) & 0xFF)
-    bytes[3] = UInt8((UInt32(bitPattern: a) >> 24) & 0xFF)
-    bytes[4] = UInt8(UInt32(bitPattern: b) & 0xFF)
-    bytes[5] = UInt8((UInt32(bitPattern: b) >> 8) & 0xFF)
-    bytes[6] = UInt8((UInt32(bitPattern: b) >> 16) & 0xFF)
-    bytes[7] = UInt8((UInt32(bitPattern: b) >> 24) & 0xFF)
+    let value = Int32(count)
+    let bits = UInt32(bitPattern: value)
+    let bytes: [UInt8] = [
+      UInt8(bits & 0xFF),
+      UInt8((bits >> 8) & 0xFF),
+      UInt8((bits >> 16) & 0xFF),
+      UInt8((bits >> 24) & 0xFF),
+    ]
     peripheral.writeValue(Data(bytes), for: characteristic, type: .withResponse)
-    log.append("➡️ LED \(on ? "ON" : "OFF"): a=\(a), b=\(b)")
+    log.append("➡️ Blink \(count) times")
   }
 }
 

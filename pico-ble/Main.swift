@@ -32,47 +32,51 @@ func packetHandler(
     startAdvertising()
 }
 
-// ATT write handler: iPhone から 8 バイト (Int32 × 2, little-endian) を受信し
-// i32-add.wasm で加算して偶数なら LED ON、奇数なら LED OFF
+// ATT write handler: receives 4 bytes (Int32, little-endian) from the central
+// and blinks the LED that many times via blink-loop.wasm
 @_cdecl("attWriteCallback")
 func attWriteCallback(
     _ conHandle: UInt16, _ attHandle: UInt16, _ transactionMode: UInt16,
     _ offset: UInt16, _ buffer: UnsafeMutablePointer<UInt8>?, _ bufferSize: UInt16
 ) -> Int32 {
-    guard attHandle == ledCharHandle, let buffer, bufferSize >= 8 else { return 0 }
+    guard attHandle == ledCharHandle, let buffer, bufferSize >= 4 else { return 0 }
 
-    // little-endian で Int32 × 2 をデコード
-    let a = Int32(bitPattern: UInt32(buffer[0])
-                            | UInt32(buffer[1]) << 8
-                            | UInt32(buffer[2]) << 16
-                            | UInt32(buffer[3]) << 24)
-    let b = Int32(bitPattern: UInt32(buffer[4])
-                            | UInt32(buffer[5]) << 8
-                            | UInt32(buffer[6]) << 16
-                            | UInt32(buffer[7]) << 24)
-    runWasm(a: a, b: b)
+    // Decode one Int32 (little-endian): the blink count
+    let count = Int32(bitPattern: UInt32(buffer[0])
+                                | UInt32(buffer[1]) << 8
+                                | UInt32(buffer[2]) << 16
+                                | UInt32(buffer[3]) << 24)
+    blinkLoop(count: count)
     return 0
 }
 
-// i32-add.wasm を実行し、結果の偶奇で LED を制御する
-func runWasm(a: Int32, b: Int32) {
-    withUnsafeBytes(of: &i32AddWasm) { raw in
+// Run blink-loop.wasm: blinks the LED count times (300 ms on / 300 ms off each).
+// The loop logic lives in WASM; Swift provides the low-level blink primitive as
+// a host import.
+func blinkLoop(count: Int32) {
+    withUnsafeBytes(of: &blinkLoopWasm) { raw in
         let buf = UnsafeBufferPointer(
             start: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
-            count: i32AddWasmLen
+            count: blinkLoopWasmLen
         )
         var parser = WasmParser(buf)
         do throws(WasmError) {
             let module = try parser.parse()
-            // callExport(name:) は String 比較が必要なため Embedded では使わない。
-            // i32-add.wasm の関数インデックスは 0 固定なので直接指定する。
-            let results = try WasmInterpreter(module: module)
-                .call(functionIndex: 0, args: [.i32(a), .i32(b)])
-            if case .i32(let n) = results.first {
-                cyw43_arch_gpio_put(ledPin, n % 2 == 0)
-            }
+            let hostImports: [HostImport] = [
+                .function("env", "blink", { _, _ in
+                    cyw43_arch_gpio_put(ledPin, true)
+                    sleep_ms(300)
+                    cyw43_arch_gpio_put(ledPin, false)
+                    sleep_ms(300)
+                    return []
+                }),
+            ]
+            // callExport(nameBytes:) requires String comparison; avoid it in Embedded.
+            // Function index space: 0 = imported blink, 1 = local blink_loop.
+            _ = try WasmInterpreter(module: module, hostImports: hostImports)
+                .call(functionIndex: 1, args: [.i32(count)])
         } catch {
-            // Wasm 実行エラー時は LED 状態を変えない（error は WasmError 型）
+            // On Wasm error, leave the LED unchanged
         }
     }
 }

@@ -181,6 +181,13 @@ struct WasmInterpreter {
         else { throw .typeMismatch }
         stack.append(.i32(a == b ? 1 : 0))
 
+      case .i32GeS:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a >= b ? 1 : 0))
+
       case .i32RemU:
         // Unsigned remainder: reinterpret the Int32 bit patterns as UInt32
         guard stack.count >= 2 else { throw .stackUnderflow }

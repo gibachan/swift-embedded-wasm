@@ -41,6 +41,7 @@ enum Instruction: Sendable {
   case i32Const(Int32)                                                          // 0x41
   case i32Add                                                                   // 0x6A
   case i32Eq                                                                    // 0x46
+  case i32GeS                                                                   // 0x4E: signed >=
   case i32RemU                                                                  // 0x70: unsigned remainder
   case call(UInt32)                                                             // 0x10: function call
   indirect case block(BlockType, [Instruction])                                 // 0x02
