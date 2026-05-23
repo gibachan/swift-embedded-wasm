@@ -32,15 +32,49 @@ func packetHandler(
     startAdvertising()
 }
 
-// ATT write handler: control the LED via "1" (on) or "0" (off)
+// ATT write handler: iPhone から 8 バイト (Int32 × 2, little-endian) を受信し
+// i32-add.wasm で加算して偶数なら LED ON、奇数なら LED OFF
 @_cdecl("attWriteCallback")
 func attWriteCallback(
     _ conHandle: UInt16, _ attHandle: UInt16, _ transactionMode: UInt16,
     _ offset: UInt16, _ buffer: UnsafeMutablePointer<UInt8>?, _ bufferSize: UInt16
 ) -> Int32 {
-    guard attHandle == ledCharHandle, let buffer, bufferSize >= 1 else { return 0 }
-    cyw43_arch_gpio_put(ledPin, buffer[0] == UInt8(ascii: "1"))
+    guard attHandle == ledCharHandle, let buffer, bufferSize >= 8 else { return 0 }
+
+    // little-endian で Int32 × 2 をデコード
+    let a = Int32(bitPattern: UInt32(buffer[0])
+                            | UInt32(buffer[1]) << 8
+                            | UInt32(buffer[2]) << 16
+                            | UInt32(buffer[3]) << 24)
+    let b = Int32(bitPattern: UInt32(buffer[4])
+                            | UInt32(buffer[5]) << 8
+                            | UInt32(buffer[6]) << 16
+                            | UInt32(buffer[7]) << 24)
+    runWasm(a: a, b: b)
     return 0
+}
+
+// i32-add.wasm を実行し、結果の偶奇で LED を制御する
+func runWasm(a: Int32, b: Int32) {
+    withUnsafeBytes(of: &i32AddWasm) { raw in
+        let buf = UnsafeBufferPointer(
+            start: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
+            count: i32AddWasmLen
+        )
+        var parser = WasmParser(buf)
+        do throws(WasmError) {
+            let module = try parser.parse()
+            // callExport(name:) は String 比較が必要なため Embedded では使わない。
+            // i32-add.wasm の関数インデックスは 0 固定なので直接指定する。
+            let results = try WasmInterpreter(module: module)
+                .call(functionIndex: 0, args: [.i32(a), .i32(b)])
+            if case .i32(let n) = results.first {
+                cyw43_arch_gpio_put(ledPin, n % 2 == 0)
+            }
+        } catch {
+            // Wasm 実行エラー時は LED 状態を変えない（error は WasmError 型）
+        }
+    }
 }
 
 @main

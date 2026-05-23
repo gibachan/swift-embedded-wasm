@@ -20,10 +20,13 @@ public struct WasmInterpreter: Sendable {
 
     // MARK: - Public
 
-    /// エクスポート名で関数を呼び出す
-    public func callExport(name: String, args: [Value]) throws(WasmError) -> [Value] {
-        guard let export = module.exports.first(where: { $0.name == name && $0.kind == .function }) else {
-            throw .functionNotFound(name)
+    /// エクスポート名（UTF-8 バイト列）で関数を呼び出す
+    ///
+    /// String の == 比較は Unicode 正規化テーブルを要求するため使用しない。
+    /// nameBytes どうしのバイト比較で照合する。
+    public func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value] {
+        guard let export = module.exports.first(where: { $0.nameBytes == nameBytes && $0.kind == .function }) else {
+            throw .functionNotFound
         }
         return try call(functionIndex: Int(export.index), args: args)
     }

@@ -95,7 +95,6 @@ public struct WasmParser {
             let nameLen = try readU32()
             var nameBytes: [UInt8] = []
             for _ in 0..<Int(nameLen) { nameBytes.append(try readByte()) }
-            let name = String(decoding: nameBytes, as: UTF8.self)
 
             let kindByte = try readByte()
             guard let kind = ExportKind(rawValue: kindByte) else {
@@ -103,7 +102,7 @@ public struct WasmParser {
             }
 
             let index = try readU32()
-            exports.append(Export(name: name, kind: kind, index: index))
+            exports.append(Export(nameBytes: nameBytes, kind: kind, index: index))
         }
         return exports
     }

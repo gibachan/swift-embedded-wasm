@@ -53,15 +53,21 @@ public enum ExportKind: UInt8, Sendable {
 }
 
 public struct Export: Sendable {
-    public let name: String
+    // エクスポート名を UTF-8 バイト列として保持する。
+    // String の == 比較は Unicode 正規化テーブルを要求するため、
+    // 名前の照合は nameBytes どうしのバイト比較で行う。
+    public let nameBytes: [UInt8]
     public let kind: ExportKind
     public let index: UInt32
 
-    public init(name: String, kind: ExportKind, index: UInt32) {
-        self.name = name
+    public init(nameBytes: [UInt8], kind: ExportKind, index: UInt32) {
+        self.nameBytes = nameBytes
         self.kind = kind
         self.index = index
     }
+
+    // デバッグ・表示用。比較には使わず nameBytes を用いること。
+    public var name: String { String(decoding: nameBytes, as: UTF8.self) }
 }
 
 // MARK: - Module

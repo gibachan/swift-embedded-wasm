@@ -10,7 +10,7 @@ public enum WasmError: Error, Equatable, Sendable {
     case leb128Error(LEB128Error)         // LEB128 デコード失敗
 
     // --- インタプリタ ---
-    case functionNotFound(String)         // 指定名の export が存在しない
+    case functionNotFound                 // 指定名の export が存在しない
     case argumentCountMismatch            // 引数の個数が型シグネチャと不一致
     case stackUnderflow                   // 必要な値がスタックにない
     case typeMismatch                     // スタック上の値の型が命令と不一致

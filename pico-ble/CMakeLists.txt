@@ -12,8 +12,18 @@ project(pico-ble)
 pico_sdk_init()
 enable_language(Swift)
 
+set(WASM_RUNTIME_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../Sources/WasmRuntime)
+
 add_executable(pico-ble
     Main.swift
+    WasmBinary.swift
+    posix_memalign.c
+    ${WASM_RUNTIME_DIR}/LEB128.swift
+    ${WASM_RUNTIME_DIR}/WasmError.swift
+    ${WASM_RUNTIME_DIR}/WasmModule.swift
+    ${WASM_RUNTIME_DIR}/WasmParser.swift
+    ${WASM_RUNTIME_DIR}/WasmInterpreter.swift
+    ${WASM_RUNTIME_DIR}/WasmRuntime.swift
 )
 
 set_target_properties(pico-ble PROPERTIES LINKER_LANGUAGE CXX)

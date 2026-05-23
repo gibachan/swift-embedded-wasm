@@ -43,7 +43,7 @@ struct WasmParserTests {
     @Test func parsesExportSection() throws {
         let module = try parseModule(i32AddWasm)
         #expect(module.exports.count == 1)
-        #expect(module.exports[0].name == "i32-add")
+        #expect(module.exports[0].nameBytes == Array("i32-add".utf8))
         #expect(module.exports[0].kind == .function)
         #expect(module.exports[0].index == 0)
     }
@@ -68,11 +68,15 @@ struct WasmParserTests {
 
 @Suite("WasmInterpreter")
 struct WasmInterpreterTests {
+    // テストでは nameBytes を直接組み立てる。
+    // "i32-add".utf8 のバイト変換は照合ではなくテストデータ準備のためなので問題ない。
+    private let i32AddName = Array("i32-add".utf8)
+
     @Test func i32Add() throws {
         let module = try parseModule(i32AddWasm)
         let interp = WasmInterpreter(module: module)
 
-        let result = try interp.callExport(name: "i32-add", args: [.i32(3), .i32(4)])
+        let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(3), .i32(4)])
 
         #expect(result == [.i32(7)])
     }
@@ -81,7 +85,7 @@ struct WasmInterpreterTests {
         let module = try parseModule(i32AddWasm)
         let interp = WasmInterpreter(module: module)
 
-        let result = try interp.callExport(name: "i32-add", args: [.i32(-10), .i32(3)])
+        let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(-10), .i32(3)])
         #expect(result == [.i32(-7)])
     }
 
@@ -90,7 +94,7 @@ struct WasmInterpreterTests {
         let interp = WasmInterpreter(module: module)
 
         // Wasm の i32.add はオーバーフロー時にラップアラウンドする
-        let result = try interp.callExport(name: "i32-add", args: [.i32(Int32.max), .i32(1)])
+        let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(Int32.max), .i32(1)])
         #expect(result == [.i32(Int32.min)])
     }
 
@@ -98,8 +102,8 @@ struct WasmInterpreterTests {
         let module = try parseModule(i32AddWasm)
         let interp = WasmInterpreter(module: module)
 
-        #expect(throws: WasmError.functionNotFound("nonexistent")) {
-            try interp.callExport(name: "nonexistent", args: [])
+        #expect(throws: WasmError.functionNotFound) {
+            try interp.callExport(nameBytes: Array("nonexistent".utf8), args: [])
         }
     }
 
@@ -108,7 +112,7 @@ struct WasmInterpreterTests {
         let interp = WasmInterpreter(module: module)
 
         #expect(throws: WasmError.argumentCountMismatch) {
-            try interp.callExport(name: "i32-add", args: [.i32(1)])
+            try interp.callExport(nameBytes: i32AddName, args: [.i32(1)])
         }
     }
 }

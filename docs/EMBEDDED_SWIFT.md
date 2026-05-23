@@ -60,6 +60,74 @@ var buffer: (UInt8, UInt8, UInt8, UInt8) = (0, 0, 0, 0)
 Raspberry Pi Pico (RP2350) は 520 KB の SRAM を持つが、
 スタック・グローバル変数・ヒープをすべてこの範囲に収める必要がある。
 
+#### `Array<T>` の失敗タイミング：コンパイルエラーではなくリンクエラー
+
+`Array<T>` の `append` などの動的操作は、Embedded Swift でも**コンパイルは通る**。
+コンパイラは `malloc` を呼ぶ機械語を生成するだけで、`malloc` の存在確認はリンカが行うからだ。
+
+```
+[コンパイル] .swift → .o   ← Array を使っていても通る（malloc 参照を埋め込むだけ）
+[リンク]     .o → .elf     ← malloc が未定義なら "undefined reference to '_malloc'" でエラー
+```
+
+これが、`make compile`（`.o` 生成のみ）が `malloc` なしの環境でも成功する理由である。
+`Array<T>` が本当に使えるかどうかはリンクして初めてわかる。
+
+#### `malloc` の提供元
+
+`pico-ble` は `pico_stdlib` をリンクしており、これが `malloc`/`free` を提供する。
+そのため `Array<T>` は `pico-ble` ターゲットでは問題なく動作する。
+
+| 環境 | malloc | `Array<T>` の動的操作 |
+|---|---|---|
+| `pico_stdlib` リンクあり（pico-ble 等） | あり | 動作する |
+| 純粋なベアメタル（stdlib なし） | なし | リンクエラー |
+
+将来、Pico SDK なしの完全ベアメタル環境に移植する場合は、`Array` の `append` を固定サイズバッファに置き換える必要がある。
+
+#### `String` の挙動
+
+`String` はリテラルとのみ使うか動的生成するかで挙動が異なる。
+
+| 用途 | 挙動 |
+|---|---|
+| `"hello"` などの文字列リテラル | Flash への静的配置。malloc 不要で動作する |
+| `String(decoding: bytes, as: UTF8.self)` など動的生成 | malloc が必要。なければリンクエラー |
+
+`Foundation` がないため `String` の一部 API はコンパイルエラーになるケースもある。
+エクスポート名などの比較をバイト列で行うのはこのためである。
+
+#### `String == String` は Unicode 正規化テーブルを要求する（リンクエラー）
+
+`String` の等値比較（`==`）は単純なバイト比較ではなく、Unicode 正規化（NFC/NFD）を伴う。
+Embedded Swift の stdlib には正規化テーブル（`_swift_stdlib_getNormData` 等）が含まれておらず、
+リンク時に以下のようなエラーになる。
+
+```
+undefined reference to `_swift_stdlib_getNormData'
+undefined reference to `_swift_stdlib_getComposition'
+undefined reference to `_swift_stdlib_getDecompositionEntry'
+```
+
+これは**コンパイルエラーではなくリンクエラー**であることに注意する。
+コンパイルは通っても、リンク時に初めて発覚する。
+
+```swift
+// NG: Embedded Swift では String == String はリンクエラーになる
+module.exports.first { $0.name == "i32-add" }
+
+// OK: バイト列どうしで比較する（[UInt8] == [UInt8] はバイト単純比較）
+module.exports.first { $0.nameBytes == Array("i32-add".utf8) }
+```
+
+この制約は WMO（Whole Module Optimization）環境でも回避できない。
+`public` な String 比較関数はリンカが除去できず、正規化テーブルへの参照が残る。
+
+**設計への影響**: 文字列の「表示」は `String(decoding: bytes, as: UTF8.self)` で行えるが、
+「照合」は `[UInt8]` どうしのバイト比較で設計すること。
+macOS 環境も含めてこの原則を統一することで、Embedded ビルドと macOS ビルドの
+コードパスを分岐させる必要がなくなる。
+
 ### Untyped Error（`any Error`）
 
 Swift 6 以前のスタイルの `throws`（型なし）は existential `any Error` を使うため避ける。
