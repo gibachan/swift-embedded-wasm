@@ -1,36 +1,36 @@
-// Wasm Stack Machine インタプリタ
+// Wasm stack machine interpreter
 //
-// Wasm はスタックマシン: 命令はオペランドをスタックから取り出し、
-// 結果をスタックに積む。関数の引数と宣言済みローカル変数は
-// インデックスで参照できる "locals" 配列として扱う。
+// Wasm is a stack machine: instructions pop operands from the stack and push results.
+// Function arguments and declared local variables are stored in a "locals" array
+// accessible by index.
 //
-// 構造的制御フロー（block / loop / br）:
-//   br は ControlFlow.br(n) としてシグナルを呼び出し元へ伝播させる。
-//   block/if: br(0) でブロックを抜ける（前向きジャンプ）
-//   loop:     br(0) でループ先頭に戻る（後ろ向きジャンプ）
-//   より外側のラベルを対象とする br(n>0) は depth を 1 減らして上位へ渡す。
+// Structured control flow (block / loop / br):
+//   br propagates as a ControlFlow.br(n) signal up through callers.
+//   block/if: br(0) exits the block (forward jump)
+//   loop:     br(0) jumps back to the loop head (backward jump)
+//   br(n>0) targeting an outer label is forwarded as br(n-1).
 
 // MARK: - Host Function Types
 
-/// ホスト側が提供する関数の型。
-/// args: 引数値の配列、memory: 読み取り専用の linear memory バイト列。
+/// Type of a host-provided function.
+/// args: argument values, memory: read-only view of linear memory.
 typealias HostFunction = ([Value], [UInt8]) -> [Value]
 
-/// インスタンス化時に渡すホスト側のインポート定義
+/// Import bindings provided by the host at instantiation time
 enum HostImport {
   case function(String, String, HostFunction)  // (module, name, body)
   case memory(String, String, UInt32)          // (module, name, pages)
 }
 
-// br シグナルの伝播に使うファイルスコープの型
+// File-scoped type used to propagate br signals
 private enum ControlFlow {
-  case proceed      // 通常の次命令へ進む
-  case br(UInt32)   // ラベル深さ n へのブランチシグナル
+  case proceed      // advance to the next instruction normally
+  case br(UInt32)   // branch signal targeting label depth n
 }
 
 // MARK: - Interpreter
 
-// HostFunction（クロージャ）を保持するため Sendable には準拠しない。
+// Does not conform to Sendable because HostFunction (a closure) is not Sendable.
 struct WasmInterpreter {
   let module: WasmModule
   let memory: [UInt8]
@@ -38,14 +38,14 @@ struct WasmInterpreter {
 
   // MARK: - Init
 
-  /// module をインスタンス化する。
+  /// Instantiates the module.
   ///
-  /// - hostImports: Wasm モジュールが import する関数・メモリをホスト側から提供する。
-  ///   インポートが宣言されているのに対応する HostImport がない場合は .importNotFound を投げる。
+  /// - hostImports: host-provided functions and memories required by the module's imports.
+  ///   Throws .importNotFound if an import is declared but no matching HostImport is given.
   init(module: WasmModule, hostImports: [HostImport] = []) throws(WasmError) {
     self.module = module
 
-    // インポート順序を保って host 関数を対応付ける
+    // Match host functions to imports, preserving import order
     var funcs: [HostFunction] = []
     for imp in module.imports {
       guard case .function(let fi) = imp else { continue }
@@ -64,7 +64,7 @@ struct WasmInterpreter {
     }
     self.hostFunctions = funcs
 
-    // Memory サイズを決定する（インポート優先、なければローカル定義を使用）
+    // Determine memory size: prefer imported memory, fall back to local memory definition
     var memPageCount: UInt32 = 0
     for imp in module.imports {
       guard case .memory(let mi) = imp else { continue }
@@ -85,7 +85,7 @@ struct WasmInterpreter {
       memPageCount = localMem.min
     }
 
-    // Data section の内容で memory を初期化する（1 ページ = 64 KiB）
+    // Allocate memory and initialize it from data segments (1 page = 64 KiB)
     var mem = [UInt8](repeating: 0, count: Int(memPageCount) * 65536)
     for seg in module.data {
       let start = Int(seg.offset)
@@ -95,7 +95,7 @@ struct WasmInterpreter {
     }
     self.memory = mem
 
-    // Wasm 仕様: start 関数はインスタンス化時に自動実行される
+    // Wasm spec: the start function is called automatically at instantiation
     if let startIdx = module.start {
       _ = try call(functionIndex: Int(startIdx), args: [])
     }
@@ -103,7 +103,7 @@ struct WasmInterpreter {
 
   // MARK: - Public
 
-  /// エクスポート名（UTF-8 バイト列）で関数を呼び出す
+  /// Calls an exported function by name (UTF-8 bytes)
   func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value] {
     guard let export = module.exports.first(where: { $0.nameBytes == nameBytes && $0.kind == .function }) else {
       throw .functionNotFound
@@ -111,16 +111,16 @@ struct WasmInterpreter {
     return try call(functionIndex: Int(export.index), args: args)
   }
 
-  /// 関数インデックス（インポート含む統合インデックス）で関数を呼び出す
+  /// Calls a function by its unified function index (including imports)
   func call(functionIndex: Int, args: [Value]) throws(WasmError) -> [Value] {
     let importedCount = module.importedFunctionCount
 
     if functionIndex < importedCount {
-      // ホスト関数: memory の読み取りアクセスを渡す
+      // Host function: pass a read-only view of memory
       return hostFunctions[functionIndex](args, memory)
     }
 
-    // ローカル関数
+    // Local function
     let localIdx = functionIndex - importedCount
     let typeIndex = Int(module.functions[localIdx])
     let funcType = module.types[typeIndex]
@@ -148,7 +148,7 @@ struct WasmInterpreter {
     return Array(stack.suffix(resultCount))
   }
 
-  /// 命令列を実行し、ControlFlow を返す。
+  /// Executes an instruction sequence and returns a ControlFlow signal.
   private func run(
     _ instructions: [Instruction],
     locals: inout [Value],
@@ -182,7 +182,7 @@ struct WasmInterpreter {
         stack.append(.i32(a == b ? 1 : 0))
 
       case .i32RemU:
-        // 符号なし余り: Int32 のビットパターンを UInt32 として解釈して計算する
+        // Unsigned remainder: reinterpret the Int32 bit patterns as UInt32
         guard stack.count >= 2 else { throw .stackUnderflow }
         guard case .i32(let b) = stack.removeLast(),
               case .i32(let a) = stack.removeLast()
@@ -201,7 +201,7 @@ struct WasmInterpreter {
         stack.append(contentsOf: results)
 
       case .block(_, let inner):
-        // block: br(0) → このブロックを抜ける（前向きジャンプ）
+        // block: br(0) exits the block (forward jump)
         switch try run(inner, locals: &locals, stack: &stack) {
         case .proceed:   break
         case .br(0):     break
@@ -209,7 +209,7 @@ struct WasmInterpreter {
         }
 
       case .loop(_, let inner):
-        // loop: br(0) → ループ先頭に戻る（後ろ向きジャンプ）
+        // loop: br(0) jumps back to the loop head (backward jump)
         loopHead: while true {
           switch try run(inner, locals: &locals, stack: &stack) {
           case .proceed:   break loopHead
@@ -219,7 +219,7 @@ struct WasmInterpreter {
         }
 
       case .ifElse(_, let thenBody, let elseBody):
-        // if/else は block と同じラベル挙動: br(0) でブロックを抜ける
+        // if/else has the same label behavior as block: br(0) exits the if block
         guard !stack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let cond) = stack.removeLast() else { throw .typeMismatch }
         let branch = cond != 0 ? thenBody : elseBody

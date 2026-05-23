@@ -1,9 +1,9 @@
-// Wasm バイナリパーサー
+// Wasm binary parser
 //
-// Wasm バイナリは「セクション」の列で構成される。
-// 各セクションは [id: u8][size: u32(leb128)][content] の形式。
+// A Wasm binary is a sequence of sections.
+// Each section has the format: [id: u8][size: u32(leb128)][content]
 //
-// 参照: https://webassembly.github.io/spec/core/binary/modules.html
+// Reference: https://webassembly.github.io/spec/core/binary/modules.html
 
 struct WasmParser {
   private var stream: BufferStream
@@ -40,7 +40,7 @@ struct WasmParser {
       case 10: code      = try parseCodeSection()
       case 11: data      = try parseDataSection()
       default:
-        // 未知のセクションはサイズ分スキップ（Wasm 仕様: 拡張性のため必須）
+        // Unknown sections are skipped by size (required by the Wasm spec for extensibility)
         for _ in 0..<Int(size) { _ = try readByte() }
       }
     }
@@ -64,11 +64,14 @@ struct WasmParser {
 
   // MARK: - Section Parsers
 
-  /// Type section (id=1): 関数シグネチャの配列
+  /// Type section (id=1): array of function signatures
+  ///
+  /// Format: [count] ([0x60][params][results])*
   private mutating func parseTypeSection() throws(WasmError) -> [FunctionType] {
     let count = try readU32()
     var types: [FunctionType] = []
     for _ in 0..<count {
+      // 0x60 is the functype marker byte
       let marker = try readByte()
       guard marker == 0x60 else { throw .invalidValueType(marker) }
 
@@ -85,9 +88,10 @@ struct WasmParser {
     return types
   }
 
-  /// Import section (id=2): 外部から提供される関数・メモリ等の配列
+  /// Import section (id=2): array of externally provided functions, memories, etc.
   ///
-  /// 関数インポートは関数インデックス空間の先頭を占め、ローカル関数はその後に続く。
+  /// Imported functions occupy the front of the function index space;
+  /// local functions follow after them.
   private mutating func parseImportSection() throws(WasmError) -> [Import] {
     let count = try readU32()
     var imports: [Import] = []
@@ -102,10 +106,10 @@ struct WasmParser {
 
       let kind = try readByte()
       switch kind {
-      case 0x00:  // 関数インポート: type index を読む
+      case 0x00:  // function import: read type index
         let typeIndex = try readU32()
         imports.append(.function(FunctionImport(module: modBytes, name: nameBytes, typeIndex: typeIndex)))
-      case 0x02:  // メモリインポート: limits を読む
+      case 0x02:  // memory import: read limits
         let (min, max) = try parseMemoryLimits()
         imports.append(.memory(MemoryImport(module: modBytes, name: nameBytes, type: MemoryType(min: min, max: max))))
       default:
@@ -115,7 +119,7 @@ struct WasmParser {
     return imports
   }
 
-  /// Memory section (id=5): Linear Memory の定義
+  /// Memory section (id=5): linear memory definitions
   private mutating func parseMemorySection() throws(WasmError) -> [MemoryType] {
     let count = try readU32()
     var memories: [MemoryType] = []
@@ -126,7 +130,7 @@ struct WasmParser {
     return memories
   }
 
-  /// メモリの limits（min と省略可能な max）を読む
+  /// Reads memory limits (min and optional max page count)
   private mutating func parseMemoryLimits() throws(WasmError) -> (min: UInt32, max: UInt32?) {
     let limtype = try readByte()
     let min = try readU32()
@@ -137,7 +141,7 @@ struct WasmParser {
     }
   }
 
-  /// Function section (id=3): 各ローカル関数が参照する type index の配列
+  /// Function section (id=3): type index for each local function
   private mutating func parseFunctionSection() throws(WasmError) -> [UInt32] {
     let count = try readU32()
     var indices: [UInt32] = []
@@ -145,7 +149,9 @@ struct WasmParser {
     return indices
   }
 
-  /// Export section (id=7): 外部公開するシンボルの配列
+  /// Export section (id=7): array of externally visible symbols
+  ///
+  /// Format: [count] ([name_len][name_bytes][kind][index])*
   private mutating func parseExportSection() throws(WasmError) -> [Export] {
     let count = try readU32()
     var exports: [Export] = []
@@ -165,17 +171,22 @@ struct WasmParser {
     return exports
   }
 
-  /// Start section (id=8): インスタンス化時に自動実行する関数インデックス
+  /// Start section (id=8): index of the function to run automatically at instantiation
   private mutating func parseStartSection() throws(WasmError) -> UInt32 {
     return try readU32()
   }
 
-  /// Code section (id=10): 関数本体の配列
+  /// Code section (id=10): array of function bodies
+  ///
+  /// Format: [count] ([body_size][local_decls][instructions... end])*
+  ///
+  /// local_decls are run-length encoded as (count, type) pairs.
+  /// Example: "3 i32s and 1 i64" → [(3, i32), (1, i64)]
   private mutating func parseCodeSection() throws(WasmError) -> [FunctionBody] {
     let count = try readU32()
     var bodies: [FunctionBody] = []
     for _ in 0..<count {
-      _ = try readU32()  // body_size: このインタプリタでは使わない
+      _ = try readU32()  // body_size: unused in this interpreter
 
       let localDeclCount = try readU32()
       var locals: [ValueType] = []
@@ -191,17 +202,17 @@ struct WasmParser {
     return bodies
   }
 
-  /// Data section (id=11): memory への初期データセグメントの配列
+  /// Data section (id=11): array of initial data segments for linear memory
   ///
-  /// MVP では Active セグメント（flags=0）のみ対応する。
-  /// 形式: flags=0, i32.const offset end, データバイト列
+  /// Only active segments (flags=0) are supported (MVP).
+  /// Format: flags=0, i32.const offset end, data bytes
   private mutating func parseDataSection() throws(WasmError) -> [DataSegment] {
     let count = try readU32()
     var segments: [DataSegment] = []
     for _ in 0..<count {
       _ = try readU32()  // flags: 0 = active, memory index 0
 
-      // オフセット定数式: i32.const <value> end
+      // Constant offset expression: i32.const <value> end
       let constOp = try readByte()
       guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
       let offset = try readI32()
@@ -218,16 +229,16 @@ struct WasmParser {
 
   // MARK: - Instruction Parsing
 
-  /// 0x0B (end) を読むまで命令列をパースして返す
+  /// Parses instructions until 0x0B (end) and returns them
   private mutating func parseInstructions() throws(WasmError) -> [Instruction] {
     let (instructions, _) = try parseBody()
     return instructions
   }
 
-  /// 0x0B (end) または 0x05 (else) を読むまで命令列をパースして返す。
-  /// 戻り値の Bool は「else で止まった」場合に true。
+  /// Parses instructions until 0x0B (end) or 0x05 (else).
+  /// Returns the instructions and a Bool that is true if parsing stopped at else.
   ///
-  /// if 命令のパースで else/end どちらで止まったかを区別するために使う。
+  /// Used when parsing if to distinguish whether an else clause is present.
   private mutating func parseBody() throws(WasmError) -> ([Instruction], stoppedAtElse: Bool) {
     var instructions: [Instruction] = []
     while true {
@@ -247,7 +258,6 @@ struct WasmParser {
         let (thenBody, hadElse) = try parseBody()
         let elseBody: [Instruction]
         if hadElse {
-          // else の後を end まで続けてパース
           let (eb, _) = try parseBody()
           elseBody = eb
         } else {
@@ -255,10 +265,10 @@ struct WasmParser {
         }
         instructions.append(.ifElse(bt, thenBody: thenBody, elseBody: elseBody))
 
-      case 0x05:  // else: then-body の終端
+      case 0x05:  // else: terminates the then-body
         return (instructions, stoppedAtElse: true)
 
-      case 0x0B:  // end: ブロック/関数の終端
+      case 0x0B:  // end: terminates a block or function
         return (instructions, stoppedAtElse: false)
 
       case 0x0C:  // br
@@ -276,7 +286,7 @@ struct WasmParser {
       case 0x21:  // local.set
         instructions.append(.localSet(try readU32()))
 
-      case 0x41:  // i32.const
+      case 0x41:  // i32.const (signed LEB128)
         instructions.append(.i32Const(try readI32()))
 
       case 0x46:  // i32.eq

@@ -29,7 +29,7 @@ struct WasmParserTests {
     let module = try parseModule("i32-add")
     #expect(module.code.count == 1)
     #expect(module.code[0].locals.isEmpty)
-    // end はパーサーの終端マーカーであり命令として格納しない
+    // end is a parser terminator and is not stored as an instruction
     #expect(module.code[0].instructions.count == 3)
   }
 
@@ -48,11 +48,11 @@ struct WasmParserTests {
   @Test func parsesLoopInstructions() throws {
     let module = try parseModule("loop")
     let body = module.code[0]
-    // ローカル変数: i32 が 1 つ
+    // Locals: one i32
     #expect(body.locals == [.i32])
-    // トップレベル命令: i32.const / local.set / loop の 3 つ
+    // Top-level instructions: i32.const / local.set / loop = 3
     #expect(body.instructions.count == 3)
-    // 3 番目が loop であり、中に block が 1 つ入っている
+    // The third instruction is a loop containing one block
     guard case .loop(_, let loopBody) = body.instructions[2] else {
       Issue.record("Expected loop instruction at index 2")
       return
@@ -62,8 +62,9 @@ struct WasmParserTests {
       Issue.record("Expected block instruction inside loop")
       return
     }
-    // block 内の命令: local.get / i32.const / i32.add / local.set /
-    //                 local.get / i32.const / i32.eq / br_if / br = 9 つ
+    // Instructions inside the block:
+    // local.get / i32.const / i32.add / local.set /
+    // local.get / i32.const / i32.eq / br_if / br = 9
     #expect(blockBody.count == 9)
   }
 
@@ -80,8 +81,6 @@ struct WasmParserTests {
 
 @Suite("WasmInterpreter")
 struct WasmInterpreterTests {
-  // テストでは nameBytes を直接組み立てる。
-  // "i32-add".utf8 のバイト変換は照合ではなくテストデータ準備のためなので問題ない。
   private let i32AddName = Array("i32-add".utf8)
 
   @Test func i32Add() throws {
@@ -101,7 +100,7 @@ struct WasmInterpreterTests {
   @Test func i32AddWrapsAround() throws {
     let module = try parseModule("i32-add")
     let interp = try WasmInterpreter(module: module)
-    // Wasm の i32.add はオーバーフロー時にラップアラウンドする
+    // Wasm i32.add wraps around on overflow
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(Int32.max), .i32(1)])
     #expect(result == [.i32(Int32.min)])
   }
@@ -124,7 +123,7 @@ struct WasmInterpreterTests {
 
   @Test func instantiatesWithStart() throws {
     let module = try parseModule("memory")
-    // start 関数（() -> ()）がインスタンス化時にエラーなく実行される
+    // The start function (() -> ()) should run without error at instantiation
     _ = try WasmInterpreter(module: module)
   }
 

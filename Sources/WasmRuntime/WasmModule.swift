@@ -1,4 +1,4 @@
-// WebAssembly バイナリパーサー・インタプリタで使うコアデータ型
+// Core data types for the Wasm binary parser and interpreter
 
 // MARK: - Value Types
 
@@ -11,13 +11,13 @@ enum ValueType: UInt8, Sendable {
 
 // MARK: - Block Type
 
-/// block / loop / if の結果型
+/// Result type of a block / loop / if instruction
 enum BlockType: Sendable {
-  case void              // 0x40: 結果なし
-  case value(ValueType)  // 0x7F 等: 結果1つ
+  case void              // 0x40: no result
+  case value(ValueType)  // 0x7F etc.: single result
 }
 
-// MARK: - Function Type (シグネチャ)
+// MARK: - Function Type (signature)
 
 struct FunctionType: Sendable {
   let params: [ValueType]
@@ -31,18 +31,18 @@ struct FunctionType: Sendable {
 
 // MARK: - Instructions
 
-/// このインタプリタが対応する命令セット
+/// Instruction set supported by this interpreter
 ///
-/// block/loop/if は子命令を持つため indirect case を使用する。
-/// macOS フェーズでは indirect（ヒープ確保）を許容し、正確さを優先する。
+/// block/loop/if hold child instructions, so indirect cases are used.
+/// In the macOS phase, indirect (heap allocation) is acceptable in favor of correctness.
 enum Instruction: Sendable {
   case localGet(UInt32)                                                         // 0x20
   case localSet(UInt32)                                                         // 0x21
   case i32Const(Int32)                                                          // 0x41
   case i32Add                                                                   // 0x6A
   case i32Eq                                                                    // 0x46
-  case i32RemU                                                                  // 0x70: 符号なし余り
-  case call(UInt32)                                                             // 0x10: 関数呼び出し
+  case i32RemU                                                                  // 0x70: unsigned remainder
+  case call(UInt32)                                                             // 0x10: function call
   indirect case block(BlockType, [Instruction])                                 // 0x02
   indirect case loop(BlockType, [Instruction])                                  // 0x03
   indirect case ifElse(BlockType, thenBody: [Instruction], elseBody: [Instruction]) // 0x04
@@ -53,7 +53,7 @@ enum Instruction: Sendable {
 // MARK: - Function Body
 
 struct FunctionBody: Sendable {
-  /// 関数内で宣言されたローカル変数の型（引数とは別）
+  /// Local variable types declared inside the function (separate from parameters)
   let locals: [ValueType]
   let instructions: [Instruction]
 
@@ -65,29 +65,29 @@ struct FunctionBody: Sendable {
 
 // MARK: - Memory
 
-/// Wasm Linear Memory の制限（ページ数、1 ページ = 64 KiB）
+/// Limits for a Wasm linear memory (in pages; 1 page = 64 KiB)
 struct MemoryType: Sendable, Equatable {
   let min: UInt32
-  let max: UInt32?  // nil = 無制限
+  let max: UInt32?  // nil = unbounded
 }
 
 // MARK: - Imports
 
-/// Import section の関数インポートエントリ
+/// A function import entry from the Import section
 struct FunctionImport: Sendable {
-  let module: [UInt8]    // モジュール名（UTF-8 バイト列）
-  let name: [UInt8]      // フィールド名（UTF-8 バイト列）
-  let typeIndex: UInt32  // Type section のインデックス
+  let module: [UInt8]    // module name (UTF-8 bytes)
+  let name: [UInt8]      // field name (UTF-8 bytes)
+  let typeIndex: UInt32  // index into the Type section
 }
 
-/// Import section のメモリインポートエントリ
+/// A memory import entry from the Import section
 struct MemoryImport: Sendable {
   let module: [UInt8]
   let name: [UInt8]
   let type: MemoryType
 }
 
-/// Import section の各エントリ（関数とメモリのみ対応）
+/// An entry in the Import section (only function and memory are supported)
 enum Import: Sendable {
   case function(FunctionImport)
   case memory(MemoryImport)
@@ -95,10 +95,10 @@ enum Import: Sendable {
 
 // MARK: - Data Segments
 
-/// Data section の初期化セグメント（Active 形式のみ対応）
+/// An initialization segment from the Data section (active form only)
 struct DataSegment: Sendable {
-  let offset: Int32   // memory への書き込み開始位置
-  let bytes: [UInt8]  // 書き込むデータ
+  let offset: Int32   // write offset into linear memory
+  let bytes: [UInt8]  // data to write
 }
 
 // MARK: - Exports
@@ -111,9 +111,9 @@ enum ExportKind: UInt8, Sendable {
 }
 
 struct Export: Sendable {
-  // エクスポート名を UTF-8 バイト列として保持する。
-  // String の == 比較は Unicode 正規化テーブルを要求するため、
-  // 名前の照合は nameBytes どうしのバイト比較で行う。
+  // The export name is stored as UTF-8 bytes.
+  // Name matching uses byte comparison rather than String == to avoid
+  // pulling in Unicode normalization tables.
   let nameBytes: [UInt8]
   let kind: ExportKind
   let index: UInt32
@@ -124,17 +124,17 @@ struct Export: Sendable {
     self.index = index
   }
 
-  // デバッグ・表示用。比較には使わず nameBytes を用いること。
+  // For debugging/display only. Use nameBytes for comparisons.
   var name: String { String(decoding: nameBytes, as: UTF8.self) }
 }
 
 // MARK: - Module
 
-/// パース済みの Wasm モジュール。セクション単位でデータを保持する。
+/// A parsed Wasm module. Data is stored per section.
 struct WasmModule: Sendable {
   let types: [FunctionType]    // Type section
   let imports: [Import]        // Import section
-  let functions: [UInt32]      // Function section: 各ローカル関数が参照する type index
+  let functions: [UInt32]      // Function section: type index for each local function
   let memories: [MemoryType]   // Memory section
   let exports: [Export]        // Export section
   let code: [FunctionBody]     // Code section
@@ -161,8 +161,8 @@ struct WasmModule: Sendable {
     self.data = data
   }
 
-  /// Import section 中の関数インポート数。
-  /// 関数インデックス空間は「インポート関数（0..N-1）」「ローカル関数（N..）」の順になる。
+  /// Number of imported functions in the Import section.
+  /// The function index space is ordered as: imported functions (0..N-1), local functions (N..).
   var importedFunctionCount: Int {
     imports.reduce(0) { n, imp in
       if case .function = imp { return n + 1 }
@@ -170,7 +170,7 @@ struct WasmModule: Sendable {
     }
   }
 
-  /// 関数インデックス（インポート含む統合インデックス）から FunctionType を返す
+  /// Returns the FunctionType for the given function index (including imports)
   func functionType(at index: Int) -> FunctionType {
     var funcImports: [FunctionImport] = []
     for imp in imports {
@@ -186,7 +186,7 @@ struct WasmModule: Sendable {
 
 // MARK: - Runtime Value
 
-/// 実行時にスタックや locals が保持する値
+/// A value held on the stack or in locals at runtime
 enum Value: Sendable, Equatable {
   case i32(Int32)
 }

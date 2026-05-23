@@ -1,22 +1,22 @@
-/// パーサーとインタプリタが共通で使うエラー型
+/// Error type shared by the parser and interpreter
 enum WasmError: Error, Equatable, Sendable {
-  // --- パーサー ---
-  case invalidMagic                     // マジックバイトが \0asm でない
-  case invalidVersion                   // バージョンが 1 でない
-  case unexpectedEnd                    // バイト列が途中で終了
-  case invalidValueType(UInt8)          // 未知の value type バイト
-  case invalidExportKind(UInt8)         // 未知の export kind バイト
-  case invalidLimitType(UInt8)          // 未知の limit type バイト（memory/table）
-  case invalidImportKind(UInt8)         // 未知の import kind バイト
-  case invalidInstruction(UInt8)        // 未知の opcode
-  case leb128Error(LEB128Error)         // LEB128 デコード失敗
+  // --- Parser ---
+  case invalidMagic                     // magic bytes are not \0asm
+  case invalidVersion                   // version is not 1
+  case unexpectedEnd                    // byte stream ended prematurely
+  case invalidValueType(UInt8)          // unknown value type byte
+  case invalidExportKind(UInt8)         // unknown export kind byte
+  case invalidLimitType(UInt8)          // unknown limit type byte (memory/table)
+  case invalidImportKind(UInt8)         // unknown import kind byte
+  case invalidInstruction(UInt8)        // unknown opcode
+  case leb128Error(LEB128Error)         // LEB128 decode failure
 
-  // --- インタプリタ ---
-  case functionNotFound                 // 指定名の export が存在しない
-  case argumentCountMismatch            // 引数の個数が型シグネチャと不一致
-  case stackUnderflow                   // 必要な値がスタックにない
-  case typeMismatch                     // スタック上の値の型が命令と不一致
-  case importNotFound                   // ホスト側が提供していない import がある
-  case memoryAccessOutOfBounds          // memory へのアクセスが範囲外
-  case divisionByZero                   // 0 除算（rem_u など）
+  // --- Interpreter ---
+  case functionNotFound                 // no export with the given name exists
+  case argumentCountMismatch            // argument count does not match the type signature
+  case stackUnderflow                   // required value is not on the stack
+  case typeMismatch                     // value on the stack has the wrong type for the instruction
+  case importNotFound                   // host does not provide a required import
+  case memoryAccessOutOfBounds          // memory access is out of range
+  case divisionByZero                   // division by zero (e.g. rem_u)
 }

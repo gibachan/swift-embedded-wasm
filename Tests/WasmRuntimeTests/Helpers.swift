@@ -5,10 +5,10 @@ enum TestFixtureError: Error {
   case wasmFileNotFound(String)
 }
 
-/// Bundle.module 経由で wasm/ ディレクトリの .wasm ファイルを読み込む。
+/// Loads a .wasm file from the wasm/ directory via Bundle.module.
 ///
-/// Package.swift の resources: [.copy("wasm")] によりビルド時にバンドルへコピーされる。
-/// パス計算が不要で、SPM のリソース管理に従う。
+/// Files are copied into the test bundle at build time via
+/// resources: [.copy("wasm")] in Package.swift.
 func loadWasm(_ name: String) throws -> [UInt8] {
   guard let url = Bundle.module.url(forResource: name, withExtension: "wasm", subdirectory: "wasm") else {
     throw TestFixtureError.wasmFileNotFound(name)
@@ -16,12 +16,12 @@ func loadWasm(_ name: String) throws -> [UInt8] {
   return try [UInt8](Data(contentsOf: url))
 }
 
-/// ファイル名から wasm を読み込んでパースする
+/// Loads a .wasm file by name and parses it into a WasmModule
 func parseModule(_ name: String) throws -> WasmModule {
   try parseBytes(try loadWasm(name))
 }
 
-/// バイト列から直接パースする（バイト改ざんが必要なテスト用）
+/// Parses a raw byte array directly (used in tests that manipulate bytes)
 func parseBytes(_ bytes: [UInt8]) throws -> WasmModule {
   try bytes.withUnsafeBufferPointer { buffer in
     var parser = WasmParser(buffer)
