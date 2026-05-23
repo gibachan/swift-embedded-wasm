@@ -155,7 +155,7 @@ test: swift-test compile
 
 swift-test:
 	@echo "--- [1/2] swift test (macOS) ---"
-	@swift test
+	@swift test -Xswiftc -DMACOS
 	@echo ""
 
 # ---------------------------------------------------------------------------

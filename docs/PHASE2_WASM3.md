@@ -14,6 +14,13 @@ Wasm3 は組み込み向け Wasm Runtime として以下の特徴を持つ。
 - **小型**: MCU に収まるコードサイズ
 - **Interpreter 方式**: JIT 不要で移植性が高い
 - **MCU 実績が豊富**: ESP32 / STM32 など多数の実績あり
+
+> **MCU（Microcontroller Unit）とは**  
+> CPU・RAM・Flash・ペリフェラル（GPIO / SPI / I2C など）を 1 チップに集積した小型コンピュータ。  
+> 本プロジェクトの Raspberry Pi Pico (RP2040/RP2350) がこれに該当する。  
+> RAM は数百 KB、Flash は数 MB オーダーで、OS なしのベアメタル動作が基本。  
+> 「MCU に収まる」= Runtime 全体が数百 KB の Flash に収まることを意味する。
+
 - **実装が比較的読みやすい**: C で書かれており構造が明快
 - **Portable**: プラットフォーム依存が少ない
 
@@ -28,15 +35,19 @@ Wasm3 は組み込み向け Wasm Runtime として以下の特徴を持つ。
 ソース: `m3_env.h`, `m3_function.h`
 
 ```text
-M3Environment
-  └ M3Runtime
-      ├ M3Memory        (Linear Memory: Wasm の線形メモリ空間)
-      ├ M3CodePage[]    (コンパイル済みオペレーション列)
-      └ M3Module[]      (リンクリストで複数モジュールを保持)
-          ├ M3FuncType[]    (関数シグネチャの重複排除済みリスト)
-          ├ M3Function[]    (関数定義)
-          ├ M3Global[]      (グローバル変数)
-          └ M3DataSegment[] (データセグメント)
+M3Environment  ← 複数の Runtime から共有される設定オブジェクト
+  ├ IM3FuncType funcTypes       (重複排除済み FuncType のリンクリスト)
+  └ M3CodePage* pagesReleased   (解放済み CodePage のキャッシュ)
+
+M3Runtime  ← Runtime が Environment を参照する（逆ではない）
+  ├ IM3Environment environment  (↑ Environment への参照)
+  ├ M3Memory                    (Linear Memory: Wasm の線形メモリ空間)
+  ├ M3CodePage[]                (コンパイル済みオペレーション列)
+  └ M3Module[]                  (リンクリストで複数モジュールを保持)
+      ├ M3FuncType[]    (関数シグネチャの重複排除済みリスト)
+      ├ M3Function[]    (関数定義)
+      ├ M3Global[]      (グローバル変数)
+      └ M3DataSegment[] (データセグメント)
 ```
 
 各層の役割:
@@ -192,7 +203,74 @@ _sp + numRetAndArgSlots + numLocalBytes : 定数スロット（Entry で memcpy�
 
 ---
 
-### 6. CodePage とコンパイルフロー
+### 6. バイナリパーサー
+
+ソース: `m3_parse.c`
+
+エントリーポイント `m3_ParseModule()` が Wasm バイナリを受け取り、セクションごとに専用パーサーに委譲する。
+
+**バイナリ先頭の検証:**
+```c
+magic   == 0x6d736100  // "\0asm"（リトルエンディアン）
+version == 1           // MVP
+```
+
+**セクション → パーサーのディスパッチテーブル:**
+
+| ID | セクション | 処理内容 |
+|---|---|---|
+| 1 | Type | 関数シグネチャ（M3FuncType）を構築し Environment に登録 |
+| 2 | Import | 外部モジュールからの関数・メモリ・グローバルのインポート宣言 |
+| 3 | Function | 関数ごとのシグネチャインデックスを記録 |
+| 5 | Memory | Linear Memory のページ数・上限を記録 |
+| 6 | Global | グローバル変数の型・初期化式を記録 |
+| 7 | Export | 関数・グローバル・メモリのエクスポート名を M3Function などに付与 |
+| 8 | Start | スタート関数のインデックスを記録 |
+| 9 | Element | テーブル初期化セクション（バイト範囲を保存） |
+| 10 | Code | 関数本体の**バイト範囲を記録するだけ**（コンパイルはしない） |
+| 11 | Data | データセグメントの初期化式とデータ範囲を記録 |
+| 0 | Custom | "name" セクションなら関数名をパース、他はカスタムハンドラへ |
+
+**重要: Code セクションは「バイト範囲の記録」のみ**
+
+```c
+// ParseSection_Code（m3_parse.c:391-395）
+func->wasm    = start;    // バイトコード開始アドレス
+func->wasmEnd = i_bytes;  // バイトコード終端アドレス
+// → コンパイルは初回呼び出し時に Lazy 実行（op_Compile が担当）
+```
+
+これにより、ロード時間とメモリ使用量を最小化している。
+
+**バリデーションについて:**
+
+wasm3 には Wasm 仕様が要求する独立したバリデーションフェーズは存在しない。
+
+| フェーズ | 実施内容 |
+|---|---|
+| パース時 | 構造チェックのみ（マジックナンバー・セクション順序・インデックス範囲・上限値） |
+| コンパイル時 | `ValidateBlockEnd()` は実装がコメントアウトされており実質スタブ |
+| 型チェック | 未実装（TODO コメントが残っている） |
+
+理由: 組み込み環境では RAM/コードサイズの制約が厳しく、信頼された入力（開発者が制御するバイナリ）を前提とするため。
+
+**Swift 実装への示唆:** macOS ビルドと Pico ビルドでバリデーションの深度を切り替えられる設計が有効。
+macOS では型チェックあり（開発時のデバッグ支援）、Pico では構造チェックのみ（省メモリ）。
+
+**LEB128 エンコーディング:**
+
+Wasm バイナリでは整数を LEB128（可変長エンコード）で表現する。
+`ReadLEB_u32()` / `ReadLEB_i7()` などで逐次デコードしながらパースする。
+
+```text
+LEB128 の例: 300 (0x12C) → 0xAC 0x02
+  - 各バイトの下位7ビットが値、最上位ビットが「続く」フラグ
+  - 組み込み環境でも固定長フィールドより小さくなるケースが多い
+```
+
+---
+
+### 7. CodePage とコンパイルフロー
 
 ソース: `m3_env.h`, `m3_code.h`
 
