@@ -59,6 +59,38 @@ Read docs/OVERVIEW.md
 
 ---
 
+## Wasm3 調査から得た設計指針（Embedded Swift 向け）
+
+`docs/PHASE2_WASM3.md` の調査結果のうち、Embedded Swift インタプリタ実装に有効な点を以下にまとめる。
+
+### 採用する設計
+
+| 項目 | 方針 | 根拠（PHASE2 Section） |
+|---|---|---|
+| **インタプリタループ** | `switch` ベースのシンプルな実装 | Threaded Code（関数ポインタ配列 + tail call）は Embedded Swift で動作が保証されない（F） |
+| **値の型表現** | `enum WasmValue { case i32(Int32); case i64(Int64); ... }` | C の union + type フラグより型安全。Embedded Swift でも enum は使用可能（C） |
+| **エラー処理** | typed throws + `enum WasmError` | `M3Result = const char*` より型安全。Embedded Swift でも throws は使用可能（B） |
+| **メモリアクセス** | `UnsafeBufferPointer` / `UnsafeMutableRawBufferPointer` | ヒープアロケーション不要。Linear Memory の境界チェックも明示的に書ける（E） |
+| **データ構造** | `struct` 中心の値型設計 | ヒープ確保を避けるため class より struct を優先（A） |
+| **パーサー** | Code section はバイト範囲のみ記録し、実行時に逐次デコード | Wasm3 と同じ遅延評価方式。メモリ使用量を最小化（PHASE2 Section 6） |
+
+### Embedded Swift では使えない／注意が必要な設計
+
+| 項目 | 理由 | 代替案 |
+|---|---|---|
+| `actor` | Embedded Swift は Swift Concurrency ランタイム非対応 | シングルスレッド前提の `struct` で設計 |
+| ヒープ確保クロージャ | Embedded Swift でクロージャはスタック上に収まるもののみ使用可能 | Host Function は `@convention(c)` 関数ポインタ + 静的テーブルで登録 |
+| `Array<T>`（動的確保） | `malloc` が使えない環境では動的配列不可 | 固定サイズバッファ / `UnsafeBufferPointer` で代替。macOS フェーズは `Array` で先行実装してよい |
+| `String` | Embedded Swift では `String` が使えない | エクスポート名の比較はバイト列のまま行う（macOS フェーズは `String` で先行実装してよい） |
+
+### macOS フェーズと Embedded フェーズの切り替え方針
+
+- macOS フェーズ（現在）: `Array` / `String` / `throws` を自由に使い、正確さを優先する
+- Embedded フェーズ（Phase 5〜）: 動的確保箇所を固定サイズバッファに置き換えていく
+- バリデーション深度も切り替え可能に設計する（macOS: 型チェックあり、Pico: 構造チェックのみ）
+
+---
+
 ## 参照リソース
 
 ### wasm3（ローカル）

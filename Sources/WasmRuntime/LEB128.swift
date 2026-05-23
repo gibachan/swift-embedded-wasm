@@ -9,7 +9,7 @@
 // 参照:
 //   https://webassembly.github.io/spec/core/binary/values.html#integers
 
-public enum LEB128Error: Error {
+public enum LEB128Error: Error, Equatable {
     // 値が型のビット幅を超える（例: UInt32 に 5 バイト目に余分なビットがある）
     case overflow
     // Wasm 仕様違反: 冗長なエンコード（末尾に不要バイトが存在する）
