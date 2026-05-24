@@ -54,30 +54,28 @@ func attWriteCallback(
 // The loop logic lives in WASM; Swift provides the low-level blink primitive as
 // a host import.
 func blinkLoop(count: Int32) {
-    withUnsafeBytes(of: &blinkLoopWasm) { raw in
-        let buf = UnsafeBufferPointer(
-            start: raw.baseAddress!.assumingMemoryBound(to: UInt8.self),
-            count: blinkLoopWasmLen
-        )
-        var parser = WasmParser(buf)
-        do throws(WasmError) {
-            let module = try parser.parse()
-            let hostImports: [HostImport] = [
-                .function("env", "blink", { _, _ in
-                    cyw43_arch_gpio_put(ledPin, true)
-                    sleep_ms(300)
-                    cyw43_arch_gpio_put(ledPin, false)
-                    sleep_ms(300)
-                    return []
-                }),
-            ]
-            // callExport(nameBytes:) requires String comparison; avoid it in Embedded.
-            // Function index space: 0 = imported blink, 1 = local blink_loop.
-            var interp = try WasmInterpreter(module: module, hostImports: hostImports)
-            _ = try interp.call(functionIndex: 1, args: [.i32(count)])
-        } catch {
-            // On Wasm error, leave the LED unchanged
-        }
+    let buf = UnsafeBufferPointer<UInt8>(
+        start: blink_loop_wasm_ptr(),
+        count: Int(blink_loop_wasm_len())
+    )
+    var parser = WasmParser(buf)
+    do throws(WasmError) {
+        let module = try parser.parse()
+        let hostImports: [HostImport] = [
+            .function("env", "blink", { _, _ in
+                cyw43_arch_gpio_put(ledPin, true)
+                sleep_ms(300)
+                cyw43_arch_gpio_put(ledPin, false)
+                sleep_ms(300)
+                return []
+            }),
+        ]
+        // callExport(nameBytes:) requires String comparison; avoid it in Embedded.
+        // Function index space: 0 = imported blink, 1 = local blink_loop.
+        var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+        _ = try interp.call(functionIndex: 1, args: [.i32(count)])
+    } catch {
+        // On Wasm error, leave the LED unchanged
     }
 }
 

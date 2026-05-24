@@ -1,0 +1,7 @@
+    .section .rodata
+    .global blink_loop_wasm_start
+    .balign 4
+blink_loop_wasm_start:
+    .incbin "@BLINK_LOOP_WASM_PATH@"
+    .global blink_loop_wasm_end
+blink_loop_wasm_end:
