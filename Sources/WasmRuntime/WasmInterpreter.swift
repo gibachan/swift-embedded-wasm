@@ -45,16 +45,17 @@ struct WasmInterpreter {
   init(module: WasmModule, hostImports: [HostImport] = []) throws(WasmError) {
     self.module = module
 
-    // Match host functions to imports, preserving import order
+    // Match host functions to imports, preserving import order.
+    // Compare as UTF8 byte sequences (fi.module/fi.name are [UInt8]; m/n are String).
+    // String == triggers Unicode normalization (NFC) which is unavailable in Embedded Swift,
+    // so use elementsEqual against the raw utf8 view instead.
     var funcs: [HostFunction] = []
     for imp in module.imports {
       guard case .function(let fi) = imp else { continue }
-      let modStr = String(decoding: fi.module, as: UTF8.self)
-      let nameStr = String(decoding: fi.name, as: UTF8.self)
       var found = false
       for hi in hostImports {
         guard case .function(let m, let n, let body) = hi else { continue }
-        if m == modStr && n == nameStr {
+        if fi.module.elementsEqual(m.utf8) && fi.name.elementsEqual(n.utf8) {
           funcs.append(body)
           found = true
           break
@@ -68,12 +69,10 @@ struct WasmInterpreter {
     var memPageCount: UInt32 = 0
     for imp in module.imports {
       guard case .memory(let mi) = imp else { continue }
-      let modStr = String(decoding: mi.module, as: UTF8.self)
-      let nameStr = String(decoding: mi.name, as: UTF8.self)
       var found = false
       for hi in hostImports {
         guard case .memory(let m, let n, let pages) = hi else { continue }
-        if m == modStr && n == nameStr {
+        if mi.module.elementsEqual(m.utf8) && mi.name.elementsEqual(n.utf8) {
           memPageCount = max(memPageCount, pages)
           found = true
           break
