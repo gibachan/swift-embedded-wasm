@@ -68,6 +68,31 @@ struct WasmParserTests {
     #expect(blockBody.count == 9)
   }
 
+  @Test func parsesTableSection() throws {
+    let module = try parseModule("table")
+    #expect(module.tables.count == 1)
+    #expect(module.tables[0].refType == .funcRef)
+    #expect(module.tables[0].min == 4)
+    #expect(module.tables[0].max == nil)
+  }
+
+  @Test func parsesGlobalSection() throws {
+    let module = try parseModule("table")
+    #expect(module.globals.count == 1)
+    #expect(module.globals[0].type.valueType == .i32)
+    #expect(module.globals[0].type.mutability == .mutable)
+    #expect(module.globals[0].initValue == .i32(0))
+  }
+
+  @Test func parsesElementSection() throws {
+    let module = try parseModule("table")
+    #expect(module.elements.count == 1)
+    #expect(module.elements[0].tableIndex == 0)
+    #expect(module.elements[0].offset == 0)
+    // 4 entries: js.increment(0), js.decrement(1), increment(2), decrement(3)
+    #expect(module.elements[0].functionIndices == [0, 1, 2, 3])
+  }
+
   @Test func rejectsInvalidMagic() throws {
     var bad = try loadWasm("i32-add")
     bad[0] = 0xFF
@@ -85,21 +110,21 @@ struct WasmInterpreterTests {
 
   @Test func i32Add() throws {
     let module = try parseModule("i32-add")
-    let interp = try WasmInterpreter(module: module)
+    var interp = try WasmInterpreter(module: module)
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(3), .i32(4)])
     #expect(result == [.i32(7)])
   }
 
   @Test func i32AddWithNegatives() throws {
     let module = try parseModule("i32-add")
-    let interp = try WasmInterpreter(module: module)
+    var interp = try WasmInterpreter(module: module)
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(-10), .i32(3)])
     #expect(result == [.i32(-7)])
   }
 
   @Test func i32AddWrapsAround() throws {
     let module = try parseModule("i32-add")
-    let interp = try WasmInterpreter(module: module)
+    var interp = try WasmInterpreter(module: module)
     // Wasm i32.add wraps around on overflow
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(Int32.max), .i32(1)])
     #expect(result == [.i32(Int32.min)])
@@ -107,7 +132,7 @@ struct WasmInterpreterTests {
 
   @Test func throwsOnUnknownExport() throws {
     let module = try parseModule("i32-add")
-    let interp = try WasmInterpreter(module: module)
+    var interp = try WasmInterpreter(module: module)
     #expect(throws: WasmError.functionNotFound) {
       try interp.callExport(nameBytes: Array("nonexistent".utf8), args: [])
     }
@@ -115,7 +140,7 @@ struct WasmInterpreterTests {
 
   @Test func throwsOnArgumentCountMismatch() throws {
     let module = try parseModule("i32-add")
-    let interp = try WasmInterpreter(module: module)
+    var interp = try WasmInterpreter(module: module)
     #expect(throws: WasmError.argumentCountMismatch) {
       try interp.callExport(nameBytes: i32AddName, args: [.i32(1)])
     }
@@ -129,7 +154,7 @@ struct WasmInterpreterTests {
 
   @Test func executesLoop() throws {
     let module = try parseModule("loop")
-    let interp = try WasmInterpreter(module: module)
+    var interp = try WasmInterpreter(module: module)
     let result = try interp.callExport(nameBytes: Array("loop_test".utf8), args: [])
     #expect(result.isEmpty)
   }
@@ -154,7 +179,7 @@ struct WasmInterpreterTests {
       .memory("env", "buffer", 1),
     ]
 
-    let interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
     _ = try interp.callExport(nameBytes: Array("fizzbuzz".utf8), args: [.i32(16)])
 
     #expect(output == [
@@ -174,9 +199,37 @@ struct WasmInterpreterTests {
       }),
     ]
 
-    let interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
     _ = try interp.callExport(nameBytes: Array("blink_loop".utf8), args: [.i32(5)])
     #expect(blinkCount == 5)
+  }
+
+  @Test func tableGlobalIncrementDecrement() throws {
+    let module = try parseModule("table")
+    // Provide the imported host functions (their return values are unused in this test;
+    // they're in the element segment but never called via call_indirect here)
+    let hostImports: [HostImport] = [
+      .function("js", "increment", { _, _ in [.i32(0)] }),
+      .function("js", "decrement", { _, _ in [.i32(0)] }),
+    ]
+    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+
+    // global $i starts at 0
+    // increment: $i = 0 + 1 = 1, returns 1
+    let r1 = try interp.callExport(nameBytes: Array("increment".utf8), args: [])
+    #expect(r1 == [.i32(1)])
+
+    // increment: $i = 1 + 1 = 2, returns 2
+    let r2 = try interp.callExport(nameBytes: Array("increment".utf8), args: [])
+    #expect(r2 == [.i32(2)])
+
+    // decrement: $i = 2 - 1 = 1, returns 1
+    let r3 = try interp.callExport(nameBytes: Array("decrement".utf8), args: [])
+    #expect(r3 == [.i32(1)])
+
+    // decrement: $i = 1 - 1 = 0, returns 0
+    let r4 = try interp.callExport(nameBytes: Array("decrement".utf8), args: [])
+    #expect(r4 == [.i32(0)])
   }
 
   @Test func blinkLoopWithZeroDoesNotBlink() throws {
@@ -190,7 +243,7 @@ struct WasmInterpreterTests {
       }),
     ]
 
-    let interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
     _ = try interp.callExport(nameBytes: Array("blink_loop".utf8), args: [.i32(0)])
     #expect(blinkCount == 0)
   }

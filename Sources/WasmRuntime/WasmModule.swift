@@ -29,6 +29,49 @@ struct FunctionType: Sendable {
   }
 }
 
+// MARK: - Reference Types
+
+enum RefType: UInt8, Sendable {
+  case funcRef   = 0x70
+  case externRef = 0x6F
+}
+
+// MARK: - Table
+
+struct TableType: Sendable {
+  let refType: RefType
+  let min: UInt32
+  let max: UInt32?
+}
+
+// MARK: - Globals
+
+enum GlobalMutability: UInt8, Sendable {
+  case immutable = 0x00
+  case mutable   = 0x01
+}
+
+struct GlobalType: Sendable {
+  let valueType: ValueType
+  let mutability: GlobalMutability
+}
+
+/// A global variable definition from the Global section.
+/// initValue is the result of evaluating the (constant) init expression.
+struct GlobalDef: Sendable {
+  let type: GlobalType
+  let initValue: Value
+}
+
+// MARK: - Element Segments
+
+/// An active element segment (flags=0) that initializes table entries at instantiation.
+struct ElementSegment: Sendable {
+  let tableIndex: UInt32
+  let offset: Int32
+  let functionIndices: [UInt32]
+}
+
 // MARK: - Instructions
 
 /// Instruction set supported by this interpreter
@@ -38,8 +81,11 @@ struct FunctionType: Sendable {
 enum Instruction: Sendable {
   case localGet(UInt32)                                                         // 0x20
   case localSet(UInt32)                                                         // 0x21
+  case globalGet(UInt32)                                                        // 0x23
+  case globalSet(UInt32)                                                        // 0x24
   case i32Const(Int32)                                                          // 0x41
   case i32Add                                                                   // 0x6A
+  case i32Sub                                                                   // 0x6B
   case i32Eq                                                                    // 0x46
   case i32GeS                                                                   // 0x4E: signed >=
   case i32RemU                                                                  // 0x70: unsigned remainder
@@ -133,32 +179,41 @@ struct Export: Sendable {
 
 /// A parsed Wasm module. Data is stored per section.
 struct WasmModule: Sendable {
-  let types: [FunctionType]    // Type section
-  let imports: [Import]        // Import section
-  let functions: [UInt32]      // Function section: type index for each local function
-  let memories: [MemoryType]   // Memory section
-  let exports: [Export]        // Export section
-  let code: [FunctionBody]     // Code section
-  let start: UInt32?           // Start section
-  let data: [DataSegment]      // Data section
+  let types: [FunctionType]       // Type section
+  let imports: [Import]           // Import section
+  let functions: [UInt32]         // Function section: type index for each local function
+  let tables: [TableType]         // Table section
+  let memories: [MemoryType]      // Memory section
+  let globals: [GlobalDef]        // Global section
+  let exports: [Export]           // Export section
+  let code: [FunctionBody]        // Code section
+  let start: UInt32?              // Start section
+  let elements: [ElementSegment]  // Element section
+  let data: [DataSegment]         // Data section
 
   init(
     types: [FunctionType],
     imports: [Import] = [],
     functions: [UInt32],
+    tables: [TableType] = [],
     memories: [MemoryType],
+    globals: [GlobalDef] = [],
     exports: [Export],
     code: [FunctionBody],
     start: UInt32? = nil,
+    elements: [ElementSegment] = [],
     data: [DataSegment] = []
   ) {
     self.types = types
     self.imports = imports
     self.functions = functions
+    self.tables = tables
     self.memories = memories
+    self.globals = globals
     self.exports = exports
     self.code = code
     self.start = start
+    self.elements = elements
     self.data = data
   }
 

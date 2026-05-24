@@ -35,6 +35,7 @@ struct WasmInterpreter {
   let module: WasmModule
   let memory: [UInt8]
   private let hostFunctions: [HostFunction]
+  private var globals: [Value]  // mutable global variable slots (global.get/set)
 
   // MARK: - Init
 
@@ -64,6 +65,7 @@ struct WasmInterpreter {
       guard found else { throw .importNotFound }
     }
     self.hostFunctions = funcs
+    self.globals = module.globals.map { $0.initValue }
 
     // Determine memory size: prefer imported memory, fall back to local memory definition
     var memPageCount: UInt32 = 0
@@ -103,7 +105,7 @@ struct WasmInterpreter {
   // MARK: - Public
 
   /// Calls an exported function by name (UTF-8 bytes)
-  func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value] {
+  mutating func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value] {
     guard let export = module.exports.first(where: { $0.nameBytes == nameBytes && $0.kind == .function }) else {
       throw .functionNotFound
     }
@@ -111,7 +113,7 @@ struct WasmInterpreter {
   }
 
   /// Calls a function by its unified function index (including imports)
-  func call(functionIndex: Int, args: [Value]) throws(WasmError) -> [Value] {
+  mutating func call(functionIndex: Int, args: [Value]) throws(WasmError) -> [Value] {
     let importedCount = module.importedFunctionCount
 
     if functionIndex < importedCount {
@@ -137,7 +139,7 @@ struct WasmInterpreter {
 
   // MARK: - Execution
 
-  private func execute(
+  private mutating func execute(
     body: FunctionBody,
     locals: inout [Value],
     resultCount: Int
@@ -148,7 +150,7 @@ struct WasmInterpreter {
   }
 
   /// Executes an instruction sequence and returns a ControlFlow signal.
-  private func run(
+  private mutating func run(
     _ instructions: [Instruction],
     locals: inout [Value],
     stack: inout [Value]
@@ -163,6 +165,13 @@ struct WasmInterpreter {
         guard !stack.isEmpty else { throw .stackUnderflow }
         locals[Int(idx)] = stack.removeLast()
 
+      case .globalGet(let idx):
+        stack.append(globals[Int(idx)])
+
+      case .globalSet(let idx):
+        guard !stack.isEmpty else { throw .stackUnderflow }
+        globals[Int(idx)] = stack.removeLast()
+
       case .i32Const(let value):
         stack.append(.i32(value))
 
@@ -172,6 +181,13 @@ struct WasmInterpreter {
               case .i32(let a) = stack.removeLast()
         else { throw .typeMismatch }
         stack.append(.i32(a &+ b))
+
+      case .i32Sub:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a &- b))
 
       case .i32Eq:
         guard stack.count >= 2 else { throw .stackUnderflow }

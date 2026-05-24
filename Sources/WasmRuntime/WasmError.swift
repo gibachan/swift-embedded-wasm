@@ -8,6 +8,9 @@ enum WasmError: Error, Equatable, Sendable {
   case invalidExportKind(UInt8)         // unknown export kind byte
   case invalidLimitType(UInt8)          // unknown limit type byte (memory/table)
   case invalidImportKind(UInt8)         // unknown import kind byte
+  case invalidRefType(UInt8)            // unknown reference type byte (funcref/externref)
+  case invalidMutability(UInt8)         // unknown global mutability byte
+  case unsupportedElementSegment        // element segment format not yet supported
   case invalidInstruction(UInt8)        // unknown opcode
   case leb128Error(LEB128Error)         // LEB128 decode failure
 

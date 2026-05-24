@@ -73,8 +73,8 @@ func blinkLoop(count: Int32) {
             ]
             // callExport(nameBytes:) requires String comparison; avoid it in Embedded.
             // Function index space: 0 = imported blink, 1 = local blink_loop.
-            _ = try WasmInterpreter(module: module, hostImports: hostImports)
-                .call(functionIndex: 1, args: [.i32(count)])
+            var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+            _ = try interp.call(functionIndex: 1, args: [.i32(count)])
         } catch {
             // On Wasm error, leave the LED unchanged
         }

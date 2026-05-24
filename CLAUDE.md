@@ -64,6 +64,29 @@ git commit は必ずユーザーの許可を得てから行う。作業完了後
 
 ---
 
+## VM 実装における Embedded Swift 対応方針
+
+WASM VM の実装は、macOS 上での開発段階においても **Embedded Swift 環境でのビルドを常に意識した設計**とする。
+詳細な制約・パターン・理由については `docs/EMBEDDED_SWIFT.md` を参照すること。
+
+### 実装時の必須チェック事項
+
+| チェック項目 | NG 例 | OK 例 |
+|---|---|---|
+| 参照型の使用禁止 | `class GlobalStore { ... }` | `private var globals: [Value]` + `mutating` メソッド |
+| Existential 型の禁止 | `any Protocol` | ジェネリック制約 `<T: Protocol>` |
+| `String ==` による比較禁止 | `name == "increment"` | `nameBytes.elementsEqual("increment".utf8)` |
+| 型なし `throws` の禁止 | `func f() throws` | `func f() throws(WasmError)` |
+
+### macOS フェーズで許容するもの（Embedded フェーズで要置換）
+
+- `Array<T>` の動的確保（パース結果・スタック・ローカル変数の格納）
+- `indirect case`（block/loop/if 命令の子命令格納）
+
+これらは macOS フェーズでは正確さ優先で使用してよいが、コメントや設計上の区別を意識しておく。
+
+---
+
 ## Wasm3 調査から得た設計指針（Embedded Swift 向け）
 
 `docs/PHASE2_WASM3.md` の調査結果のうち、Embedded Swift インタプリタ実装に有効な点を以下にまとめる。

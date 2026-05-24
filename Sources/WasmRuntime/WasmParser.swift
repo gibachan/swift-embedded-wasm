@@ -20,10 +20,13 @@ struct WasmParser {
     var types: [FunctionType] = []
     var imports: [Import] = []
     var functions: [UInt32] = []
+    var tables: [TableType] = []
     var memories: [MemoryType] = []
+    var globals: [GlobalDef] = []
     var exports: [Export] = []
     var code: [FunctionBody] = []
     var start: UInt32? = nil
+    var elements: [ElementSegment] = []
     var data: [DataSegment] = []
 
     while !stream.isExhausted {
@@ -34,9 +37,12 @@ struct WasmParser {
       case 1:  types     = try parseTypeSection()
       case 2:  imports   = try parseImportSection()
       case 3:  functions = try parseFunctionSection()
+      case 4:  tables    = try parseTableSection()
       case 5:  memories  = try parseMemorySection()
+      case 6:  globals   = try parseGlobalSection()
       case 7:  exports   = try parseExportSection()
       case 8:  start     = try parseStartSection()
+      case 9:  elements  = try parseElementSection()
       case 10: code      = try parseCodeSection()
       case 11: data      = try parseDataSection()
       default:
@@ -47,8 +53,9 @@ struct WasmParser {
 
     return WasmModule(
       types: types, imports: imports, functions: functions,
-      memories: memories, exports: exports, code: code,
-      start: start, data: data
+      tables: tables, memories: memories, globals: globals,
+      exports: exports, code: code,
+      start: start, elements: elements, data: data
     )
   }
 
@@ -119,6 +126,23 @@ struct WasmParser {
     return imports
   }
 
+  /// Table section (id=4): table definitions (e.g. funcref tables for call_indirect)
+  ///
+  /// Format: [count] ([reftype][limits])*
+  private mutating func parseTableSection() throws(WasmError) -> [TableType] {
+    let count = try readU32()
+    var tables: [TableType] = []
+    for _ in 0..<count {
+      let refTypeByte = try readByte()
+      guard let refType = RefType(rawValue: refTypeByte) else {
+        throw .invalidRefType(refTypeByte)
+      }
+      let (min, max) = try parseMemoryLimits()
+      tables.append(TableType(refType: refType, min: min, max: max))
+    }
+    return tables
+  }
+
   /// Memory section (id=5): linear memory definitions
   private mutating func parseMemorySection() throws(WasmError) -> [MemoryType] {
     let count = try readU32()
@@ -139,6 +163,57 @@ struct WasmParser {
     case 0x01: return (min, try readU32())
     default:   throw .invalidLimitType(limtype)
     }
+  }
+
+  /// Global section (id=6): mutable/immutable global variable definitions
+  ///
+  /// Format: [count] ([valtype][mutability][init_expr])*
+  /// init_expr is a constant expression: i32.const <val> end (only i32 supported for now)
+  private mutating func parseGlobalSection() throws(WasmError) -> [GlobalDef] {
+    let count = try readU32()
+    var globals: [GlobalDef] = []
+    for _ in 0..<count {
+      let vt = try readValueType()
+      let mutByte = try readByte()
+      guard let mut = GlobalMutability(rawValue: mutByte) else {
+        throw .invalidMutability(mutByte)
+      }
+      // Constant init expression: currently only i32.const <val> end
+      let opcode = try readByte()
+      let initValue: Value
+      switch opcode {
+      case 0x41: initValue = .i32(try readI32())
+      default:   throw .invalidInstruction(opcode)
+      }
+      let endOp = try readByte()
+      guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
+      globals.append(GlobalDef(type: GlobalType(valueType: vt, mutability: mut), initValue: initValue))
+    }
+    return globals
+  }
+
+  /// Element section (id=9): active table initialization segments
+  ///
+  /// Only MVP format (flags=0) is supported: active, table 0, i32.const offset, function indices.
+  private mutating func parseElementSection() throws(WasmError) -> [ElementSegment] {
+    let count = try readU32()
+    var segments: [ElementSegment] = []
+    for _ in 0..<count {
+      let flags = try readU32()
+      guard flags == 0 else { throw .unsupportedElementSegment }
+
+      let constOp = try readByte()
+      guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
+      let offset = try readI32()
+      let endOp = try readByte()
+      guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
+
+      let funcCount = try readU32()
+      var funcIndices: [UInt32] = []
+      for _ in 0..<funcCount { funcIndices.append(try readU32()) }
+      segments.append(ElementSegment(tableIndex: 0, offset: offset, functionIndices: funcIndices))
+    }
+    return segments
   }
 
   /// Function section (id=3): type index for each local function
@@ -286,6 +361,12 @@ struct WasmParser {
       case 0x21:  // local.set
         instructions.append(.localSet(try readU32()))
 
+      case 0x23:  // global.get
+        instructions.append(.globalGet(try readU32()))
+
+      case 0x24:  // global.set
+        instructions.append(.globalSet(try readU32()))
+
       case 0x41:  // i32.const (signed LEB128)
         instructions.append(.i32Const(try readI32()))
 
@@ -297,6 +378,9 @@ struct WasmParser {
 
       case 0x6A:  // i32.add
         instructions.append(.i32Add)
+
+      case 0x6B:  // i32.sub
+        instructions.append(.i32Sub)
 
       case 0x70:  // i32.rem_u
         instructions.append(.i32RemU)
