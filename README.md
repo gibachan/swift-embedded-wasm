@@ -34,6 +34,51 @@ swift test
 
 `Sources/WasmRuntime/` の共有ロジックを macOS 上でテストできます。実機なしで開発・検証する際のメインの手段です。
 
+テストは 2 種類あります。
+
+#### ユニットテスト
+
+`Tests/WasmRuntimeTests/` 以下の手書きテスト群。パーサー・インタプリタの動作を個別に検証します。
+
+#### Spectest 準拠テスト
+
+公式 [WebAssembly Spec Testsuite](https://github.com/WebAssembly/testsuite) を使って、実装が Wasm 標準に沿っているか継続的に確認するテストです。
+
+**初回セットアップ（`wabt` が必要）**
+
+```sh
+brew install wabt       # wast2json をインストール
+make spectest-gen       # .wast → JSON + .wasm に変換（Tests/WasmRuntimeTests/spectest/ に出力）
+```
+
+その後は通常の `swift test` に自動で含まれます。
+
+**各テストの意味**
+
+| 結果 | 意味 |
+|---|---|
+| PASS | 仕様通りに動作している |
+| SKIP | 未実装の命令・型を使用しているため実行できない |
+| FAIL | 仕様との不一致（バグ）|
+
+新しい命令を実装するごとに、対応するテストが SKIP → PASS または FAIL に変わります。FAIL が出た場合は仕様との不一致を示します。
+
+**統計の確認**
+
+`SpectestTests.swift` 内の以下の行のコメントを外すと、ファイルごとの pass/skip/fail 数が出力されます。
+
+```swift
+// print("[\(file.name)] pass=\(runner.passCount) skip=\(runner.skipCount) fail=\(runner.failCount)")
+```
+
+**生成ファイルの削除**
+
+```sh
+make spectest-clean
+```
+
+`Tests/WasmRuntimeTests/spectest/` は `.gitignore` 対象です。
+
 ### Swift コンパイルのみ（Pico SDK 不要）
 
 ```sh

@@ -134,7 +134,10 @@ RP2350_FAMILY_ID := 0xe48bff57
 # ターゲット定義
 # =============================================================================
 
-.PHONY: all compile build flash clean help check-sdk check-tools check-toolchain test swift-test setup-hooks
+SPECTEST_SRC := third_party/testsuite
+SPECTEST_OUT := Tests/WasmRuntimeTests/spectest
+
+.PHONY: all compile build flash clean help check-sdk check-tools check-toolchain test swift-test setup-hooks spectest-gen spectest-clean
 
 # デフォルトは test — 素の `make` で両環境のチェックを行う
 all: test
@@ -322,6 +325,40 @@ clean:
 # scripts/pre-commit を .git/hooks/pre-commit にコピーし実行権限を付与する。
 # 一度だけ実行すれば、以後はコミット時に自動で Embedded ビルドが検証される。
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# spectest-gen — 公式 WebAssembly testsuite の .wast → JSON + .wasm に変換
+#
+# wast2json (wabt) が必要: brew install wabt
+#
+# 変換結果は Tests/WasmRuntimeTests/spectest/ に出力される (.gitignore 対象)。
+# swift test を実行すると SpectestTests がこれらを自動検出して実行する。
+#
+# 初回または testsuite を更新した際に実行する:
+#   make spectest-gen
+# ---------------------------------------------------------------------------
+spectest-gen:
+	@if ! command -v wast2json > /dev/null 2>&1; then \
+	  echo "エラー: wast2json が見つかりません"; \
+	  echo "  brew install wabt"; \
+	  exit 1; \
+	fi
+	@mkdir -p $(SPECTEST_OUT)
+	@echo "--- spec testsuite を変換中 (wast2json) ---"
+	@count=0; skip=0; \
+	for wast in $(SPECTEST_SRC)/*.wast; do \
+	  name=$$(basename "$$wast" .wast); \
+	  if wast2json "$$wast" -o "$(SPECTEST_OUT)/$$name.json" 2>/dev/null; then \
+	    count=$$((count + 1)); \
+	  else \
+	    skip=$$((skip + 1)); \
+	  fi; \
+	done; \
+	echo "✓ $$count ファイル変換完了 → $(SPECTEST_OUT)/  ($$skip スキップ)"
+
+spectest-clean:
+	rm -rf $(SPECTEST_OUT)
+	@echo "✓ $(SPECTEST_OUT)/ を削除しました"
+
 setup-hooks:
 	@cp scripts/pre-commit .git/hooks/pre-commit
 	@chmod +x .git/hooks/pre-commit
@@ -333,6 +370,8 @@ help:
 	@echo "=== Embedded Swift × Raspberry Pi Pico 2 (RP2350) ==="
 	@echo ""
 	@echo "ターゲット:"
+	@echo "  spectest-gen     公式 testsuite (.wast) を JSON + .wasm に変換（初回・更新時）"
+	@echo "  spectest-clean   変換済みファイルを削除"
 	@echo "  test             swift test (macOS) + compile (Embedded) の両方を検証 [デフォルト]"
 	@echo "  compile          Swift → .o のみ（ツールチェーン確認、Pico SDK 不要）"
 	@echo "  build            完全ビルド → .elf / .bin / .uf2 生成（Pico SDK 必要）"

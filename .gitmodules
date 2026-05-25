@@ -1,3 +1,9 @@
 [submodule "third_party/wasm3"]
 	path = third_party/wasm3
 	url = https://github.com/wasm3/wasm3.git
+[submodule "third_party/WasmKit"]
+	path = third_party/WasmKit
+	url = https://github.com/swiftwasm/WasmKit.git
+[submodule "third_party/testsuite"]
+	path = third_party/testsuite
+	url = https://github.com/WebAssembly/testsuite.git
