@@ -65,17 +65,14 @@ set_source_files_properties(
     PROPERTIES OBJECT_DEPENDS ${BLINK_LOOP_WASM_PATH}
 )
 
+file(GLOB WASM_RUNTIME_SOURCES "${WASM_RUNTIME_DIR}/*.swift")
+
 add_executable(pico-ble
     Main.swift
     ${CMAKE_CURRENT_BINARY_DIR}/blink_loop_wasm.s
     wasm_symbols.c
     posix_memalign.c
-    ${WASM_RUNTIME_DIR}/LEB128.swift
-    ${WASM_RUNTIME_DIR}/WasmError.swift
-    ${WASM_RUNTIME_DIR}/WasmModule.swift
-    ${WASM_RUNTIME_DIR}/WasmParser.swift
-    ${WASM_RUNTIME_DIR}/WasmInterpreter.swift
-    ${WASM_RUNTIME_DIR}/WasmRuntime.swift
+    ${WASM_RUNTIME_SOURCES}
 )
 
 set_target_properties(pico-ble PROPERTIES LINKER_LANGUAGE CXX)
