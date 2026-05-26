@@ -21,5 +21,6 @@ enum WasmError: Error, Equatable, Sendable {
   case typeMismatch                     // value on the stack has the wrong type for the instruction
   case importNotFound                   // host does not provide a required import
   case memoryAccessOutOfBounds          // memory access is out of range
-  case divisionByZero                   // division by zero (e.g. rem_u)
+  case divisionByZero                   // division by zero (e.g. div_u, rem_u)
+  case integerOverflow                  // signed division overflow (INT32_MIN / -1)
 }

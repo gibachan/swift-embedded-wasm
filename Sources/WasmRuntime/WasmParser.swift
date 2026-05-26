@@ -373,20 +373,44 @@ struct WasmParser {
       case 0x41:  // i32.const (signed LEB128)
         instructions.append(.i32Const(try readI32()))
 
-      case 0x46:  // i32.eq
-        instructions.append(.i32Eq)
+      // i32 unary
+      case 0x45: instructions.append(.i32Eqz)
+      case 0x67: instructions.append(.i32Clz)
+      case 0x68: instructions.append(.i32Ctz)
+      case 0x69: instructions.append(.i32Popcnt)
+      case 0xC0: instructions.append(.i32Extend8S)
+      case 0xC1: instructions.append(.i32Extend16S)
 
-      case 0x4E:  // i32.ge_s
-        instructions.append(.i32GeS)
+      // i32 comparisons
+      case 0x46: instructions.append(.i32Eq)
+      case 0x47: instructions.append(.i32Ne)
+      case 0x48: instructions.append(.i32LtS)
+      case 0x49: instructions.append(.i32LtU)
+      case 0x4A: instructions.append(.i32GtS)
+      case 0x4B: instructions.append(.i32GtU)
+      case 0x4C: instructions.append(.i32LeS)
+      case 0x4D: instructions.append(.i32LeU)
+      case 0x4E: instructions.append(.i32GeS)
+      case 0x4F: instructions.append(.i32GeU)
 
-      case 0x6A:  // i32.add
-        instructions.append(.i32Add)
+      // i32 arithmetic
+      case 0x6A: instructions.append(.i32Add)
+      case 0x6B: instructions.append(.i32Sub)
+      case 0x6C: instructions.append(.i32Mul)
+      case 0x6D: instructions.append(.i32DivS)
+      case 0x6E: instructions.append(.i32DivU)
+      case 0x6F: instructions.append(.i32RemS)
+      case 0x70: instructions.append(.i32RemU)
 
-      case 0x6B:  // i32.sub
-        instructions.append(.i32Sub)
-
-      case 0x70:  // i32.rem_u
-        instructions.append(.i32RemU)
+      // i32 bitwise
+      case 0x71: instructions.append(.i32And)
+      case 0x72: instructions.append(.i32Or)
+      case 0x73: instructions.append(.i32Xor)
+      case 0x74: instructions.append(.i32Shl)
+      case 0x75: instructions.append(.i32ShrS)
+      case 0x76: instructions.append(.i32ShrU)
+      case 0x77: instructions.append(.i32Rotl)
+      case 0x78: instructions.append(.i32Rotr)
 
       default:
         throw .invalidInstruction(opcode)

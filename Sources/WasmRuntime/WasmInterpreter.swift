@@ -175,6 +175,112 @@ struct WasmInterpreter {
       case .i32Const(let value):
         stack.append(.i32(value))
 
+      // --- i32 unary ---
+
+      case .i32Eqz:
+        guard !stack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = stack.removeLast() else { throw .typeMismatch }
+        stack.append(.i32(a == 0 ? 1 : 0))
+
+      case .i32Clz:
+        guard !stack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = stack.removeLast() else { throw .typeMismatch }
+        stack.append(.i32(Int32(UInt32(bitPattern: a).leadingZeroBitCount)))
+
+      case .i32Ctz:
+        guard !stack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = stack.removeLast() else { throw .typeMismatch }
+        stack.append(.i32(Int32(UInt32(bitPattern: a).trailingZeroBitCount)))
+
+      case .i32Popcnt:
+        guard !stack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = stack.removeLast() else { throw .typeMismatch }
+        stack.append(.i32(Int32(UInt32(bitPattern: a).nonzeroBitCount)))
+
+      case .i32Extend8S:
+        guard !stack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = stack.removeLast() else { throw .typeMismatch }
+        stack.append(.i32(Int32(Int8(bitPattern: UInt8(a & 0xFF)))))
+
+      case .i32Extend16S:
+        guard !stack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = stack.removeLast() else { throw .typeMismatch }
+        stack.append(.i32(Int32(Int16(bitPattern: UInt16(a & 0xFFFF)))))
+
+      // --- i32 comparisons ---
+
+      case .i32Eq:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a == b ? 1 : 0))
+
+      case .i32Ne:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a != b ? 1 : 0))
+
+      case .i32LtS:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a < b ? 1 : 0))
+
+      case .i32LtU:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(UInt32(bitPattern: a) < UInt32(bitPattern: b) ? 1 : 0))
+
+      case .i32GtS:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a > b ? 1 : 0))
+
+      case .i32GtU:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(UInt32(bitPattern: a) > UInt32(bitPattern: b) ? 1 : 0))
+
+      case .i32LeS:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a <= b ? 1 : 0))
+
+      case .i32LeU:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(UInt32(bitPattern: a) <= UInt32(bitPattern: b) ? 1 : 0))
+
+      case .i32GeS:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a >= b ? 1 : 0))
+
+      case .i32GeU:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(UInt32(bitPattern: a) >= UInt32(bitPattern: b) ? 1 : 0))
+
+      // --- i32 arithmetic ---
+
       case .i32Add:
         guard stack.count >= 2 else { throw .stackUnderflow }
         guard case .i32(let b) = stack.removeLast(),
@@ -189,28 +295,112 @@ struct WasmInterpreter {
         else { throw .typeMismatch }
         stack.append(.i32(a &- b))
 
-      case .i32Eq:
+      case .i32Mul:
         guard stack.count >= 2 else { throw .stackUnderflow }
         guard case .i32(let b) = stack.removeLast(),
               case .i32(let a) = stack.removeLast()
         else { throw .typeMismatch }
-        stack.append(.i32(a == b ? 1 : 0))
+        stack.append(.i32(a &* b))
 
-      case .i32GeS:
-        guard stack.count >= 2 else { throw .stackUnderflow }
-        guard case .i32(let b) = stack.removeLast(),
-              case .i32(let a) = stack.removeLast()
-        else { throw .typeMismatch }
-        stack.append(.i32(a >= b ? 1 : 0))
-
-      case .i32RemU:
-        // Unsigned remainder: reinterpret the Int32 bit patterns as UInt32
+      case .i32DivS:
         guard stack.count >= 2 else { throw .stackUnderflow }
         guard case .i32(let b) = stack.removeLast(),
               case .i32(let a) = stack.removeLast()
         else { throw .typeMismatch }
         guard b != 0 else { throw .divisionByZero }
-        let result = UInt32(bitPattern: a) % UInt32(bitPattern: b)
+        guard !(a == Int32.min && b == -1) else { throw .integerOverflow }
+        stack.append(.i32(a / b))
+
+      case .i32DivU:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        guard b != 0 else { throw .divisionByZero }
+        stack.append(.i32(Int32(bitPattern: UInt32(bitPattern: a) / UInt32(bitPattern: b))))
+
+      case .i32RemS:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        guard b != 0 else { throw .divisionByZero }
+        // INT32_MIN % -1 would overflow in Swift; result is defined as 0 in Wasm
+        stack.append(.i32(a == Int32.min && b == -1 ? 0 : a % b))
+
+      case .i32RemU:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        guard b != 0 else { throw .divisionByZero }
+        stack.append(.i32(Int32(bitPattern: UInt32(bitPattern: a) % UInt32(bitPattern: b))))
+
+      // --- i32 bitwise ---
+
+      case .i32And:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a & b))
+
+      case .i32Or:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a | b))
+
+      case .i32Xor:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        stack.append(.i32(a ^ b))
+
+      case .i32Shl:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        let shift = UInt32(bitPattern: b) & 31
+        stack.append(.i32(Int32(bitPattern: UInt32(bitPattern: a) << shift)))
+
+      case .i32ShrS:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        let shift = Int32(UInt32(bitPattern: b) & 31)
+        stack.append(.i32(a >> shift))
+
+      case .i32ShrU:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        let shift = UInt32(bitPattern: b) & 31
+        stack.append(.i32(Int32(bitPattern: UInt32(bitPattern: a) >> shift)))
+
+      case .i32Rotl:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        let shift = UInt32(bitPattern: b) & 31
+        let ua = UInt32(bitPattern: a)
+        let result = shift == 0 ? ua : (ua << shift | ua >> (32 - shift))
+        stack.append(.i32(Int32(bitPattern: result)))
+
+      case .i32Rotr:
+        guard stack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let b) = stack.removeLast(),
+              case .i32(let a) = stack.removeLast()
+        else { throw .typeMismatch }
+        let shift = UInt32(bitPattern: b) & 31
+        let ua = UInt32(bitPattern: a)
+        let result = shift == 0 ? ua : (ua >> shift | ua << (32 - shift))
         stack.append(.i32(Int32(bitPattern: result)))
 
       case .call(let funcIdx):

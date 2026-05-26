@@ -382,7 +382,6 @@ struct SpectestTests {
     )
     runner.run(suite: suite)
     // Individual failures are recorded via Issue.record() in the runner.
-    // Uncomment the line below to see per-file statistics:
-    // print("[\(file.name)] pass=\(runner.passCount) skip=\(runner.skipCount) fail=\(runner.failCount)")
+    print("[\(file.name)] pass=\(runner.passCount) skip=\(runner.skipCount) fail=\(runner.failCount)")
   }
 }

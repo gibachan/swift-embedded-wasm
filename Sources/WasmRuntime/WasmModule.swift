@@ -84,11 +84,41 @@ enum Instruction: Sendable {
   case globalGet(UInt32)                                                        // 0x23
   case globalSet(UInt32)                                                        // 0x24
   case i32Const(Int32)                                                          // 0x41
+  // i32 unary
+  case i32Eqz                                                                   // 0x45
+  case i32Clz                                                                   // 0x67
+  case i32Ctz                                                                   // 0x68
+  case i32Popcnt                                                                // 0x69
+  case i32Extend8S                                                              // 0xC0
+  case i32Extend16S                                                             // 0xC1
+  // i32 comparisons
+  case i32Eq                                                                    // 0x46
+  case i32Ne                                                                    // 0x47
+  case i32LtS                                                                   // 0x48
+  case i32LtU                                                                   // 0x49
+  case i32GtS                                                                   // 0x4A
+  case i32GtU                                                                   // 0x4B
+  case i32LeS                                                                   // 0x4C
+  case i32LeU                                                                   // 0x4D
+  case i32GeS                                                                   // 0x4E
+  case i32GeU                                                                   // 0x4F
+  // i32 arithmetic
   case i32Add                                                                   // 0x6A
   case i32Sub                                                                   // 0x6B
-  case i32Eq                                                                    // 0x46
-  case i32GeS                                                                   // 0x4E: signed >=
-  case i32RemU                                                                  // 0x70: unsigned remainder
+  case i32Mul                                                                   // 0x6C
+  case i32DivS                                                                  // 0x6D
+  case i32DivU                                                                  // 0x6E
+  case i32RemS                                                                  // 0x6F
+  case i32RemU                                                                  // 0x70
+  // i32 bitwise
+  case i32And                                                                   // 0x71
+  case i32Or                                                                    // 0x72
+  case i32Xor                                                                   // 0x73
+  case i32Shl                                                                   // 0x74
+  case i32ShrS                                                                  // 0x75
+  case i32ShrU                                                                  // 0x76
+  case i32Rotl                                                                  // 0x77
+  case i32Rotr                                                                  // 0x78
   case call(UInt32)                                                             // 0x10: function call
   indirect case block(BlockType, [Instruction])                                 // 0x02
   indirect case loop(BlockType, [Instruction])                                  // 0x03
