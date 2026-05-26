@@ -261,13 +261,16 @@ struct WasmParser {
     let count = try readU32()
     var bodies: [FunctionBody] = []
     for _ in 0..<count {
-      _ = try readU32()  // body_size: unused in this interpreter
+      let bodySize = try readU32()
 
       let localDeclCount = try readU32()
       var locals: [ValueType] = []
       for _ in 0..<localDeclCount {
         let n = try readU32()
         let vt = try readValueType()
+        // Reject malformed files claiming more locals than the body_size can encode.
+        // body_size is an upper bound on bytes in this function body.
+        guard n <= bodySize else { throw .unexpectedEnd }
         for _ in 0..<n { locals.append(vt) }
       }
 
