@@ -351,7 +351,204 @@ table.register(HostFunction(
 
 ---
 
-## 9. 関連ドキュメント
+## 9. Swift の強みを活かした設計ポイント
+
+本ドキュメントの各設計は、C（Wasm3）や Rust（wasmi）との比較で際立つ Swift の強みを意識して構成されている。
+以下に「どの強みが」「どの設計決定に」対応しているかを整理する。
+
+### 9.1 enum の網羅性チェックによる仕様との 1:1 対応
+
+Wasm の値型・命令セット・エラー種別は仕様で明確に定義されている。
+Swift の `enum` はこれらを**仕様と 1:1 で対応するコード**として表現できる。
+
+C の `union + u8 type` では型の取り違えがコンパイルを通ってしまうが、
+Swift では `switch` の網羅性チェックが効くため、**命令セットを追加した際の未処理ケースをコンパイラが検出する**。
+
+対応する設計:
+- `WasmValue`（Section 3.1）— 値型の union を型安全な enum に
+- `WasmType`（Section 3.2）— 型コードを raw value 付き enum に
+- Opcode ディスパッチ（Section 5）— `default: throw unknownOpcode` で未実装命令を確実に捕捉
+
+### 9.2 Typed Throws によるトラップの構造化
+
+Wasm3 は `M3Result = const char*` でエラーを返す。
+エラー種別の判定は文字列比較となり、呼び出し側がどのエラーを受け取りうるかはドキュメントを読まなければわからない。
+
+Swift の `throws(WasmTrap)` はエラー種別をシグネチャに記述することで、
+**どのエラーが起きうるかが関数のシグネチャ自体から読み取れる**。
+
+対応する設計:
+- `WasmFormatError / WasmTrap`（Section 3.4）— パース時エラーと実行時トラップを型で分離
+- `step() throws` のシグネチャ（Section 5）— トラップが伝播する経路をコンパイラが追跡
+
+### 9.3 Value Semantics による実行状態の明確化
+
+インタプリタは本質的に状態機械（実行スタック・PC・ローカル変数）である。
+`struct` + `mutating` で設計することで：
+
+- 状態の変更は明示的な `mutating` 呼び出しを通じてのみ起きる
+- 参照の共有による暗黙的な状態変化が**構造的に**起きない
+- 実行コンテキストのスナップショットが自然に書ける（ステップ実行・テストに有用）
+
+対応する設計:
+- Interpreter Loop の `struct` 設計（Section 5）
+- `LinearMemory` の `struct` 設計（Section 6）— `load` は純粋な読み取り、変更は `mutating` のみ
+
+### 9.4 Embedded Swift の制約がアーキテクチャを改善させる
+
+`class` 禁止・動的確保制限という制約は、**意図せず良い設計を促す**副作用を持つ。
+
+- ヒープ確保を避けるため固定サイズバッファを選ぶ → メモリ使用量の予測可能性が上がる
+- 参照の共有がないため所有関係が明確になる → 「誰がこのバッファを解放するか」問題が起きにくい
+- クロージャのヒープキャプチャが制限される → Host Function は自然に静的テーブル設計へ向かう
+
+対応する設計:
+- `LinearMemory` の固定バッファ設計（Section 6）— Pico では `staticSize` で静的確保
+- `HostFunctionTable` の静的テーブル設計（Section 7）— クロージャよりテーブルルックアップを優先
+
+### 9.5 デバッグビルドの安全性がデバッグコストを下げる
+
+Swift はデバッグビルドで整数オーバーフロー・配列境界外アクセスをランタイムトラップする。
+C ではこれらは未定義動作として silently 壊れる可能性がある。
+
+UART ログのみのデバッグ環境（Pico）では、**問題発生箇所が明確なトラップは大きな価値**を持つ。
+macOS ビルドでフルバリデーションを有効にすることで、Pico 実機デバッグの前に問題を除去できる。
+
+対応する設計:
+- バリデーションの 2 段構え（Section 4）— macOS でフルチェック → Pico で構造チェックのみ
+- `outOfBoundsMemoryAccess` トラップ（Section 3.4・6）— `UnsafeBufferPointer` の境界チェックを明示的に実装
+
+### 9.6 Protocol + Generics による算術演算の一元化（WasmKit から採用）
+
+Wasm の整数演算（`i32`/`i64`）は同一の意味論を持ちながら bit-width だけが異なる。
+C ではマクロや型別関数のコピーで対応するところを、Swift の Protocol + Generics で一元化できる。
+WasmKit の `RawUnsignedInteger` プロトコル設計（`Sources/WasmKit/Execution/Value.swift`）を参考に採用する。
+
+```swift
+protocol WasmInteger: FixedWidthInteger & UnsignedInteger {
+    associatedtype Signed: FixedWidthInteger & SignedInteger
+    init(bitPattern: Signed)
+}
+
+extension WasmInteger {
+    func wasmAdd(_ other: Self) -> Self { self &+ other }
+    func wasmSub(_ other: Self) -> Self { self &- other }
+    func wasmMul(_ other: Self) -> Self { self &* other }
+    func wasmDivS(_ other: Self) throws(WasmTrap) -> Self {
+        guard other != 0 else { throw WasmTrap.integerDivisionByZero }
+        let (result, overflow) = Signed(bitPattern: self).dividedReportingOverflow(by: Signed(bitPattern: other))
+        guard !overflow else { throw WasmTrap.integerOverflow }
+        return Self(bitPattern: result)
+    }
+    func wasmShl(_ other: Self) -> Self { self << (other % Self(Self.bitWidth)) }
+    func wasmRotl(_ other: Self) -> Self {
+        let shift = other % Self(Self.bitWidth)
+        return self << shift | self >> (Self(Self.bitWidth) - shift)
+    }
+    func wasmEq(_ other: Self) -> UInt32  { self == other ? 1 : 0 }
+    func wasmLtS(_ other: Self) -> UInt32 { Signed(bitPattern: self) < Signed(bitPattern: other) ? 1 : 0 }
+    func wasmLtU(_ other: Self) -> UInt32 { self < other ? 1 : 0 }
+    // ... shr_s, shr_u, rotr, ne, gt_s, gt_u, le_s, le_u, ge_s, ge_u, eqz も同様
+}
+
+extension UInt32: WasmInteger { typealias Signed = Int32 }
+extension UInt64: WasmInteger { typealias Signed = Int64 }
+```
+
+採用する範囲:
+- 整数演算: `add`, `sub`, `mul`, `div_s`, `div_u`, `rem_s`, `rem_u`
+- ビット操作: `and`, `or`, `xor`, `shl`, `shr_s`, `shr_u`, `rotl`, `rotr`, `clz`, `ctz`, `popcnt`
+- 比較演算: `eq`, `ne`, `lt_s`, `lt_u`, `gt_s`, `gt_u`, `le_s`, `le_u`, `ge_s`, `ge_u`, `eqz`
+
+採用しない範囲（型の対称性がないため Generic 化が難しい）:
+- 浮動小数点演算（`f32`/`f64`）は `Float32`/`Float64` の `extension` で個別実装
+- 型変換命令（`i32.wrap_i64`, `i64.trunc_f32_s` など）は型の組み合わせが多様なため個別実装
+
+対応する設計:
+- `WasmValue`（Section 3.1）の演算実装を `WasmInteger` protocol の extension として整理する
+
+---
+
+## 10. WasmKit 実装との比較分析
+
+本プロジェクトでは `third_party/WasmKit/` に Swift 製 Wasm Runtime（WasmKit）のソースを参照できる。
+WasmKit の設計から Swift メリットの活用状況を分析し、本プロジェクトへの示唆を整理した。
+
+### 10.1 WasmKit が Swift のメリットを活かしている点
+
+**Protocol + Generics による算術演算の一元化**
+
+```swift
+// Sources/WasmKit/Execution/Value.swift
+protocol RawUnsignedInteger: FixedWidthInteger & UnsignedInteger {
+    associatedtype Signed: RawSignedInteger
+}
+extension RawUnsignedInteger {
+    func divS(_ other: Self) throws -> Self { ... }
+    func rotl(_ other: Self) -> Self { ... }
+}
+```
+
+`UInt32`/`UInt64` に同一の演算を一元定義。C では型別にコピーが必要なところを Generic で解決。
+→ 本プロジェクトでも Section 9.6 の方針で採用する。
+
+**struct + Value Semantics の徹底**
+
+`UntypedValue`・`Trap`・全 Instruction Operand が struct で統一されており、本プロジェクトの方針（Section 9.3）と一致する。`Execution` も `mutating` 関数を持つ struct として設計されている。
+
+**Typed Throws の部分活用**
+
+パーサー層で `throws(WasmParserError)` が使われており、エラー種別をシグネチャで表現している。
+
+### 10.2 パフォーマンスのために意図的に活かしていない点
+
+**enum の網羅性チェックをホットパスで放棄**
+
+```swift
+// Instruction.swift の冒頭コメント
+/// NOTE: This enum representation is just for modeling purposes.
+/// The actual runtime representation can be different.
+enum Instruction: Equatable { ... }
+
+// DispatchInstruction.swift — 整数 opcode の switch（網羅性チェック不可）
+switch opcode {
+case 52: return self.execute_i32Add(...)
+default: preconditionFailure("Unknown instruction!?")  // ← コンパイラは検出できない
+}
+```
+
+`Instruction` enum はモデリング用途のみ。実行ループはパフォーマンスのために型安全性を意識的に捨てている。
+
+**型付き WasmValue をホットパスで使わない**
+
+```swift
+// UntypedValue.swift — i32/i64/f32/f64 を全て UInt64 で保持
+struct UntypedValue {
+    let storage: UInt64
+}
+```
+
+オペコードが型を知っているため、ランタイムに型タグを持たせない最適化。型安全な `Value enum` は公開 API のみに使用している。
+
+**通常の throws を使用**
+
+`Trap` は `throws(Trap)` ではなく通常の `throws` で伝播する。後方互換性・シンプルさ優先の判断と思われる。
+
+### 10.3 本プロジェクトとの選択比較
+
+| 観点 | WasmKit | 本プロジェクト | 理由 |
+|---|---|---|---|
+| 命令ディスパッチ | 整数 switch（パフォーマンス優先） | `switch` on enum（学習・安全優先） | 網羅性チェックを学習段階で活用 |
+| 値の表現 | `UntypedValue`（UInt64） | `WasmValue` enum（型安全） | 仕様と 1:1 の表現で理解しやすさを優先 |
+| エラー | 通常の `throws` | `throws(WasmTrap)` | Embedded Swift 推奨パターン |
+| Generics | 積極的に活用 | 採用（Section 9.6） | WasmKit から参考に採用 |
+
+本プロジェクトが WasmKit より型安全性を優先する理由は、**パフォーマンスより「仕組みの理解と誤りの早期発見」**が目的だからである。
+Pico 上での実測でボトルネックが判明した段階で、`UntypedValue` 方式への最適化を検討する。
+
+---
+
+## 11. 関連ドキュメント
 
 | ドキュメント | 内容 |
 |---|---|
