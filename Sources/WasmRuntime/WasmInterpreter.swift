@@ -55,6 +55,7 @@ private struct Scope {
   var ip: Int
   let kind: ScopeKind
   let stackBase: Int  // value stack depth when this scope was entered
+  let arity: Int      // number of result values this scope produces on exit (via br or fall-through)
 }
 
 /// One activation record per live Wasm function invocation
@@ -63,6 +64,18 @@ private struct Frame {
   var locals: [Value]
   let stackBase: Int    // value stack depth when this frame was entered
   let resultCount: Int
+}
+
+// Returns the number of result values a block produces when exited via `br`.
+// For `loop` this is always 0 (loops restart from the top with no carried values in MVP).
+private func blockArity(_ bt: BlockType, types: [FunctionType]) -> Int {
+  switch bt {
+  case .void: return 0
+  case .value: return 1
+  case .typeIndex(let idx):
+    guard Int(idx) < types.count else { return 0 }
+    return types[Int(idx)].results.count
+  }
 }
 
 // MARK: - Interpreter
@@ -205,15 +218,20 @@ struct WasmInterpreter {
         }
       }
       let base = valueStack.count
-      let topScope = Scope(instructions: body.instructions, ip: 0, kind: .topLevel, stackBase: base)
+      let topScope = Scope(instructions: body.instructions, ip: 0, kind: .topLevel, stackBase: base, arity: funcType.results.count)
       frames.append(Frame(scopes: [topScope], locals: locals, stackBase: base, resultCount: funcType.results.count))
     }
 
     // Handle a branch: pop `depth` scopes, then process the target scope.
+    //
+    // Wasm br semantics: the top `arity` values on the stack at the time of the branch
+    // are passed to the target label. Everything between those values and the target
+    // scope's stack base is discarded.
     @inline(__always)
     func handleBranch(depth: UInt32, fi: Int) throws(WasmError) {
       var d = Int(depth)
-      // Discard intermediate scopes (the labels being "passed through")
+      // Discard intermediate scopes (labels being "passed through").
+      // The stack is not cleaned here; the target scope's stackBase cleanup handles it.
       while d > 0 {
         guard !frames[fi].scopes.isEmpty else { throw .stackUnderflow }
         frames[fi].scopes.removeLast()
@@ -224,26 +242,21 @@ struct WasmInterpreter {
       let target = frames[fi].scopes.removeLast()
       switch target.kind {
       case .loop:
-        // br to loop = restart: reset ip to 0, restore stack to scope entry
+        // br to loop = restart from the top with no carried values (MVP: loop arity = 0)
         valueStack.removeSubrange(target.stackBase...)
         var restarted = target
         restarted.ip = 0
         frames[fi].scopes.append(restarted)
       case .block, .ifElse:
-        // br to block/if = exit: trim stack to scope base (keeping block arity values
-        // above stackBase is not yet needed; all our tested blocks have void arity on br)
+        // br to block/if = exit: preserve top `arity` values, discard everything
+        // between them and the scope's stack base, then push the values back.
+        let results = Array(valueStack.suffix(target.arity))
         valueStack.removeSubrange(target.stackBase...)
+        valueStack.append(contentsOf: results)
       case .topLevel:
-        // br targeting function label = early return
-        let resultCount = frames[fi].resultCount
-        let frameBase = frames[fi].stackBase
-        let results: [Value]
-        if valueStack.count >= frameBase + resultCount {
-          results = Array(valueStack.suffix(resultCount))
-        } else {
-          throw WasmError.stackUnderflow
-        }
-        valueStack.removeSubrange(frameBase...)
+        // br targeting the function's implicit outer label = early return
+        let results = Array(valueStack.suffix(target.arity))
+        valueStack.removeSubrange(frames[fi].stackBase...)
         valueStack.append(contentsOf: results)
         frames[fi].scopes.removeAll()
       }
@@ -682,20 +695,25 @@ struct WasmInterpreter {
 
       // --- structured control flow ---
 
-      case .block(_, let inner):
+      case .block(let bt, let inner):
         let base = valueStack.count
-        frames[fi].scopes.append(Scope(instructions: inner, ip: 0, kind: .block, stackBase: base))
+        let arity = blockArity(bt, types: module.types)
+        frames[fi].scopes.append(Scope(instructions: inner, ip: 0, kind: .block, stackBase: base, arity: arity))
 
-      case .loop(_, let inner):
+      case .loop(let bt, let inner):
         let base = valueStack.count
-        frames[fi].scopes.append(Scope(instructions: inner, ip: 0, kind: .loop, stackBase: base))
+        // Loop label arity = parameter count; in MVP that is always 0.
+        // The result type of the loop only matters when falling through (not on br).
+        _ = bt
+        frames[fi].scopes.append(Scope(instructions: inner, ip: 0, kind: .loop, stackBase: base, arity: 0))
 
-      case .ifElse(_, let thenBody, let elseBody):
+      case .ifElse(let bt, let thenBody, let elseBody):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let cond) = valueStack.removeLast() else { throw .typeMismatch }
         let body = cond != 0 ? thenBody : elseBody
         let base = valueStack.count
-        frames[fi].scopes.append(Scope(instructions: body, ip: 0, kind: .ifElse, stackBase: base))
+        let arity = blockArity(bt, types: module.types)
+        frames[fi].scopes.append(Scope(instructions: body, ip: 0, kind: .ifElse, stackBase: base, arity: arity))
 
       case .br(let depth):
         try handleBranch(depth: depth, fi: fi)
@@ -706,6 +724,41 @@ struct WasmInterpreter {
         if cond != 0 {
           try handleBranch(depth: depth, fi: fi)
         }
+
+      case .brTable(let labels, let default_):
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let idx) = valueStack.removeLast() else { throw .typeMismatch }
+        let i = Int(idx)
+        let depth = (i >= 0 && i < labels.count) ? labels[i] : default_
+        try handleBranch(depth: depth, fi: fi)
+
+      case .nop:
+        break
+
+      case .return_:
+        let resultCount = frames[fi].resultCount
+        let results = Array(valueStack.suffix(resultCount))
+        valueStack.removeSubrange(frames[fi].stackBase...)
+        valueStack.append(contentsOf: results)
+        frames[fi].scopes.removeAll()
+
+      case .drop:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        valueStack.removeLast()
+
+      case .select:
+        guard valueStack.count >= 3 else { throw .stackUnderflow }
+        guard case .i32(let cond) = valueStack.removeLast() else { throw .typeMismatch }
+        let v2 = valueStack.removeLast()
+        let v1 = valueStack.removeLast()
+        valueStack.append(cond != 0 ? v1 : v2)
+
+      case .localTee(let idx):
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        frames[fi].locals[Int(idx)] = valueStack.last!
+
+      case .unimplemented(let op):
+        throw WasmError.invalidInstruction(op)
       }
     }
 

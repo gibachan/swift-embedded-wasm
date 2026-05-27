@@ -344,6 +344,9 @@ struct WasmParser {
         }
         instructions.append(.ifElse(bt, thenBody: thenBody, elseBody: elseBody))
 
+      case 0x01:  // nop
+        instructions.append(.nop)
+
       case 0x05:  // else: terminates the then-body
         return (instructions, stoppedAtElse: true)
 
@@ -356,8 +359,29 @@ struct WasmParser {
       case 0x0D:  // br_if
         instructions.append(.brIf(try readU32()))
 
+      case 0x0E:  // br_table
+        let count = try readU32()
+        var labels: [UInt32] = []
+        for _ in 0..<count { labels.append(try readU32()) }
+        let default_ = try readU32()
+        instructions.append(.brTable(labels, default_))
+
+      case 0x0F:  // return
+        instructions.append(.return_)
+
       case 0x10:  // call
         instructions.append(.call(try readU32()))
+
+      case 0x11:  // call_indirect: type_idx, table_idx
+        _ = try readU32()
+        _ = try readU32()
+        instructions.append(.unimplemented(0x11))
+
+      case 0x1A:  // drop
+        instructions.append(.drop)
+
+      case 0x1B:  // select
+        instructions.append(.select)
 
       case 0x20:  // local.get
         instructions.append(.localGet(try readU32()))
@@ -365,17 +389,41 @@ struct WasmParser {
       case 0x21:  // local.set
         instructions.append(.localSet(try readU32()))
 
+      case 0x22:  // local.tee
+        instructions.append(.localTee(try readU32()))
+
       case 0x23:  // global.get
         instructions.append(.globalGet(try readU32()))
 
       case 0x24:  // global.set
         instructions.append(.globalSet(try readU32()))
 
+      // Memory load/store — parsed with align+offset operands but not yet implemented
+      case 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,  // i32/i64/f32/f64 loads
+           0x30, 0x31, 0x32, 0x33, 0x34, 0x35,               // i64 sign/zero loads
+           0x36, 0x37, 0x38, 0x39,                            // i32/i64/f32/f64 stores
+           0x3A, 0x3B, 0x3C, 0x3D, 0x3E:                     // i32/i64 truncated stores
+        _ = try readU32()  // align
+        _ = try readU32()  // offset
+        instructions.append(.unimplemented(opcode))
+
+      case 0x40:  // memory.grow (1-byte reserved operand = 0x00)
+        _ = try readByte()
+        instructions.append(.unimplemented(0x40))
+
       case 0x41:  // i32.const (signed LEB128)
         instructions.append(.i32Const(try readI32()))
 
+      case 0x42:  // i64.const (signed LEB128, 64-bit) — not yet implemented
+        _ = try readI64()
+        instructions.append(.unimplemented(0x42))
+
       case 0x43:  // f32.const (4 bytes, little-endian IEEE 754)
         instructions.append(.f32Const(try readF32()))
+
+      case 0x44:  // f64.const (8 bytes, little-endian IEEE 754) — not yet implemented
+        for _ in 0..<8 { _ = try readByte() }
+        instructions.append(.unimplemented(0x44))
 
       // f32 comparisons (return i32)
       case 0x5B: instructions.append(.f32Eq)
@@ -442,6 +490,33 @@ struct WasmParser {
       case 0x97: instructions.append(.f32Max)
       case 0x98: instructions.append(.f32Copysign)
 
+      // i64 and f64 instructions — parsed (to correctly position the stream) but not executed.
+      // Encountering them at runtime throws invalidInstruction, causing spec tests to skip.
+      case 0x50,                               // i64.eqz
+           0x51, 0x52, 0x53, 0x54, 0x55,      // i64 comparisons (eq/ne/lt_s/lt_u/gt_s)
+           0x56, 0x57, 0x58, 0x59,            // i64 comparisons (gt_u/le_s/le_u/ge_s)
+           0x5A,                               // i64.ge_u
+           0x61, 0x62, 0x63, 0x64, 0x65,      // f64 comparisons (eq/ne/lt/gt/le)
+           0x66,                               // f64.ge
+           0x79, 0x7A, 0x7B,                  // i64.clz / i64.ctz / i64.popcnt
+           0x7C, 0x7D, 0x7E, 0x7F,            // i64.add / sub / mul / div_s
+           0x80, 0x81, 0x82, 0x83, 0x84,      // i64.div_u / rem_s / rem_u / and / or
+           0x85, 0x86,                         // i64.xor / shl
+           0x87, 0x88, 0x89,                  // i64.shr_s / shr_u / rotl
+           0x8A,                               // i64.rotr
+           0x99, 0x9A, 0x9B, 0x9C, 0x9D,     // f64.abs / neg / ceil / floor / trunc
+           0x9E, 0x9F,                         // f64.nearest / sqrt
+           0xA0, 0xA1, 0xA2, 0xA3, 0xA4,      // f64.add / sub / mul / div / min
+           0xA5, 0xA6,                         // f64.max / copysign
+           0xA7, 0xA8, 0xA9, 0xAA,            // i32.wrap_i64, i32.trunc_f32_s/u, i32.trunc_f64_s
+           0xAB, 0xAC, 0xAD, 0xAE, 0xAF,      // i32.trunc_f64_u, i64 extend/trunc ops
+           0xB0, 0xB1, 0xB2, 0xB3, 0xB4,      // more i64 trunc/convert ops
+           0xB5, 0xB6, 0xB7, 0xB8,            // f32.demote_f64, f64.convert ops
+           0xB9, 0xBA, 0xBB,                  // f64.convert ops / f64.promote_f32
+           0xBC, 0xBD, 0xBE, 0xBF,            // reinterpret ops
+           0xC2, 0xC3, 0xC4:                  // i64.extend8_s / extend16_s / extend32_s
+        instructions.append(.unimplemented(opcode))
+
       default:
         throw .invalidInstruction(opcode)
       }
@@ -449,7 +524,14 @@ struct WasmParser {
   }
 
   private mutating func readBlockType() throws(WasmError) -> BlockType {
-    let byte = try readByte()
+    // Block types are encoded as signed LEB128 (s33):
+    //   non-negative values → type index (multi-value extension)
+    //   negative values    → value type byte or void (0x40 = -64)
+    let raw: Int32 = try readI32()
+    if raw >= 0 { return .typeIndex(UInt32(raw)) }
+    // Recover the original 7-bit byte from the signed value.
+    // e.g. -1 → 0x7F (i32), -64 → 0x40 (void)
+    let byte = UInt8(raw & 0x7F)
     if byte == 0x40 { return .void }
     guard let vt = ValueType(rawValue: byte) else { throw .invalidValueType(byte) }
     return .value(vt)
@@ -477,6 +559,15 @@ struct WasmParser {
 
   @inline(__always)
   private mutating func readI32() throws(WasmError) -> Int32 {
+    do {
+      return try decodeSLEB128(from: &stream)
+    } catch {
+      throw .leb128Error(error)
+    }
+  }
+
+  @inline(__always)
+  private mutating func readI64() throws(WasmError) -> Int64 {
     do {
       return try decodeSLEB128(from: &stream)
     } catch {

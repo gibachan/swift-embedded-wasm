@@ -12,9 +12,14 @@ enum ValueType: UInt8, Sendable {
 // MARK: - Block Type
 
 /// Result type of a block / loop / if instruction
+///
+/// Encoded as a signed LEB128 (s33) in the binary format:
+///   negative values are value types or void (0x40 = -64, 0x7F = -1 for i32, etc.)
+///   non-negative values are type indices into the Type section (multi-value extension)
 enum BlockType: Sendable {
   case void              // 0x40: no result
   case value(ValueType)  // 0x7F etc.: single result
+  case typeIndex(UInt32) // >= 0: index into Type section (multi-value blocks)
 }
 
 // MARK: - Function Type (signature)
@@ -150,6 +155,19 @@ enum Instruction: Sendable {
   indirect case ifElse(BlockType, thenBody: [Instruction], elseBody: [Instruction]) // 0x04
   case br(UInt32)                                                               // 0x0C
   case brIf(UInt32)                                                             // 0x0D
+  // control flow
+  case nop                                                                      // 0x01
+  case return_                                                                  // 0x0F
+  indirect case brTable([UInt32], UInt32)                                       // 0x0E: target_labels[], default_label
+  // stack operations
+  case drop                                                                     // 0x1A
+  case select                                                                   // 0x1B
+  // locals
+  case localTee(UInt32)                                                         // 0x22
+  // Parsed but not yet implemented; throws invalidInstruction at runtime.
+  // Used for i64/f64 and other opcodes that appear in test modules but are not
+  // required for i32/f32 test execution.
+  case unimplemented(UInt8)
 }
 
 // MARK: - Function Body

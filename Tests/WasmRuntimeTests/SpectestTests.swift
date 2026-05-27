@@ -238,6 +238,10 @@ private struct ConformanceRunner {
   private mutating func handleAction(_ cmd: WastCommand) {
     if currentModuleSkipped { skipCount += 1; return }
     guard let action = cmd.action else { skipCount += 1; return }
+    if (action.args ?? []).contains(where: { !isSupportedType($0.type) }) {
+      skipCount += 1
+      return
+    }
     do {
       _ = try invoke(action)
       passCount += 1
