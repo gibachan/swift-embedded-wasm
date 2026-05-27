@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import WasmRuntime
 
 // MARK: - Parser Tests
@@ -246,5 +247,25 @@ struct WasmInterpreterTests {
     var interp = try WasmInterpreter(module: module, hostImports: hostImports)
     _ = try interp.callExport(nameBytes: Array("blink_loop".utf8), args: [.i32(0)])
     #expect(blinkCount == 0)
+  }
+
+  @Test func forwardMutualRecursion() throws {
+    // Tests even/odd mutual recursion from forward.0.wasm spectest
+    let path = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .appendingPathComponent("spectest/forward.0.wasm")
+      .path
+    guard let data = Foundation.FileManager.default.contents(atPath: path) else {
+      return // spectest not generated, skip
+    }
+    let bytes = [UInt8](data)
+    let module = try parseBytes(bytes)
+    var interp = try WasmInterpreter(module: module)
+    let even = Array("even".utf8)
+    let odd = Array("odd".utf8)
+    #expect(try interp.callExport(nameBytes: even, args: [Value.i32(13)]) == [Value.i32(0)])
+    #expect(try interp.callExport(nameBytes: even, args: [Value.i32(20)]) == [Value.i32(1)])
+    #expect(try interp.callExport(nameBytes: odd,  args: [Value.i32(13)]) == [Value.i32(1)])
+    #expect(try interp.callExport(nameBytes: odd,  args: [Value.i32(20)]) == [Value.i32(0)])
   }
 }

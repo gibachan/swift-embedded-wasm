@@ -178,11 +178,12 @@ struct WasmParser {
       guard let mut = GlobalMutability(rawValue: mutByte) else {
         throw .invalidMutability(mutByte)
       }
-      // Constant init expression: currently only i32.const <val> end
+      // Constant init expression: i32.const or f32.const followed by end
       let opcode = try readByte()
       let initValue: Value
       switch opcode {
       case 0x41: initValue = .i32(try readI32())
+      case 0x43: initValue = .f32(try readF32())
       default:   throw .invalidInstruction(opcode)
       }
       let endOp = try readByte()
@@ -373,6 +374,17 @@ struct WasmParser {
       case 0x41:  // i32.const (signed LEB128)
         instructions.append(.i32Const(try readI32()))
 
+      case 0x43:  // f32.const (4 bytes, little-endian IEEE 754)
+        instructions.append(.f32Const(try readF32()))
+
+      // f32 comparisons (return i32)
+      case 0x5B: instructions.append(.f32Eq)
+      case 0x5C: instructions.append(.f32Ne)
+      case 0x5D: instructions.append(.f32Lt)
+      case 0x5E: instructions.append(.f32Gt)
+      case 0x5F: instructions.append(.f32Le)
+      case 0x60: instructions.append(.f32Ge)
+
       // i32 unary
       case 0x45: instructions.append(.i32Eqz)
       case 0x67: instructions.append(.i32Clz)
@@ -411,6 +423,24 @@ struct WasmParser {
       case 0x76: instructions.append(.i32ShrU)
       case 0x77: instructions.append(.i32Rotl)
       case 0x78: instructions.append(.i32Rotr)
+
+      // f32 unary
+      case 0x8B: instructions.append(.f32Abs)
+      case 0x8C: instructions.append(.f32Neg)
+      case 0x8D: instructions.append(.f32Ceil)
+      case 0x8E: instructions.append(.f32Floor)
+      case 0x8F: instructions.append(.f32Trunc)
+      case 0x90: instructions.append(.f32Nearest)
+      case 0x91: instructions.append(.f32Sqrt)
+
+      // f32 binary arithmetic
+      case 0x92: instructions.append(.f32Add)
+      case 0x93: instructions.append(.f32Sub)
+      case 0x94: instructions.append(.f32Mul)
+      case 0x95: instructions.append(.f32Div)
+      case 0x96: instructions.append(.f32Min)
+      case 0x97: instructions.append(.f32Max)
+      case 0x98: instructions.append(.f32Copysign)
 
       default:
         throw .invalidInstruction(opcode)
@@ -452,6 +482,17 @@ struct WasmParser {
     } catch {
       throw .leb128Error(error)
     }
+  }
+
+  // Reads a 4-byte little-endian IEEE 754 float (used by f32.const)
+  @inline(__always)
+  private mutating func readF32() throws(WasmError) -> Float {
+    let b0 = UInt32(try readByte())
+    let b1 = UInt32(try readByte())
+    let b2 = UInt32(try readByte())
+    let b3 = UInt32(try readByte())
+    let bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    return Float(bitPattern: bits)
   }
 
   private mutating func readValueType() throws(WasmError) -> ValueType {

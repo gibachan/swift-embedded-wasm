@@ -281,15 +281,22 @@ private struct ConformanceRunner {
 
   private func isSupportedType(_ type: String) -> Bool {
     // Expand this list as more value types are implemented in the interpreter.
-    type == "i32"
+    type == "i32" || type == "f32"
   }
 
   private func convertValue(_ v: WastValue) throws -> Value {
-    guard let str = v.value else { throw WasmError.typeMismatch }
     switch v.type {
     case "i32":
-      guard let bits = UInt32(str) else { throw WasmError.typeMismatch }
+      guard let str = v.value, let bits = UInt32(str) else { throw WasmError.typeMismatch }
       return .i32(Int32(bitPattern: bits))
+    case "f32":
+      let str = v.value ?? "nan:canonical"
+      // nan:canonical / nan:arithmetic: pass canonical NaN (0x7FC00000) as input
+      if str == "nan:canonical" || str == "nan:arithmetic" {
+        return .f32(.nan)
+      }
+      guard let bits = UInt32(str) else { throw WasmError.typeMismatch }
+      return .f32(Float(bitPattern: bits))
     default:
       throw WasmError.typeMismatch
     }
@@ -298,13 +305,36 @@ private struct ConformanceRunner {
   private func valuesMatch(actual: [Value], expected: [WastValue]) -> Bool {
     guard actual.count == expected.count else { return false }
     for (a, e) in zip(actual, expected) {
-      guard let str = e.value,
-            let bits = UInt32(str),
-            case .i32(let av) = a,
-            av == Int32(bitPattern: bits)
-      else { return false }
+      if !valueMatches(actual: a, expected: e) { return false }
     }
     return true
+  }
+
+  private func valueMatches(actual: Value, expected: WastValue) -> Bool {
+    switch expected.type {
+    case "i32":
+      guard let str = expected.value,
+            let bits = UInt32(str),
+            case .i32(let av) = actual
+      else { return false }
+      return av == Int32(bitPattern: bits)
+    case "f32":
+      guard case .f32(let af) = actual else { return false }
+      let expStr = expected.value ?? ""
+      if expStr == "nan:canonical" {
+        // Canonical NaN: exponent all 1s, top mantissa bit set, lower 22 bits zero
+        // Bit pattern (ignoring sign): 0x7FC00000
+        guard af.isNaN else { return false }
+        return (af.bitPattern & 0x7FFFFFFF) == 0x7FC00000
+      } else if expStr == "nan:arithmetic" {
+        return af.isNaN
+      } else {
+        guard let bits = UInt32(expStr) else { return false }
+        return af.bitPattern == bits
+      }
+    default:
+      return false
+    }
   }
 
   private func describeValues(_ values: [WastValue]) -> String {
@@ -352,7 +382,7 @@ struct SpectestFile: Sendable, CustomStringConvertible {
 
 // MARK: - Test suite
 
-@Suite("Spectest Conformance")
+@Suite("Spectest Conformance", .serialized)
 struct SpectestTests {
   // Locate the spectest/ directory relative to this source file.
   // The directory is created by `make spectest-gen` and is .gitignored.

@@ -119,6 +119,31 @@ enum Instruction: Sendable {
   case i32ShrU                                                                  // 0x76
   case i32Rotl                                                                  // 0x77
   case i32Rotr                                                                  // 0x78
+  // f32 constant
+  case f32Const(Float)                                                          // 0x43
+  // f32 comparisons (return i32)
+  case f32Eq                                                                    // 0x5B
+  case f32Ne                                                                    // 0x5C
+  case f32Lt                                                                    // 0x5D
+  case f32Gt                                                                    // 0x5E
+  case f32Le                                                                    // 0x5F
+  case f32Ge                                                                    // 0x60
+  // f32 unary
+  case f32Abs                                                                   // 0x8B
+  case f32Neg                                                                   // 0x8C
+  case f32Ceil                                                                  // 0x8D
+  case f32Floor                                                                 // 0x8E
+  case f32Trunc                                                                 // 0x8F
+  case f32Nearest                                                               // 0x90
+  case f32Sqrt                                                                  // 0x91
+  // f32 binary arithmetic
+  case f32Add                                                                   // 0x92
+  case f32Sub                                                                   // 0x93
+  case f32Mul                                                                   // 0x94
+  case f32Div                                                                   // 0x95
+  case f32Min                                                                   // 0x96
+  case f32Max                                                                   // 0x97
+  case f32Copysign                                                              // 0x98
   case call(UInt32)                                                             // 0x10: function call
   indirect case block(BlockType, [Instruction])                                 // 0x02
   indirect case loop(BlockType, [Instruction])                                  // 0x03
@@ -275,4 +300,5 @@ struct WasmModule: Sendable {
 /// A value held on the stack or in locals at runtime
 enum Value: Sendable, Equatable {
   case i32(Int32)
+  case f32(Float)
 }
