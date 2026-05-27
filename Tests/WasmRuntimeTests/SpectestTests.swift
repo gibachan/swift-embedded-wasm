@@ -285,7 +285,7 @@ private struct ConformanceRunner {
 
   private func isSupportedType(_ type: String) -> Bool {
     // Expand this list as more value types are implemented in the interpreter.
-    type == "i32" || type == "f32"
+    type == "i32" || type == "i64" || type == "f32"
   }
 
   private func convertValue(_ v: WastValue) throws -> Value {
@@ -293,6 +293,9 @@ private struct ConformanceRunner {
     case "i32":
       guard let str = v.value, let bits = UInt32(str) else { throw WasmError.typeMismatch }
       return .i32(Int32(bitPattern: bits))
+    case "i64":
+      guard let str = v.value, let bits = UInt64(str) else { throw WasmError.typeMismatch }
+      return .i64(Int64(bitPattern: bits))
     case "f32":
       let str = v.value ?? "nan:canonical"
       // nan:canonical / nan:arithmetic: pass canonical NaN (0x7FC00000) as input
@@ -322,6 +325,12 @@ private struct ConformanceRunner {
             case .i32(let av) = actual
       else { return false }
       return av == Int32(bitPattern: bits)
+    case "i64":
+      guard let str = expected.value,
+            let bits = UInt64(str),
+            case .i64(let av) = actual
+      else { return false }
+      return av == Int64(bitPattern: bits)
     case "f32":
       guard case .f32(let af) = actual else { return false }
       let expStr = expected.value ?? ""

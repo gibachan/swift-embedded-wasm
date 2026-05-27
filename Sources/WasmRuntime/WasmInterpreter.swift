@@ -213,8 +213,9 @@ struct WasmInterpreter {
       for vt in body.locals {
         switch vt {
         case .i32: locals.append(.i32(0))
+        case .i64: locals.append(.i64(0))
         case .f32: locals.append(.f32(0.0))
-        default:   locals.append(.i32(0))
+        case .f64: locals.append(.i32(0))  // f64 not implemented; placeholder
         }
       }
       let base = valueStack.count
@@ -682,6 +683,243 @@ struct WasmInterpreter {
               case .f32(let a) = valueStack.removeLast()
         else { throw .typeMismatch }
         valueStack.append(.f32(Float(signOf: b, magnitudeOf: a)))
+
+      // --- i64 constant ---
+
+      case .i64Const(let value):
+        valueStack.append(.i64(value))
+
+      // --- i64 unary ---
+
+      case .i64Eqz:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i32(a == 0 ? 1 : 0))
+
+      case .i64Clz:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i64(Int64(UInt64(bitPattern: a).leadingZeroBitCount)))
+
+      case .i64Ctz:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i64(Int64(UInt64(bitPattern: a).trailingZeroBitCount)))
+
+      case .i64Popcnt:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i64(Int64(UInt64(bitPattern: a).nonzeroBitCount)))
+
+      case .i64Extend8S:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i64(Int64(Int8(bitPattern: UInt8(a & 0xFF)))))
+
+      case .i64Extend16S:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i64(Int64(Int16(bitPattern: UInt16(a & 0xFFFF)))))
+
+      case .i64Extend32S:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i64(Int64(Int32(bitPattern: UInt32(a & 0xFFFF_FFFF)))))
+
+      // --- i64 comparisons (return i32) ---
+
+      case .i64Eq:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(a == b ? 1 : 0))
+
+      case .i64Ne:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(a != b ? 1 : 0))
+
+      case .i64LtS:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(a < b ? 1 : 0))
+
+      case .i64LtU:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(UInt64(bitPattern: a) < UInt64(bitPattern: b) ? 1 : 0))
+
+      case .i64GtS:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(a > b ? 1 : 0))
+
+      case .i64GtU:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(UInt64(bitPattern: a) > UInt64(bitPattern: b) ? 1 : 0))
+
+      case .i64LeS:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(a <= b ? 1 : 0))
+
+      case .i64LeU:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(UInt64(bitPattern: a) <= UInt64(bitPattern: b) ? 1 : 0))
+
+      case .i64GeS:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(a >= b ? 1 : 0))
+
+      case .i64GeU:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i32(UInt64(bitPattern: a) >= UInt64(bitPattern: b) ? 1 : 0))
+
+      // --- i64 arithmetic ---
+
+      case .i64Add:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i64(a &+ b))
+
+      case .i64Sub:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i64(a &- b))
+
+      case .i64Mul:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i64(a &* b))
+
+      case .i64DivS:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        guard b != 0 else { throw .divisionByZero }
+        guard !(a == Int64.min && b == -1) else { throw .integerOverflow }
+        valueStack.append(.i64(a / b))
+
+      case .i64DivU:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        guard b != 0 else { throw .divisionByZero }
+        valueStack.append(.i64(Int64(bitPattern: UInt64(bitPattern: a) / UInt64(bitPattern: b))))
+
+      case .i64RemS:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        guard b != 0 else { throw .divisionByZero }
+        valueStack.append(.i64(a == Int64.min && b == -1 ? 0 : a % b))
+
+      case .i64RemU:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        guard b != 0 else { throw .divisionByZero }
+        valueStack.append(.i64(Int64(bitPattern: UInt64(bitPattern: a) % UInt64(bitPattern: b))))
+
+      // --- i64 bitwise ---
+
+      case .i64And:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i64(a & b))
+
+      case .i64Or:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i64(a | b))
+
+      case .i64Xor:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        valueStack.append(.i64(a ^ b))
+
+      case .i64Shl:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        let shift = UInt64(bitPattern: b) & 63
+        valueStack.append(.i64(Int64(bitPattern: UInt64(bitPattern: a) << shift)))
+
+      case .i64ShrS:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        let shift = Int64(UInt64(bitPattern: b) & 63)
+        valueStack.append(.i64(a >> shift))
+
+      case .i64ShrU:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        let shift = UInt64(bitPattern: b) & 63
+        valueStack.append(.i64(Int64(bitPattern: UInt64(bitPattern: a) >> shift)))
+
+      case .i64Rotl:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        let shift = UInt64(bitPattern: b) & 63
+        let ua = UInt64(bitPattern: a)
+        let result = shift == 0 ? ua : (ua << shift | ua >> (64 - shift))
+        valueStack.append(.i64(Int64(bitPattern: result)))
+
+      case .i64Rotr:
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i64(let b) = valueStack.removeLast(),
+              case .i64(let a) = valueStack.removeLast()
+        else { throw .typeMismatch }
+        let shift = UInt64(bitPattern: b) & 63
+        let ua = UInt64(bitPattern: a)
+        let result = shift == 0 ? ua : (ua >> shift | ua << (64 - shift))
+        valueStack.append(.i64(Int64(bitPattern: result)))
 
       // --- memory access ---
 

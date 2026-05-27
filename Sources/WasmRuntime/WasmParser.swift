@@ -414,9 +414,8 @@ struct WasmParser {
       case 0x41:  // i32.const (signed LEB128)
         instructions.append(.i32Const(try readI32()))
 
-      case 0x42:  // i64.const (signed LEB128, 64-bit) — not yet implemented
-        _ = try readI64()
-        instructions.append(.unimplemented(0x42))
+      case 0x42:  // i64.const (signed LEB128, 64-bit)
+        instructions.append(.i64Const(try readI64()))
 
       case 0x43:  // f32.const (4 bytes, little-endian IEEE 754)
         instructions.append(.f32Const(try readF32()))
@@ -490,20 +489,50 @@ struct WasmParser {
       case 0x97: instructions.append(.f32Max)
       case 0x98: instructions.append(.f32Copysign)
 
-      // i64 and f64 instructions — parsed (to correctly position the stream) but not executed.
+      // i64 unary
+      case 0x50: instructions.append(.i64Eqz)
+      case 0x79: instructions.append(.i64Clz)
+      case 0x7A: instructions.append(.i64Ctz)
+      case 0x7B: instructions.append(.i64Popcnt)
+      case 0xC2: instructions.append(.i64Extend8S)
+      case 0xC3: instructions.append(.i64Extend16S)
+      case 0xC4: instructions.append(.i64Extend32S)
+
+      // i64 comparisons (return i32)
+      case 0x51: instructions.append(.i64Eq)
+      case 0x52: instructions.append(.i64Ne)
+      case 0x53: instructions.append(.i64LtS)
+      case 0x54: instructions.append(.i64LtU)
+      case 0x55: instructions.append(.i64GtS)
+      case 0x56: instructions.append(.i64GtU)
+      case 0x57: instructions.append(.i64LeS)
+      case 0x58: instructions.append(.i64LeU)
+      case 0x59: instructions.append(.i64GeS)
+      case 0x5A: instructions.append(.i64GeU)
+
+      // i64 arithmetic
+      case 0x7C: instructions.append(.i64Add)
+      case 0x7D: instructions.append(.i64Sub)
+      case 0x7E: instructions.append(.i64Mul)
+      case 0x7F: instructions.append(.i64DivS)
+      case 0x80: instructions.append(.i64DivU)
+      case 0x81: instructions.append(.i64RemS)
+      case 0x82: instructions.append(.i64RemU)
+
+      // i64 bitwise
+      case 0x83: instructions.append(.i64And)
+      case 0x84: instructions.append(.i64Or)
+      case 0x85: instructions.append(.i64Xor)
+      case 0x86: instructions.append(.i64Shl)
+      case 0x87: instructions.append(.i64ShrS)
+      case 0x88: instructions.append(.i64ShrU)
+      case 0x89: instructions.append(.i64Rotl)
+      case 0x8A: instructions.append(.i64Rotr)
+
+      // f64 and conversion instructions — parsed but not executed.
       // Encountering them at runtime throws invalidInstruction, causing spec tests to skip.
-      case 0x50,                               // i64.eqz
-           0x51, 0x52, 0x53, 0x54, 0x55,      // i64 comparisons (eq/ne/lt_s/lt_u/gt_s)
-           0x56, 0x57, 0x58, 0x59,            // i64 comparisons (gt_u/le_s/le_u/ge_s)
-           0x5A,                               // i64.ge_u
-           0x61, 0x62, 0x63, 0x64, 0x65,      // f64 comparisons (eq/ne/lt/gt/le)
+      case 0x61, 0x62, 0x63, 0x64, 0x65,      // f64 comparisons (eq/ne/lt/gt/le)
            0x66,                               // f64.ge
-           0x79, 0x7A, 0x7B,                  // i64.clz / i64.ctz / i64.popcnt
-           0x7C, 0x7D, 0x7E, 0x7F,            // i64.add / sub / mul / div_s
-           0x80, 0x81, 0x82, 0x83, 0x84,      // i64.div_u / rem_s / rem_u / and / or
-           0x85, 0x86,                         // i64.xor / shl
-           0x87, 0x88, 0x89,                  // i64.shr_s / shr_u / rotl
-           0x8A,                               // i64.rotr
            0x99, 0x9A, 0x9B, 0x9C, 0x9D,     // f64.abs / neg / ceil / floor / trunc
            0x9E, 0x9F,                         // f64.nearest / sqrt
            0xA0, 0xA1, 0xA2, 0xA3, 0xA4,      // f64.add / sub / mul / div / min
@@ -513,8 +542,7 @@ struct WasmParser {
            0xB0, 0xB1, 0xB2, 0xB3, 0xB4,      // more i64 trunc/convert ops
            0xB5, 0xB6, 0xB7, 0xB8,            // f32.demote_f64, f64.convert ops
            0xB9, 0xBA, 0xBB,                  // f64.convert ops / f64.promote_f32
-           0xBC, 0xBD, 0xBE, 0xBF,            // reinterpret ops
-           0xC2, 0xC3, 0xC4:                  // i64.extend8_s / extend16_s / extend32_s
+           0xBC, 0xBD, 0xBE, 0xBF:            // reinterpret ops
         instructions.append(.unimplemented(opcode))
 
       default:
