@@ -952,7 +952,11 @@ struct WasmInterpreter {
       // --- structured control flow ---
 
       case .block(let bt, let inner):
-        let base = valueStack.count
+        // Multi-value blocks (typeIndex) may have parameters already on the stack.
+        // stackBase must be set below those params so they are inside the block's stack region
+        // and get consumed (removed) when the block exits via br or fall-through.
+        let paramCount = loopBrArity(bt, types: module.types)
+        let base = valueStack.count - paramCount
         let arity = blockArity(bt, types: module.types)
         frames[fi].scopes.append(Scope(instructions: inner, ip: 0, kind: .block, stackBase: base, arity: arity))
 
@@ -967,7 +971,9 @@ struct WasmInterpreter {
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let cond) = valueStack.removeLast() else { throw .typeMismatch }
         let body = cond != 0 ? thenBody : elseBody
-        let base = valueStack.count
+        // Multi-value if (typeIndex) may have parameters on the stack after the condition is popped.
+        let paramCount = loopBrArity(bt, types: module.types)
+        let base = valueStack.count - paramCount
         let arity = blockArity(bt, types: module.types)
         frames[fi].scopes.append(Scope(instructions: body, ip: 0, kind: .ifElse, stackBase: base, arity: arity))
 
@@ -987,6 +993,9 @@ struct WasmInterpreter {
         let i = Int(idx)
         let depth = (i >= 0 && i < labels.count) ? labels[i] : default_
         try handleBranch(depth: depth, fi: fi)
+
+      case .unreachable:
+        throw WasmError.unreachableReached
 
       case .nop:
         break

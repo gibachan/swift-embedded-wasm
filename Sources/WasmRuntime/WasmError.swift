@@ -24,4 +24,5 @@ enum WasmError: Error, Equatable, Sendable {
   case divisionByZero                   // division by zero (e.g. div_u, rem_u)
   case integerOverflow                  // signed division overflow (INT32_MIN / -1)
   case executionLimitExceeded           // instruction fuel exhausted (prevents infinite loops)
+  case unreachableReached               // unreachable instruction executed (trap)
 }

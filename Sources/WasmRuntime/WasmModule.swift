@@ -84,6 +84,7 @@ struct ElementSegment: Sendable {
 /// block/loop/if hold child instructions, so indirect cases are used.
 /// In the macOS phase, indirect (heap allocation) is acceptable in favor of correctness.
 enum Instruction: Sendable {
+  case unreachable                                                              // 0x00
   case localGet(UInt32)                                                         // 0x20
   case localSet(UInt32)                                                         // 0x21
   case globalGet(UInt32)                                                        // 0x23

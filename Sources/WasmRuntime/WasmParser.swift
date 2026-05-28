@@ -344,6 +344,9 @@ struct WasmParser {
         }
         instructions.append(.ifElse(bt, thenBody: thenBody, elseBody: elseBody))
 
+      case 0x00:  // unreachable
+        instructions.append(.unreachable)
+
       case 0x01:  // nop
         instructions.append(.nop)
 
