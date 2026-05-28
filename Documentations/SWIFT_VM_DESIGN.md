@@ -471,7 +471,7 @@ extension UInt64: WasmInteger { typealias Signed = Int64 }
 
 ## 10. WasmKit 実装との比較分析
 
-本プロジェクトでは `third_party/WasmKit/` に Swift 製 Wasm Runtime（WasmKit）のソースを参照できる。
+本プロジェクトでは `ThirdParty/WasmKit/` に Swift 製 Wasm Runtime（WasmKit）のソースを参照できる。
 WasmKit の設計から Swift メリットの活用状況を分析し、本プロジェクトへの示唆を整理した。
 
 ### 10.1 WasmKit が Swift のメリットを活かしている点

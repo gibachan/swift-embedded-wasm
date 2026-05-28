@@ -47,7 +47,7 @@ SWIFTFLAGS := \
   -sdk $(SWIFT_SDK)
 
 # --- spectest パス -----------------------------------------------------------
-SPECTEST_SRC := third_party/testsuite
+SPECTEST_SRC := ThirdParty/testsuite
 SPECTEST_OUT := Tests/WasmRuntimeTests/spectest
 
 # =============================================================================

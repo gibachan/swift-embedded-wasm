@@ -129,15 +129,15 @@ WASM VM の実装は、macOS 上での開発段階においても **Embedded Swi
 
 ### wasm3（ローカル）
 
-wasm3 のソースコードを `third_party/wasm3/` に Git Submodule として配置している。
+wasm3 のソースコードを `ThirdParty/wasm3/` に Git Submodule として配置している。
 WebAssembly Runtime の実装を参照する際は、ネットワーク通信なしにこのローカルコピーを使用すること。
 
 主要ファイル:
 
 | ファイル | 内容 |
 |---|---|
-| `third_party/wasm3/source/m3_core.h` | 型定義・主要データ構造 |
-| `third_party/wasm3/source/m3_env.h` | VM 環境・モジュール構造 |
-| `third_party/wasm3/source/m3_exec.c` | インタープリタのメインループ |
-| `third_party/wasm3/source/m3_parse.c` | バイナリパーサー |
-| `third_party/wasm3/source/m3_compile.c` | コンパイル・中間表現 |
+| `ThirdParty/wasm3/source/m3_core.h` | 型定義・主要データ構造 |
+| `ThirdParty/wasm3/source/m3_env.h` | VM 環境・モジュール構造 |
+| `ThirdParty/wasm3/source/m3_exec.c` | インタープリタのメインループ |
+| `ThirdParty/wasm3/source/m3_parse.c` | バイナリパーサー |
+| `ThirdParty/wasm3/source/m3_compile.c` | コンパイル・中間表現 |
