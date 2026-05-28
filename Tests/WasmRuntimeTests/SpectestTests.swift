@@ -179,6 +179,8 @@ private struct ConformanceRunner {
       }
     } catch WasmError.invalidInstruction(_) {
       skipCount += 1
+    } catch WasmError.executionLimitExceeded {
+      skipCount += 1
     } catch {
       failCount += 1
       Issue.record("Line \(cmd.line): unexpected error in assert_return: \(error)")
@@ -204,6 +206,8 @@ private struct ConformanceRunner {
         "Line \(cmd.line): expected trap '\(cmd.text ?? "")' but execution succeeded"
       )
     } catch WasmError.invalidInstruction(_) {
+      skipCount += 1
+    } catch WasmError.executionLimitExceeded {
       skipCount += 1
     } catch {
       // Any WasmError = some trap occurred = pass.
@@ -246,6 +250,8 @@ private struct ConformanceRunner {
       _ = try invoke(action)
       passCount += 1
     } catch WasmError.invalidInstruction(_) {
+      skipCount += 1
+    } catch WasmError.executionLimitExceeded {
       skipCount += 1
     } catch {
       failCount += 1

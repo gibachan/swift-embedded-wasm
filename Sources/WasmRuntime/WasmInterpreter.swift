@@ -66,8 +66,7 @@ private struct Frame {
   let resultCount: Int
 }
 
-// Returns the number of result values a block produces when exited via `br`.
-// For `loop` this is always 0 (loops restart from the top with no carried values in MVP).
+// Returns the number of result values a block/if produces when exited via `br`.
 private func blockArity(_ bt: BlockType, types: [FunctionType]) -> Int {
   switch bt {
   case .void: return 0
@@ -75,6 +74,18 @@ private func blockArity(_ bt: BlockType, types: [FunctionType]) -> Int {
   case .typeIndex(let idx):
     guard Int(idx) < types.count else { return 0 }
     return types[Int(idx)].results.count
+  }
+}
+
+// Returns the arity (param count) and param count for a loop's `br 0` restart.
+// In MVP loops have no params; in the multi-value extension a loop's label carries
+// its parameter types (not its results) on branch.
+private func loopBrArity(_ bt: BlockType, types: [FunctionType]) -> Int {
+  switch bt {
+  case .void, .value: return 0
+  case .typeIndex(let idx):
+    guard Int(idx) < types.count else { return 0 }
+    return types[Int(idx)].params.count
   }
 }
 
@@ -189,11 +200,13 @@ struct WasmInterpreter {
   /// so arbitrarily deep Wasm recursion does not overflow the Swift stack.
   private mutating func runIterative(
     functionIndex: Int,
-    args: [Value]
+    args: [Value],
+    fuelLimit: Int = 10_000_000
   ) throws(WasmError) -> [Value] {
 
     var valueStack: [Value] = []
     var frames: [Frame] = []
+    var fuel = fuelLimit
 
     // Push a Wasm function frame.  Host functions are executed inline (no frame push).
     @inline(__always)
@@ -243,8 +256,11 @@ struct WasmInterpreter {
       let target = frames[fi].scopes.removeLast()
       switch target.kind {
       case .loop:
-        // br to loop = restart from the top with no carried values (MVP: loop arity = 0)
+        // Preserve the top `arity` values (loop params carried by br 0) before
+        // clearing the stack back to stackBase, then push them back as the new params.
+        let results = Array(valueStack.suffix(target.arity))
         valueStack.removeSubrange(target.stackBase...)
+        valueStack.append(contentsOf: results)
         var restarted = target
         restarted.ip = 0
         frames[fi].scopes.append(restarted)
@@ -295,6 +311,8 @@ struct WasmInterpreter {
       }
 
       // Fetch next instruction
+      fuel -= 1
+      if fuel < 0 { throw WasmError.executionLimitExceeded }
       let instr = frames[fi].scopes[si].instructions[frames[fi].scopes[si].ip]
       frames[fi].scopes[si].ip += 1
 
@@ -939,11 +957,11 @@ struct WasmInterpreter {
         frames[fi].scopes.append(Scope(instructions: inner, ip: 0, kind: .block, stackBase: base, arity: arity))
 
       case .loop(let bt, let inner):
-        let base = valueStack.count
-        // Loop label arity = parameter count; in MVP that is always 0.
-        // The result type of the loop only matters when falling through (not on br).
-        _ = bt
-        frames[fi].scopes.append(Scope(instructions: inner, ip: 0, kind: .loop, stackBase: base, arity: 0))
+        // Multi-value loops (typeIndex): br 0 carries param_count values.
+        // stackBase is set below the params so they live inside the loop's stack region.
+        let paramCount = loopBrArity(bt, types: module.types)
+        let base = valueStack.count - paramCount
+        frames[fi].scopes.append(Scope(instructions: inner, ip: 0, kind: .loop, stackBase: base, arity: paramCount))
 
       case .ifElse(let bt, let thenBody, let elseBody):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
