@@ -9,7 +9,7 @@ swift-embedded-wasm/
 ├── Sources/WasmRuntime/   # 共有ロジック（macOS / Pico 両方でコンパイル）
 ├── Tests/WasmRuntimeTests/# macOS 上でのテスト（swift test）
 ├── src/main.swift         # Pico 固有のエントリポイント
-├── pico-ble/              # BLE ペリフェラル実装（Pico W 向け、CMake ビルド）
+├── Examples/RaspberryPiPicoW-BLE/Embedded/  # BLE ペリフェラル実装（Pico W 向け、CMake ビルド）
 ├── Package.swift          # macOS 向けビルド定義（テスト・開発用）
 └── Makefile               # Pico 向けクロスコンパイル定義
 ```

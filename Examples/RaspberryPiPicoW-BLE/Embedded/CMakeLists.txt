@@ -12,11 +12,11 @@ project(pico-ble)
 pico_sdk_init()
 enable_language(Swift)
 
-set(WASM_RUNTIME_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../Sources/WasmRuntime)
+set(WASM_RUNTIME_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../Sources/WasmRuntime)
 
 # ── Wasm binary pipeline ────────────────────────────────────────────────────
 set(BLINK_LOOP_WASM_SRC
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Tests/WasmRuntimeTests/wasm/blink-loop.wasm)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../Tests/WasmRuntimeTests/wasm/blink-loop.wasm)
 
 # [C] Build-time validation: fail the build if the wasm is malformed.
 find_program(WASM_VALIDATE wasm-validate)

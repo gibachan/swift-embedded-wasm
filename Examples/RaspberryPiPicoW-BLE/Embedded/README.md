@@ -24,7 +24,7 @@ Raspberry Pi Pico W 向けの Embedded Swift BLE ペリフェラル実装です�
 `build.sh` 内の環境変数を自分の環境に合わせて編集してから実行します。
 
 ```sh
-cd pico-ble
+cd Examples/RaspberryPiPicoW-BLE/Embedded
 ./build.sh
 ```
 
