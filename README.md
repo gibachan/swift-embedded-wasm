@@ -6,16 +6,15 @@ Embedded Swift で実装する WebAssembly Runtime（Raspberry Pi Pico 2 / RP235
 
 ```
 swift-embedded-wasm/
-├── Sources/WasmRuntime/   # 共有ロジック（macOS / Pico 両方でコンパイル）
-├── Tests/WasmRuntimeTests/# macOS 上でのテスト（swift test）
-├── src/main.swift         # Pico 固有のエントリポイント
+├── Sources/WasmRuntime/                      # 共有ロジック（macOS / Pico 両方でコンパイル）
+├── Tests/WasmRuntimeTests/                   # macOS 上でのテスト（swift test）
 ├── Examples/RaspberryPiPicoW-BLE/Embedded/  # BLE ペリフェラル実装（Pico W 向け、CMake ビルド）
-├── Package.swift          # macOS 向けビルド定義（テスト・開発用）
-└── Makefile               # Pico 向けクロスコンパイル定義
+├── Package.swift                             # macOS 向けビルド定義（テスト・開発用）
+└── Makefile                                  # テスト・Embedded Swift 検証定義
 ```
 
-`Sources/WasmRuntime/` 以下のコードは macOS（SwiftPM）と Pico（Makefile）の両方でコンパイルされます。
-Pico 固有のハードウェア操作は `src/main.swift` に分離します。
+`Sources/WasmRuntime/` 以下のコードは macOS（SwiftPM）と Pico（Makefile `compile`）の両方でコンパイルされます。
+Pico 向けの完全なビルドは `Examples/RaspberryPiPicoW-BLE/Embedded/` を参照してください。
 
 ## ビルド
 
