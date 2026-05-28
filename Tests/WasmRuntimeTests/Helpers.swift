@@ -1,4 +1,5 @@
 import Foundation
+
 @testable import WasmRuntime
 
 enum TestFixtureError: Error {
@@ -10,7 +11,8 @@ enum TestFixtureError: Error {
 /// Files are copied into the test bundle at build time via
 /// resources: [.copy("wasm")] in Package.swift.
 func loadWasm(_ name: String) throws -> [UInt8] {
-  guard let url = Bundle.module.url(forResource: name, withExtension: "wasm", subdirectory: "wasm") else {
+  guard let url = Bundle.module.url(forResource: name, withExtension: "wasm", subdirectory: "wasm")
+  else {
     throw TestFixtureError.wasmFileNotFound(name)
   }
   return try [UInt8](Data(contentsOf: url))

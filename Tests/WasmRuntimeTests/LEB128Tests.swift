@@ -1,4 +1,5 @@
 import Testing
+
 @testable import WasmRuntime
 
 // MARK: - Helpers
@@ -74,7 +75,7 @@ struct ULEB128Tests {
     // UInt64.max = [0xFF x 9, 0x01]
     #expect(
       try decodeU64([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])
-      == UInt64.max
+        == UInt64.max
     )
   }
 
@@ -180,7 +181,7 @@ struct SLEB128Tests {
     // Int64.max = [0xFF x 8, 0xFF, 0x00]
     #expect(
       try decodeI64([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00])
-      == Int64.max
+        == Int64.max
     )
   }
 
@@ -188,7 +189,7 @@ struct SLEB128Tests {
     // Int64.min = [0x80 x 9, 0x7F]
     #expect(
       try decodeI64([0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x7F])
-      == Int64.min
+        == Int64.min
     )
   }
 

@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import WasmRuntime
 
 // MARK: - Parser Tests
@@ -165,28 +166,34 @@ struct WasmInterpreterTests {
 
     let module = try parseModule("fizz-buzz")
     let hostImports: [HostImport] = [
-      .function("env", "print_string", { args, memory in
-        guard case .i32(let offset) = args[0],
-              case .i32(let len) = args[1] else { return [] }
-        let bytes = Array(memory[Int(offset)..<(Int(offset) + Int(len))])
-        output.append(String(bytes: bytes, encoding: .utf8) ?? "")
-        return []
-      }),
-      .function("env", "print_value", { args, _ in
-        guard case .i32(let value) = args[0] else { return [] }
-        output.append("\(value)")
-        return []
-      }),
+      .function(
+        "env", "print_string",
+        { args, memory in
+          guard case .i32(let offset) = args[0],
+            case .i32(let len) = args[1]
+          else { return [] }
+          let bytes = Array(memory[Int(offset)..<(Int(offset) + Int(len))])
+          output.append(String(bytes: bytes, encoding: .utf8) ?? "")
+          return []
+        }),
+      .function(
+        "env", "print_value",
+        { args, _ in
+          guard case .i32(let value) = args[0] else { return [] }
+          output.append("\(value)")
+          return []
+        }),
       .memory("env", "buffer", 1),
     ]
 
     var interp = try WasmInterpreter(module: module, hostImports: hostImports)
     _ = try interp.callExport(nameBytes: Array("fizzbuzz".utf8), args: [.i32(16)])
 
-    #expect(output == [
-      "1", "2", "Fizz", "4", "Buzz", "Fizz", "7", "8",
-      "Fizz", "Buzz", "11", "Fizz", "13", "14", "FizzBuzz",
-    ])
+    #expect(
+      output == [
+        "1", "2", "Fizz", "4", "Buzz", "Fizz", "7", "8",
+        "Fizz", "Buzz", "11", "Fizz", "13", "14", "FizzBuzz",
+      ])
   }
 
   @Test func blinkLoopCallsBlinkNTimes() throws {
@@ -194,10 +201,12 @@ struct WasmInterpreterTests {
 
     let module = try parseModule("blink-loop")
     let hostImports: [HostImport] = [
-      .function("env", "blink", { _, _ in
-        blinkCount += 1
-        return []
-      }),
+      .function(
+        "env", "blink",
+        { _, _ in
+          blinkCount += 1
+          return []
+        })
     ]
 
     var interp = try WasmInterpreter(module: module, hostImports: hostImports)
@@ -238,10 +247,12 @@ struct WasmInterpreterTests {
 
     let module = try parseModule("blink-loop")
     let hostImports: [HostImport] = [
-      .function("env", "blink", { _, _ in
-        blinkCount += 1
-        return []
-      }),
+      .function(
+        "env", "blink",
+        { _, _ in
+          blinkCount += 1
+          return []
+        })
     ]
 
     var interp = try WasmInterpreter(module: module, hostImports: hostImports)
@@ -256,7 +267,7 @@ struct WasmInterpreterTests {
       .appendingPathComponent("spectest/forward.0.wasm")
       .path
     guard let data = Foundation.FileManager.default.contents(atPath: path) else {
-      return // spectest not generated, skip
+      return  // spectest not generated, skip
     }
     let bytes = [UInt8](data)
     let module = try parseBytes(bytes)
@@ -265,7 +276,7 @@ struct WasmInterpreterTests {
     let odd = Array("odd".utf8)
     #expect(try interp.callExport(nameBytes: even, args: [Value.i32(13)]) == [Value.i32(0)])
     #expect(try interp.callExport(nameBytes: even, args: [Value.i32(20)]) == [Value.i32(1)])
-    #expect(try interp.callExport(nameBytes: odd,  args: [Value.i32(13)]) == [Value.i32(1)])
-    #expect(try interp.callExport(nameBytes: odd,  args: [Value.i32(20)]) == [Value.i32(0)])
+    #expect(try interp.callExport(nameBytes: odd, args: [Value.i32(13)]) == [Value.i32(1)])
+    #expect(try interp.callExport(nameBytes: odd, args: [Value.i32(20)]) == [Value.i32(0)])
   }
 }

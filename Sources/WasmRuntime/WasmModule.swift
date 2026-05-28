@@ -17,9 +17,9 @@ enum ValueType: UInt8, Sendable {
 ///   negative values are value types or void (0x40 = -64, 0x7F = -1 for i32, etc.)
 ///   non-negative values are type indices into the Type section (multi-value extension)
 enum BlockType: Sendable {
-  case void              // 0x40: no result
+  case void  // 0x40: no result
   case value(ValueType)  // 0x7F etc.: single result
-  case typeIndex(UInt32) // >= 0: index into Type section (multi-value blocks)
+  case typeIndex(UInt32)  // >= 0: index into Type section (multi-value blocks)
 }
 
 // MARK: - Function Type (signature)
@@ -37,7 +37,7 @@ struct FunctionType: Sendable {
 // MARK: - Reference Types
 
 enum RefType: UInt8, Sendable {
-  case funcRef   = 0x70
+  case funcRef = 0x70
   case externRef = 0x6F
 }
 
@@ -53,7 +53,7 @@ struct TableType: Sendable {
 
 enum GlobalMutability: UInt8, Sendable {
   case immutable = 0x00
-  case mutable   = 0x01
+  case mutable = 0x01
 }
 
 struct GlobalType: Sendable {
@@ -84,125 +84,125 @@ struct ElementSegment: Sendable {
 /// block/loop/if hold child instructions, so indirect cases are used.
 /// In the macOS phase, indirect (heap allocation) is acceptable in favor of correctness.
 enum Instruction: Sendable {
-  case unreachable                                                              // 0x00
-  case localGet(UInt32)                                                         // 0x20
-  case localSet(UInt32)                                                         // 0x21
-  case globalGet(UInt32)                                                        // 0x23
-  case globalSet(UInt32)                                                        // 0x24
-  case i32Const(Int32)                                                          // 0x41
+  case unreachable  // 0x00
+  case localGet(UInt32)  // 0x20
+  case localSet(UInt32)  // 0x21
+  case globalGet(UInt32)  // 0x23
+  case globalSet(UInt32)  // 0x24
+  case i32Const(Int32)  // 0x41
   // i32 unary
-  case i32Eqz                                                                   // 0x45
-  case i32Clz                                                                   // 0x67
-  case i32Ctz                                                                   // 0x68
-  case i32Popcnt                                                                // 0x69
-  case i32Extend8S                                                              // 0xC0
-  case i32Extend16S                                                             // 0xC1
+  case i32Eqz  // 0x45
+  case i32Clz  // 0x67
+  case i32Ctz  // 0x68
+  case i32Popcnt  // 0x69
+  case i32Extend8S  // 0xC0
+  case i32Extend16S  // 0xC1
   // i32 comparisons
-  case i32Eq                                                                    // 0x46
-  case i32Ne                                                                    // 0x47
-  case i32LtS                                                                   // 0x48
-  case i32LtU                                                                   // 0x49
-  case i32GtS                                                                   // 0x4A
-  case i32GtU                                                                   // 0x4B
-  case i32LeS                                                                   // 0x4C
-  case i32LeU                                                                   // 0x4D
-  case i32GeS                                                                   // 0x4E
-  case i32GeU                                                                   // 0x4F
+  case i32Eq  // 0x46
+  case i32Ne  // 0x47
+  case i32LtS  // 0x48
+  case i32LtU  // 0x49
+  case i32GtS  // 0x4A
+  case i32GtU  // 0x4B
+  case i32LeS  // 0x4C
+  case i32LeU  // 0x4D
+  case i32GeS  // 0x4E
+  case i32GeU  // 0x4F
   // i32 arithmetic
-  case i32Add                                                                   // 0x6A
-  case i32Sub                                                                   // 0x6B
-  case i32Mul                                                                   // 0x6C
-  case i32DivS                                                                  // 0x6D
-  case i32DivU                                                                  // 0x6E
-  case i32RemS                                                                  // 0x6F
-  case i32RemU                                                                  // 0x70
+  case i32Add  // 0x6A
+  case i32Sub  // 0x6B
+  case i32Mul  // 0x6C
+  case i32DivS  // 0x6D
+  case i32DivU  // 0x6E
+  case i32RemS  // 0x6F
+  case i32RemU  // 0x70
   // i32 bitwise
-  case i32And                                                                   // 0x71
-  case i32Or                                                                    // 0x72
-  case i32Xor                                                                   // 0x73
-  case i32Shl                                                                   // 0x74
-  case i32ShrS                                                                  // 0x75
-  case i32ShrU                                                                  // 0x76
-  case i32Rotl                                                                  // 0x77
-  case i32Rotr                                                                  // 0x78
+  case i32And  // 0x71
+  case i32Or  // 0x72
+  case i32Xor  // 0x73
+  case i32Shl  // 0x74
+  case i32ShrS  // 0x75
+  case i32ShrU  // 0x76
+  case i32Rotl  // 0x77
+  case i32Rotr  // 0x78
   // f32 constant
-  case f32Const(Float)                                                          // 0x43
+  case f32Const(Float)  // 0x43
   // f32 comparisons (return i32)
-  case f32Eq                                                                    // 0x5B
-  case f32Ne                                                                    // 0x5C
-  case f32Lt                                                                    // 0x5D
-  case f32Gt                                                                    // 0x5E
-  case f32Le                                                                    // 0x5F
-  case f32Ge                                                                    // 0x60
+  case f32Eq  // 0x5B
+  case f32Ne  // 0x5C
+  case f32Lt  // 0x5D
+  case f32Gt  // 0x5E
+  case f32Le  // 0x5F
+  case f32Ge  // 0x60
   // f32 unary
-  case f32Abs                                                                   // 0x8B
-  case f32Neg                                                                   // 0x8C
-  case f32Ceil                                                                  // 0x8D
-  case f32Floor                                                                 // 0x8E
-  case f32Trunc                                                                 // 0x8F
-  case f32Nearest                                                               // 0x90
-  case f32Sqrt                                                                  // 0x91
+  case f32Abs  // 0x8B
+  case f32Neg  // 0x8C
+  case f32Ceil  // 0x8D
+  case f32Floor  // 0x8E
+  case f32Trunc  // 0x8F
+  case f32Nearest  // 0x90
+  case f32Sqrt  // 0x91
   // f32 binary arithmetic
-  case f32Add                                                                   // 0x92
-  case f32Sub                                                                   // 0x93
-  case f32Mul                                                                   // 0x94
-  case f32Div                                                                   // 0x95
-  case f32Min                                                                   // 0x96
-  case f32Max                                                                   // 0x97
-  case f32Copysign                                                              // 0x98
+  case f32Add  // 0x92
+  case f32Sub  // 0x93
+  case f32Mul  // 0x94
+  case f32Div  // 0x95
+  case f32Min  // 0x96
+  case f32Max  // 0x97
+  case f32Copysign  // 0x98
   // i64 constant
-  case i64Const(Int64)                                                          // 0x42
+  case i64Const(Int64)  // 0x42
   // i64 unary
-  case i64Eqz                                                                   // 0x50
-  case i64Clz                                                                   // 0x79
-  case i64Ctz                                                                   // 0x7A
-  case i64Popcnt                                                                // 0x7B
-  case i64Extend8S                                                              // 0xC2
-  case i64Extend16S                                                             // 0xC3
-  case i64Extend32S                                                             // 0xC4
+  case i64Eqz  // 0x50
+  case i64Clz  // 0x79
+  case i64Ctz  // 0x7A
+  case i64Popcnt  // 0x7B
+  case i64Extend8S  // 0xC2
+  case i64Extend16S  // 0xC3
+  case i64Extend32S  // 0xC4
   // i64 comparisons (return i32)
-  case i64Eq                                                                    // 0x51
-  case i64Ne                                                                    // 0x52
-  case i64LtS                                                                   // 0x53
-  case i64LtU                                                                   // 0x54
-  case i64GtS                                                                   // 0x55
-  case i64GtU                                                                   // 0x56
-  case i64LeS                                                                   // 0x57
-  case i64LeU                                                                   // 0x58
-  case i64GeS                                                                   // 0x59
-  case i64GeU                                                                   // 0x5A
+  case i64Eq  // 0x51
+  case i64Ne  // 0x52
+  case i64LtS  // 0x53
+  case i64LtU  // 0x54
+  case i64GtS  // 0x55
+  case i64GtU  // 0x56
+  case i64LeS  // 0x57
+  case i64LeU  // 0x58
+  case i64GeS  // 0x59
+  case i64GeU  // 0x5A
   // i64 arithmetic
-  case i64Add                                                                   // 0x7C
-  case i64Sub                                                                   // 0x7D
-  case i64Mul                                                                   // 0x7E
-  case i64DivS                                                                  // 0x7F
-  case i64DivU                                                                  // 0x80
-  case i64RemS                                                                  // 0x81
-  case i64RemU                                                                  // 0x82
+  case i64Add  // 0x7C
+  case i64Sub  // 0x7D
+  case i64Mul  // 0x7E
+  case i64DivS  // 0x7F
+  case i64DivU  // 0x80
+  case i64RemS  // 0x81
+  case i64RemU  // 0x82
   // i64 bitwise
-  case i64And                                                                   // 0x83
-  case i64Or                                                                    // 0x84
-  case i64Xor                                                                   // 0x85
-  case i64Shl                                                                   // 0x86
-  case i64ShrS                                                                  // 0x87
-  case i64ShrU                                                                  // 0x88
-  case i64Rotl                                                                  // 0x89
-  case i64Rotr                                                                  // 0x8A
-  case call(UInt32)                                                             // 0x10: function call
-  indirect case block(BlockType, [Instruction])                                 // 0x02
-  indirect case loop(BlockType, [Instruction])                                  // 0x03
-  indirect case ifElse(BlockType, thenBody: [Instruction], elseBody: [Instruction]) // 0x04
-  case br(UInt32)                                                               // 0x0C
-  case brIf(UInt32)                                                             // 0x0D
+  case i64And  // 0x83
+  case i64Or  // 0x84
+  case i64Xor  // 0x85
+  case i64Shl  // 0x86
+  case i64ShrS  // 0x87
+  case i64ShrU  // 0x88
+  case i64Rotl  // 0x89
+  case i64Rotr  // 0x8A
+  case call(UInt32)  // 0x10: function call
+  indirect case block(BlockType, [Instruction])  // 0x02
+  indirect case loop(BlockType, [Instruction])  // 0x03
+  indirect case ifElse(BlockType, thenBody: [Instruction], elseBody: [Instruction])  // 0x04
+  case br(UInt32)  // 0x0C
+  case brIf(UInt32)  // 0x0D
   // control flow
-  case nop                                                                      // 0x01
-  case return_                                                                  // 0x0F
-  indirect case brTable([UInt32], UInt32)                                       // 0x0E: target_labels[], default_label
+  case nop  // 0x01
+  case return_  // 0x0F
+  indirect case brTable([UInt32], UInt32)  // 0x0E: target_labels[], default_label
   // stack operations
-  case drop                                                                     // 0x1A
-  case select                                                                   // 0x1B
+  case drop  // 0x1A
+  case select  // 0x1B
   // locals
-  case localTee(UInt32)                                                         // 0x22
+  case localTee(UInt32)  // 0x22
   // Parsed but not yet implemented; throws invalidInstruction at runtime.
   // Used for i64/f64 and other opcodes that appear in test modules but are not
   // required for i32/f32 test execution.
@@ -234,8 +234,8 @@ struct MemoryType: Sendable, Equatable {
 
 /// A function import entry from the Import section
 struct FunctionImport: Sendable {
-  let module: [UInt8]    // module name (UTF-8 bytes)
-  let name: [UInt8]      // field name (UTF-8 bytes)
+  let module: [UInt8]  // module name (UTF-8 bytes)
+  let name: [UInt8]  // field name (UTF-8 bytes)
   let typeIndex: UInt32  // index into the Type section
 }
 
@@ -256,7 +256,7 @@ enum Import: Sendable {
 
 /// An initialization segment from the Data section (active form only)
 struct DataSegment: Sendable {
-  let offset: Int32   // write offset into linear memory
+  let offset: Int32  // write offset into linear memory
   let bytes: [UInt8]  // data to write
 }
 
@@ -264,9 +264,9 @@ struct DataSegment: Sendable {
 
 enum ExportKind: UInt8, Sendable {
   case function = 0x00
-  case table    = 0x01
-  case memory   = 0x02
-  case global   = 0x03
+  case table = 0x01
+  case memory = 0x02
+  case global = 0x03
 }
 
 struct Export: Sendable {
@@ -291,17 +291,17 @@ struct Export: Sendable {
 
 /// A parsed Wasm module. Data is stored per section.
 struct WasmModule: Sendable {
-  let types: [FunctionType]       // Type section
-  let imports: [Import]           // Import section
-  let functions: [UInt32]         // Function section: type index for each local function
-  let tables: [TableType]         // Table section
-  let memories: [MemoryType]      // Memory section
-  let globals: [GlobalDef]        // Global section
-  let exports: [Export]           // Export section
-  let code: [FunctionBody]        // Code section
-  let start: UInt32?              // Start section
+  let types: [FunctionType]  // Type section
+  let imports: [Import]  // Import section
+  let functions: [UInt32]  // Function section: type index for each local function
+  let tables: [TableType]  // Table section
+  let memories: [MemoryType]  // Memory section
+  let globals: [GlobalDef]  // Global section
+  let exports: [Export]  // Export section
+  let code: [FunctionBody]  // Code section
+  let start: UInt32?  // Start section
   let elements: [ElementSegment]  // Element section
-  let data: [DataSegment]         // Data section
+  let data: [DataSegment]  // Data section
 
   init(
     types: [FunctionType],

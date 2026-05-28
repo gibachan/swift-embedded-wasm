@@ -26,6 +26,7 @@
 
 import Foundation
 import Testing
+
 @testable import WasmRuntime
 
 // MARK: - wast2json JSON model
@@ -38,13 +39,13 @@ private struct WastTestSuite: Decodable {
 private struct WastCommand: Decodable {
   let type: String
   let line: Int
-  let filename: String?       // .wasm file for module / assert_invalid
-  let name: String?           // module id for named modules
-  let module_type: String?    // "binary" or "text"
+  let filename: String?  // .wasm file for module / assert_invalid
+  let name: String?  // module id for named modules
+  let module_type: String?  // "binary" or "text"
   let action: WastAction?
   let expected: [WastValue]?
-  let text: String?           // expected trap message
-  let asName: String?         // "as" field in register
+  let text: String?  // expected trap message
+  let asName: String?  // "as" field in register
 
   enum CodingKeys: String, CodingKey {
     case type, line, filename, name, module_type, action, expected, text
@@ -53,8 +54,8 @@ private struct WastCommand: Decodable {
 }
 
 private struct WastAction: Decodable {
-  let type: String    // "invoke" or "get"
-  let module: String? // named module reference (optional)
+  let type: String  // "invoke" or "get"
+  let module: String?  // named module reference (optional)
   let field: String
   let args: [WastValue]?
 }
@@ -110,14 +111,15 @@ private struct ConformanceRunner {
 
   private mutating func handle(_ cmd: WastCommand) {
     switch cmd.type {
-    case "module":               handleModule(cmd)
-    case "assert_return":        handleAssertReturn(cmd)
-    case "assert_trap":          handleAssertTrap(cmd)
+    case "module": handleModule(cmd)
+    case "assert_return": handleAssertReturn(cmd)
+    case "assert_trap": handleAssertTrap(cmd)
     case "assert_invalid",
-      "assert_malformed":     handleAssertInvalid(cmd)
-    case "action":               handleAction(cmd)
-    case "register":             skipCount += 1  // cross-module imports: not yet
-    default:                     skipCount += 1  // assert_exhaustion etc.
+      "assert_malformed":
+      handleAssertInvalid(cmd)
+    case "action": handleAction(cmd)
+    case "register": skipCount += 1  // cross-module imports: not yet
+    default: skipCount += 1  // assert_exhaustion etc.
     }
   }
 
@@ -125,7 +127,8 @@ private struct ConformanceRunner {
 
   private mutating func handleModule(_ cmd: WastCommand) {
     guard let filename = cmd.filename,
-          let bytes = loadFile(filename) else {
+      let bytes = loadFile(filename)
+    else {
       currentInterp = nil
       currentModuleSkipped = true
       skipCount += 1
@@ -156,8 +159,14 @@ private struct ConformanceRunner {
   // MARK: assert_return
 
   private mutating func handleAssertReturn(_ cmd: WastCommand) {
-    if currentModuleSkipped { skipCount += 1; return }
-    guard let action = cmd.action else { skipCount += 1; return }
+    if currentModuleSkipped {
+      skipCount += 1
+      return
+    }
+    guard let action = cmd.action else {
+      skipCount += 1
+      return
+    }
 
     // Skip if any arg or expected value type is not yet supported.
     let allValues = (action.args ?? []) + (cmd.expected ?? [])
@@ -190,8 +199,14 @@ private struct ConformanceRunner {
   // MARK: assert_trap
 
   private mutating func handleAssertTrap(_ cmd: WastCommand) {
-    if currentModuleSkipped { skipCount += 1; return }
-    guard let action = cmd.action else { skipCount += 1; return }
+    if currentModuleSkipped {
+      skipCount += 1
+      return
+    }
+    guard let action = cmd.action else {
+      skipCount += 1
+      return
+    }
 
     if (action.args ?? []).contains(where: { !isSupportedType($0.type) }) {
       skipCount += 1
@@ -219,10 +234,14 @@ private struct ConformanceRunner {
 
   private mutating func handleAssertInvalid(_ cmd: WastCommand) {
     // Only binary modules - we have no text-format parser.
-    if cmd.module_type == "text" { skipCount += 1; return }
+    if cmd.module_type == "text" {
+      skipCount += 1
+      return
+    }
     guard let filename = cmd.filename,
-          filename.hasSuffix(".wasm"),
-          let bytes = loadFile(filename) else {
+      filename.hasSuffix(".wasm"),
+      let bytes = loadFile(filename)
+    else {
       skipCount += 1
       return
     }
@@ -240,8 +259,14 @@ private struct ConformanceRunner {
   // MARK: action
 
   private mutating func handleAction(_ cmd: WastCommand) {
-    if currentModuleSkipped { skipCount += 1; return }
-    guard let action = cmd.action else { skipCount += 1; return }
+    if currentModuleSkipped {
+      skipCount += 1
+      return
+    }
+    guard let action = cmd.action else {
+      skipCount += 1
+      return
+    }
     if (action.args ?? []).contains(where: { !isSupportedType($0.type) }) {
       skipCount += 1
       return
@@ -283,8 +308,7 @@ private struct ConformanceRunner {
   }
 
   private mutating func storeModule(named name: String?, interp: WasmInterpreter) {
-    if let name { namedModules[name] = interp }
-    else { currentInterp = interp }
+    if let name { namedModules[name] = interp } else { currentInterp = interp }
   }
 
   // MARK: Value helpers
@@ -327,14 +351,14 @@ private struct ConformanceRunner {
     switch expected.type {
     case "i32":
       guard let str = expected.value,
-            let bits = UInt32(str),
-            case .i32(let av) = actual
+        let bits = UInt32(str),
+        case .i32(let av) = actual
       else { return false }
       return av == Int32(bitPattern: bits)
     case "i64":
       guard let str = expected.value,
-            let bits = UInt64(str),
-            case .i64(let av) = actual
+        let bits = UInt64(str),
+        case .i64(let av) = actual
       else { return false }
       return av == Int64(bitPattern: bits)
     case "f32":
@@ -344,7 +368,7 @@ private struct ConformanceRunner {
         // Canonical NaN: exponent all 1s, top mantissa bit set, lower 22 bits zero
         // Bit pattern (ignoring sign): 0x7FC00000
         guard af.isNaN else { return false }
-        return (af.bitPattern & 0x7FFFFFFF) == 0x7FC00000
+        return (af.bitPattern & 0x7FFF_FFFF) == 0x7FC0_0000
       } else if expStr == "nan:arithmetic" {
         return af.isNaN
       } else {
@@ -379,13 +403,13 @@ private struct ConformanceRunner {
 // them will fail at instantiation and be marked SKIP.
 private func spectestHostImports() -> [HostImport] {
   [
-    .function("spectest", "print",          { _, _ in [] }),
-    .function("spectest", "print_i32",      { _, _ in [] }),
-    .function("spectest", "print_i64",      { _, _ in [] }),
-    .function("spectest", "print_f32",      { _, _ in [] }),
-    .function("spectest", "print_f64",      { _, _ in [] }),
-    .function("spectest", "print_i32_f32",  { _, _ in [] }),
-    .function("spectest", "print_f64_f64",  { _, _ in [] }),
+    .function("spectest", "print", { _, _ in [] }),
+    .function("spectest", "print_i32", { _, _ in [] }),
+    .function("spectest", "print_i64", { _, _ in [] }),
+    .function("spectest", "print_f32", { _, _ in [] }),
+    .function("spectest", "print_f64", { _, _ in [] }),
+    .function("spectest", "print_i32_f32", { _, _ in [] }),
+    .function("spectest", "print_f64_f64", { _, _ in [] }),
     .memory("spectest", "memory", 1),
   ]
 }
@@ -416,12 +440,13 @@ struct SpectestTests {
     guard let entries = try? FileManager.default.contentsOfDirectory(atPath: spectestDir) else {
       return []
     }
-    return entries
+    return
+      entries
       .filter { $0.hasSuffix(".json") }
       .sorted()
       .map { SpectestFile(name: String($0.dropLast(5)), jsonPath: "\(spectestDir)/\($0)") }
   }
-  
+
   @Test(arguments: SpectestTests.discoverFiles())
   func conformance(file: SpectestFile) throws {
     guard let data = FileManager.default.contents(atPath: file.jsonPath) else { return }
@@ -431,6 +456,7 @@ struct SpectestTests {
     )
     runner.run(suite: suite)
     // Individual failures are recorded via Issue.record() in the runner.
-    print("[\(file.name)] pass=\(runner.passCount) skip=\(runner.skipCount) fail=\(runner.failCount)")
+    print(
+      "[\(file.name)] pass=\(runner.passCount) skip=\(runner.skipCount) fail=\(runner.failCount)")
   }
 }

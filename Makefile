@@ -6,6 +6,8 @@
 #   make              test と同じ（両方のチェックを実行）
 #   make test         swift test (macOS) + Embedded Swift ビルド検証
 #   make compile      Swift → .o のみ（Embedded Swift 検証、Pico SDK 不要）
+#   make format       Sources/ と Tests/ を swift-format でフォーマット（上書き）
+#   make format-check フォーマットのチェックのみ（変更があれば非ゼロ終了）
 #   make spectest-gen 公式 WebAssembly testsuite の .wast → JSON + .wasm に変換
 #   make setup-hooks  Git pre-commit フックをインストール（初回のみ）
 #   make clean        ビルド成果物を削除
@@ -30,7 +32,8 @@ SWIFT_SRCS := $(wildcard Sources/WasmRuntime/*.swift)
 TARGET := armv7em-none-none-eabi
 
 # --- ツール -------------------------------------------------------------------
-SWIFTC := $(HOME)/.swiftly/bin/swiftc
+SWIFTC        := $(HOME)/.swiftly/bin/swiftc
+SWIFT_FORMAT  := $(HOME)/.swiftly/bin/swift-format
 
 # --- SDK パス（macOS ホスト用）------------------------------------------------
 SWIFT_SDK := $(shell xcrun --show-sdk-path 2>/dev/null)
@@ -54,7 +57,7 @@ SPECTEST_OUT := Tests/WasmRuntimeTests/spectest
 # ターゲット定義
 # =============================================================================
 
-.PHONY: all test swift-test compile clean setup-hooks spectest-gen spectest-clean check-tools check-toolchain help
+.PHONY: all test swift-test compile format format-check clean setup-hooks spectest-gen spectest-clean check-tools check-toolchain help
 
 # デフォルトは test — 素の `make` で両環境のチェックを行う
 all: test
@@ -144,6 +147,19 @@ check-toolchain:
 	   echo "    インストール後: export TOOLCHAINS=<bundle-id>"; \
 	 fi
 
+# ---------------------------------------------------------------------------
+# format / format-check — swift-format によるコードフォーマット
+#
+# format       : Sources/ と Tests/ を再帰的にフォーマットし上書きする
+# format-check : 差分があれば非ゼロ終了（CI での lint チェックに使用）
+# ---------------------------------------------------------------------------
+format:
+	$(SWIFT_FORMAT) format --in-place --recursive Sources/ Tests/
+	@echo "✓ フォーマット完了"
+
+format-check:
+	$(SWIFT_FORMAT) lint --recursive Sources/ Tests/
+
 clean:
 	rm -rf $(BUILD_DIR)
 
@@ -202,6 +218,8 @@ help:
 	@echo "  spectest-clean   変換済みファイルを削除"
 	@echo "  test             swift test (macOS) + compile (Embedded) の両方を検証 [デフォルト]"
 	@echo "  compile          Swift → .o のみ（ツールチェーン確認、Pico SDK 不要）"
+	@echo "  format           Sources/ と Tests/ を swift-format でフォーマット（上書き）"
+	@echo "  format-check     フォーマットのチェックのみ（差分があれば非ゼロ終了）"
 	@echo "  setup-hooks      Git pre-commit フックをインストール（初回のみ）"
 	@echo "  clean            $(BUILD_DIR)/ を削除"
 	@echo "  check-toolchain  ツールチェーンの設定を診断"
