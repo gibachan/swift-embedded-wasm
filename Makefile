@@ -322,7 +322,7 @@ clean:
 # ---------------------------------------------------------------------------
 # setup-hooks — Git pre-commit フックをインストールする
 #
-# scripts/pre-commit を .git/hooks/pre-commit にコピーし実行権限を付与する。
+# Scripts/pre-commit を .git/hooks/pre-commit にコピーし実行権限を付与する。
 # 一度だけ実行すれば、以後はコミット時に自動で Embedded ビルドが検証される。
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -360,7 +360,7 @@ spectest-clean:
 	@echo "✓ $(SPECTEST_OUT)/ を削除しました"
 
 setup-hooks:
-	@cp scripts/pre-commit .git/hooks/pre-commit
+	@cp Scripts/pre-commit .git/hooks/pre-commit
 	@chmod +x .git/hooks/pre-commit
 	@echo "✓ pre-commit フックをインストールしました"
 	@echo "  Sources/WasmRuntime/ を変更してコミットすると自動で Embedded ビルドを検証します"
