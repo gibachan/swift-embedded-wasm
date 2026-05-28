@@ -52,22 +52,51 @@ struct WasmParserTests {
     let body = module.code[0]
     // Locals: one i32
     #expect(body.locals == [.i32])
-    // Top-level instructions: i32.const / local.set / loop = 3
-    #expect(body.instructions.count == 3)
-    // The third instruction is a loop containing one block
-    guard case .loop(_, let loopBody) = body.instructions[2] else {
+    // Flat bytecode layout (15 instructions total):
+    //  [0]  i32.const 0
+    //  [1]  local.set
+    //  [2]  loop (startPc=3)
+    //  [3]  block (endPc=14)
+    //  [4]  local.get
+    //  [5]  i32.const 1
+    //  [6]  i32.add
+    //  [7]  local.set
+    //  [8]  local.get
+    //  [9]  i32.const 5
+    //  [10] i32.eq
+    //  [11] br_if 0
+    //  [12] br 1
+    //  [13] blockEnd  (end of block)
+    //  [14] blockEnd  (end of loop)
+    #expect(body.instructions.count == 15)
+    guard case .loop(_, let startPc) = body.instructions[2] else {
       Issue.record("Expected loop instruction at index 2")
       return
     }
-    #expect(loopBody.count == 1)
-    guard case .block(_, let blockBody) = loopBody[0] else {
-      Issue.record("Expected block instruction inside loop")
+    #expect(startPc == 3)
+    guard case .block(_, let endPc) = body.instructions[3] else {
+      Issue.record("Expected block instruction at index 3")
       return
     }
-    // Instructions inside the block:
-    // local.get / i32.const / i32.add / local.set /
-    // local.get / i32.const / i32.eq / br_if / br = 9
-    #expect(blockBody.count == 9)
+    #expect(endPc == 14)
+    guard case .brIf(let brIfDepth) = body.instructions[11] else {
+      Issue.record("Expected br_if at index 11")
+      return
+    }
+    #expect(brIfDepth == 0)
+    guard case .br(let brDepth) = body.instructions[12] else {
+      Issue.record("Expected br at index 12")
+      return
+    }
+    #expect(brDepth == 1)
+    guard case .blockEnd = body.instructions[13] else {
+      Issue.record("Expected blockEnd at index 13")
+      return
+    }
+    guard case .blockEnd = body.instructions[14] else {
+      Issue.record("Expected blockEnd at index 14")
+      return
+    }
   }
 
   @Test func parsesTableSection() throws {

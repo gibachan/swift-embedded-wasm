@@ -73,6 +73,36 @@ Raspberry Pi Pico (RP2350) は 520 KB の SRAM を持つが、
 これが、`make compile`（`.o` 生成のみ）が `malloc` なしの環境でも成功する理由である。
 `Array<T>` が本当に使えるかどうかはリンクして初めてわかる。
 
+#### `indirect case` による暗黙のヒープ確保
+
+Swift の `indirect case` は enum の再帰定義を可能にするが、
+その case の値はヒープ上のボックスに格納されるため `malloc` が必要になる。
+
+```swift
+// NG: indirect case は malloc を必要とする
+enum Instruction {
+    indirect case block(BlockType, [Instruction])  // ヒープ確保
+    indirect case loop(BlockType, [Instruction])   // ヒープ確保
+}
+```
+
+`Array<T>` と同様、コンパイルは通るがリンク時に `malloc` が要求される。
+`malloc` のない純粋ベアメタル環境では動作しない。
+
+代替として、子命令を入れ子の配列で持つ代わりに
+**フラットな命令列＋ジャンプオフセット**（flat bytecode）で設計する。
+
+```swift
+// OK: ジャンプオフセットで代替（ヒープ不要）
+enum Instruction {
+    case block(BlockType, endPc: Int)
+    case loop(BlockType, startPc: Int)
+    case ifElse(BlockType, elsePc: Int, endPc: Int)
+}
+```
+
+詳細な移行計画は `SWIFT_VM_DESIGN.md` のインタプリタループ方針（Section 5）を参照。
+
 #### `malloc` の提供元
 
 `pico-ble` は `pico_stdlib` をリンクしており、これが `malloc`/`free` を提供する。
@@ -262,6 +292,51 @@ public mutating func consume() throws(LEB128Error) -> UInt8 { ... }
 | 目的 | モジュール外への実装公開・特殊化許可 | 呼び出し元での強制展開 |
 | コンパイラの裁量 | コンパイラが判断して展開 | 無条件に展開（無視不可） |
 | 主な用途 | ジェネリック関数・モジュール境界 | ループ内の極小関数 |
+
+### ホットパスでの一時配列確保を避ける
+
+インタプリタループのように毎命令呼ばれるコードパスでは、
+`Array(suffix:)` などの一時配列確保が積み重なってヒープ圧力になる。
+
+```swift
+// NG: br/return のたびにヒープ確保が発生する
+let results = Array(valueStack.suffix(arity))
+valueStack.removeSubrange(base...)
+valueStack.append(contentsOf: results)
+
+// OK: in-place スライドで同じ意味を実現（確保ゼロ）
+let src = valueStack.count - arity
+for i in 0..<arity { valueStack[base + i] = valueStack[src + i] }
+valueStack.removeSubrange((base + arity)...)
+```
+
+arity が 0（最多パターン）の場合はループが回らず単純な truncate になる。
+
+### ホットパスで参照する computed property はキャッシュする
+
+`call` 命令のように毎回呼ばれるパスで O(N) スキャンの computed property を参照すると、
+命令数に比例して無駄なイテレーションが積み重なる。
+`init` 時に一度だけ計算して `let` プロパティとして保持する。
+
+```swift
+// NG: 毎回 imports を全走査する
+var importedFunctionCount: Int {
+    imports.reduce(0) { n, imp in if case .function = imp { return n + 1 }; return n }
+}
+
+// OK: init 時に一度だけ計算し stored property に保持
+let importedFunctionCount: Int
+
+init(...) {
+    var count = 0
+    for imp in imports { if case .function = imp { count += 1 } }
+    self.importedFunctionCount = count
+    ...
+}
+```
+
+`struct` の `let` プロパティとして定義すれば、変更を防ぎながらゼロコストでアクセスできる。
+関数呼び出し内で使用するキャッシュ値（型インデックス配列など）も同様にキャッシュする。
 
 ### `&<<`（オーバーフローシフト）の使用
 

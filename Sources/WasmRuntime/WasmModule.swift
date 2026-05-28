@@ -79,17 +79,45 @@ struct ElementSegment: Sendable {
 
 // MARK: - Instructions
 
-/// Instruction set supported by this interpreter
+/// Instruction set supported by this interpreter.
 ///
-/// block/loop/if hold child instructions, so indirect cases are used.
-/// In the macOS phase, indirect (heap allocation) is acceptable in favor of correctness.
+/// All control-flow instructions use flat bytecode with pre-computed jump offsets.
+/// block/loop/if carry integer PCs computed during parsing — no indirect cases,
+/// no nested arrays, no heap allocation required.
+///
+/// Flat control flow model:
+///   block(bt, endPc)         — pushes a label; br to this label jumps to endPc
+///   loop(bt, startPc)        — pushes a label; br to this label jumps to startPc (restart)
+///   ifElse(bt, elsePc, endPc)— pops condition; jumps to elsePc if 0; br jumps to endPc
+///   blockEnd                 — pops the top label (normal fall-through exit)
+///   jump(pc)                 — unconditional jump (skips the else body in if/else)
 enum Instruction: Sendable {
   case unreachable  // 0x00
+  case nop  // 0x01
+  // Flat structured control flow (no indirect cases; all PCs computed by parser)
+  case block(BlockType, Int)  // 0x02: endPc = PC after blockEnd (br-continuation)
+  case loop(BlockType, Int)  // 0x03: startPc = first body instruction (br restarts here)
+  case ifElse(BlockType, Int, Int)  // 0x04: elsePc, endPc (br-continuation)
+  case blockEnd  // marks end of block/loop/if body; pops the label
+  case jump(Int)  // unconditional jump to PC (used to skip else body)
+  case br(UInt32)  // 0x0C
+  case brIf(UInt32)  // 0x0D
+  case brTable([UInt32], UInt32)  // 0x0E: target_labels[], default_label
+  case return_  // 0x0F
+  case call(UInt32)  // 0x10
+  // stack operations
+  case drop  // 0x1A
+  case select  // 0x1B
+  // locals
   case localGet(UInt32)  // 0x20
   case localSet(UInt32)  // 0x21
+  case localTee(UInt32)  // 0x22
   case globalGet(UInt32)  // 0x23
   case globalSet(UInt32)  // 0x24
+  // constants
   case i32Const(Int32)  // 0x41
+  case i64Const(Int64)  // 0x42
+  case f32Const(Float)  // 0x43
   // i32 unary
   case i32Eqz  // 0x45
   case i32Clz  // 0x67
@@ -125,8 +153,6 @@ enum Instruction: Sendable {
   case i32ShrU  // 0x76
   case i32Rotl  // 0x77
   case i32Rotr  // 0x78
-  // f32 constant
-  case f32Const(Float)  // 0x43
   // f32 comparisons (return i32)
   case f32Eq  // 0x5B
   case f32Ne  // 0x5C
@@ -150,8 +176,6 @@ enum Instruction: Sendable {
   case f32Min  // 0x96
   case f32Max  // 0x97
   case f32Copysign  // 0x98
-  // i64 constant
-  case i64Const(Int64)  // 0x42
   // i64 unary
   case i64Eqz  // 0x50
   case i64Clz  // 0x79
@@ -188,24 +212,7 @@ enum Instruction: Sendable {
   case i64ShrU  // 0x88
   case i64Rotl  // 0x89
   case i64Rotr  // 0x8A
-  case call(UInt32)  // 0x10: function call
-  indirect case block(BlockType, [Instruction])  // 0x02
-  indirect case loop(BlockType, [Instruction])  // 0x03
-  indirect case ifElse(BlockType, thenBody: [Instruction], elseBody: [Instruction])  // 0x04
-  case br(UInt32)  // 0x0C
-  case brIf(UInt32)  // 0x0D
-  // control flow
-  case nop  // 0x01
-  case return_  // 0x0F
-  indirect case brTable([UInt32], UInt32)  // 0x0E: target_labels[], default_label
-  // stack operations
-  case drop  // 0x1A
-  case select  // 0x1B
-  // locals
-  case localTee(UInt32)  // 0x22
   // Parsed but not yet implemented; throws invalidInstruction at runtime.
-  // Used for i64/f64 and other opcodes that appear in test modules but are not
-  // required for i32/f32 test execution.
   case unimplemented(UInt8)
 }
 
@@ -303,6 +310,14 @@ struct WasmModule: Sendable {
   let elements: [ElementSegment]  // Element section
   let data: [DataSegment]  // Data section
 
+  /// Cached count of imported functions.
+  /// The function index space is ordered as: imported functions (0..N-1), local functions (N..).
+  let importedFunctionCount: Int
+
+  /// Type indices for imported functions, in import order.
+  /// Cached at init to avoid re-scanning imports on every call dispatch.
+  private let importedFunctionTypeIndices: [UInt32]
+
   init(
     types: [FunctionType],
     imports: [Import] = [],
@@ -327,27 +342,26 @@ struct WasmModule: Sendable {
     self.start = start
     self.elements = elements
     self.data = data
-  }
 
-  /// Number of imported functions in the Import section.
-  /// The function index space is ordered as: imported functions (0..N-1), local functions (N..).
-  var importedFunctionCount: Int {
-    imports.reduce(0) { n, imp in
-      if case .function = imp { return n + 1 }
-      return n
-    }
-  }
-
-  /// Returns the FunctionType for the given function index (including imports)
-  func functionType(at index: Int) -> FunctionType {
-    var funcImports: [FunctionImport] = []
+    var count = 0
+    var typeIndices: [UInt32] = []
     for imp in imports {
-      if case .function(let fi) = imp { funcImports.append(fi) }
+      if case .function(let fi) = imp {
+        typeIndices.append(fi.typeIndex)
+        count += 1
+      }
     }
-    if index < funcImports.count {
-      return types[Int(funcImports[index].typeIndex)]
+    self.importedFunctionCount = count
+    self.importedFunctionTypeIndices = typeIndices
+  }
+
+  /// Returns the FunctionType for the given function index (including imports).
+  /// O(1): uses the cached type index array built at init.
+  func functionType(at index: Int) -> FunctionType {
+    if index < importedFunctionCount {
+      return types[Int(importedFunctionTypeIndices[index])]
     }
-    let localIdx = index - funcImports.count
+    let localIdx = index - importedFunctionCount
     return types[Int(functions[localIdx])]
   }
 }

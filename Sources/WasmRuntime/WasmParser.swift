@@ -279,7 +279,8 @@ struct WasmParser {
         for _ in 0..<n { locals.append(vt) }
       }
 
-      let instructions = try parseInstructions()
+      var instructions: [Instruction] = []
+      _ = try parseFlatBody(into: &instructions)
       bodies.append(FunctionBody(locals: locals, instructions: instructions))
     }
     return bodies
@@ -312,41 +313,96 @@ struct WasmParser {
 
   // MARK: - Instruction Parsing
 
-  /// Parses instructions until 0x0B (end) and returns them
-  private mutating func parseInstructions() throws(WasmError) -> [Instruction] {
-    let (instructions, _) = try parseBody()
-    return instructions
-  }
-
-  /// Parses instructions until 0x0B (end) or 0x05 (else).
-  /// Returns the instructions and a Bool that is true if parsing stopped at else.
+  /// Parses instructions into a flat array until `end` (0x0B) or `else` (0x05).
+  /// Returns true if parsing stopped at `else`, false if stopped at `end`.
   ///
-  /// Used when parsing if to distinguish whether an else clause is present.
-  private mutating func parseBody() throws(WasmError) -> ([Instruction], stoppedAtElse: Bool) {
-    var instructions: [Instruction] = []
+  /// block/loop/if jump offsets are backpatched into the array once the end positions
+  /// are known, so the entire function body is one contiguous flat [Instruction].
+  ///
+  /// Flat bytecode layout for each construct:
+  ///
+  ///   block:
+  ///     [blockPc] block(bt, endPc)   ← endPc = blockEndPc + 1
+  ///     ... body ...
+  ///     [blockEndPc] blockEnd
+  ///
+  ///   loop:
+  ///     [loopPc] loop(bt, loopPc+1)  ← startPc = first body instruction
+  ///     ... body ...
+  ///     [blockEndPc] blockEnd
+  ///
+  ///   if (no else):
+  ///     [ifPc] ifElse(bt, blockEndPc, blockEndPc+1)
+  ///     ... then body ...
+  ///     [blockEndPc] blockEnd
+  ///
+  ///   if/else:
+  ///     [ifPc] ifElse(bt, elsePc, endPc)
+  ///     ... then body ...
+  ///     [thenEndPc] blockEnd          ← pops if label for then path
+  ///     [jumpPc]    jump(endPc)       ← skips else body
+  ///     [elsePc]    ... else body ...
+  ///     [elseEndPc] blockEnd          ← pops if label for else path
+  ///     [endPc]     ...               ← both paths converge here
+  private mutating func parseFlatBody(into instructions: inout [Instruction]) throws(WasmError)
+    -> Bool
+  {
     while true {
       let opcode = try readByte()
       switch opcode {
 
       case 0x02:  // block
         let bt = try readBlockType()
-        instructions.append(.block(bt, try parseInstructions()))
+        let blockPc = instructions.count
+        instructions.append(.block(bt, 0))  // placeholder; endPc backpatched below
+        _ = try parseFlatBody(into: &instructions)
+        let blockEndPc = instructions.count
+        instructions.append(.blockEnd)
+        instructions[blockPc] = .block(bt, blockEndPc + 1)
 
       case 0x03:  // loop
         let bt = try readBlockType()
-        instructions.append(.loop(bt, try parseInstructions()))
+        let startPc = instructions.count + 1  // first body instruction follows the loop instr
+        instructions.append(.loop(bt, startPc))
+        _ = try parseFlatBody(into: &instructions)
+        instructions.append(.blockEnd)
 
       case 0x04:  // if [else] end
         let bt = try readBlockType()
-        let (thenBody, hadElse) = try parseBody()
-        let elseBody: [Instruction]
-        if hadElse {
-          let (eb, _) = try parseBody()
-          elseBody = eb
+        let ifPc = instructions.count
+        instructions.append(.ifElse(bt, 0, 0))  // placeholder; both PCs backpatched below
+
+        let stoppedAtElse = try parseFlatBody(into: &instructions)
+
+        if stoppedAtElse {
+          // Has else clause:
+          //   then path: blockEnd pops if label, then jump skips else body
+          //   else path: jumps to elsePc, falls through to elseBlockEnd which pops if label
+          let thenEndPc = instructions.count
+          instructions.append(.blockEnd)
+          _ = thenEndPc  // unused after backpatch; compiler hint only
+          let jumpPc = instructions.count
+          instructions.append(.jump(0))  // placeholder; target backpatched below
+
+          let elsePc = instructions.count
+          _ = try parseFlatBody(into: &instructions)
+
+          let elseEndPc = instructions.count
+          instructions.append(.blockEnd)
+          let endPc = instructions.count  // both paths converge here
+
+          instructions[ifPc] = .ifElse(bt, elsePc, endPc)
+          instructions[jumpPc] = .jump(endPc)
+          _ = elseEndPc  // consumed above
+
         } else {
-          elseBody = []
+          // No else: else path jumps directly to blockEnd; both paths pop the label there
+          let blockEndPc = instructions.count
+          instructions.append(.blockEnd)
+          let endPc = instructions.count  // past blockEnd; br-continuation
+
+          instructions[ifPc] = .ifElse(bt, blockEndPc, endPc)
         }
-        instructions.append(.ifElse(bt, thenBody: thenBody, elseBody: elseBody))
 
       case 0x00:  // unreachable
         instructions.append(.unreachable)
@@ -355,10 +411,10 @@ struct WasmParser {
         instructions.append(.nop)
 
       case 0x05:  // else: terminates the then-body
-        return (instructions, stoppedAtElse: true)
+        return true
 
-      case 0x0B:  // end: terminates a block or function
-        return (instructions, stoppedAtElse: false)
+      case 0x0B:  // end: terminates a block or function body
+        return false
 
       case 0x0C:  // br
         instructions.append(.br(try readU32()))

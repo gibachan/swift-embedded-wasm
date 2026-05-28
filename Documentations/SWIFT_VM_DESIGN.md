@@ -233,7 +233,45 @@ mutating func step() throws {
 }
 ```
 
-### フェーズ 2: 最適化（必要になった時点で）
+### フェーズ 1.5: Flat Bytecode への移行（Phase 5 前に必須）
+
+現在の実装では `block` / `loop` / `if` 命令が子命令を入れ子の配列として保持している。
+
+```swift
+indirect case block(BlockType, [Instruction])   // ← ヒープ確保（malloc 必要）
+indirect case loop(BlockType, [Instruction])
+indirect case ifElse(BlockType, thenBody: [Instruction], elseBody: [Instruction])
+```
+
+`indirect case` は Embedded Swift でも**コンパイルは通るがリンク時に `malloc` が要求される**。
+`malloc` のない純粋ベアメタル環境では動作しないため、Phase 5 移行前に対処が必要。
+
+**解決策: Flat Bytecode + ジャンプオフセット**
+
+子命令の入れ子を廃止し、全命令をフラットな配列に並べ、
+block/loop/if にはジャンプ先の PC を直接持たせる。
+パース時（またはインスタンス化時）にオフセットを計算して埋め込む。
+
+```swift
+// Before: 入れ子ツリー（indirect case = ヒープ）
+indirect case block(BlockType, [Instruction])
+
+// After: フラット + オフセット（ヒープ不要）
+case block(BlockType, endPc: Int)       // endPc: block 出口の命令インデックス
+case loop(BlockType, startPc: Int)      // startPc: br 0 で戻る先（通常 loop 自身の次）
+case ifElse(BlockType, elsePc: Int, endPc: Int)  // elsePc: else の先頭、endPc: end の先頭
+```
+
+この設計の利点:
+- `indirect case` がなくなり、malloc 不要になる
+- 命令フェッチが `instructions[ip]` の単純アクセスになる（現在の多段ネスト解消）
+- `br` / `br_if` のジャンプがオフセットの代入一発で完了する
+- CPython bytecode や JavaScriptCore が実際に採用している方式であり、学習価値も高い
+
+変更範囲: Parser（`WasmParser.swift`）でオフセットを計算しながらパースする処理、
+および Interpreter（`WasmInterpreter.swift`）のスコープスタック管理が不要になる。
+
+### フェーズ 2: さらなる最適化（必要になった時点で）
 
 Pico 上での実測でボトルネックが判明した場合にのみ最適化を検討する。
 現時点では設計に含めない。
