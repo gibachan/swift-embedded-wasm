@@ -10,7 +10,9 @@
       "Bash(gh repo *)",
       "Bash(gh api *)",
       "Bash(xxd *)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(swift build *)",
+      "Bash(make format *)"
     ]
   }
 }
