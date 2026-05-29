@@ -44,29 +44,6 @@ git commit は必ずユーザーの許可を得てから行う。作業完了後
 
 ---
 
-## 現在の状況
-
-**フェーズ: 計画・ドキュメント整備**
-
-実装はまだ始まっていない。プロジェクト全体の方針と各 Phase の詳細計画を文書化している段階。
-
-| ドキュメント | 状態 |
-|---|---|
-| `docs/OVERVIEW.md` | 完成（大枠計画・開発方針） |
-| `docs/PROJECT_GOAL.md` | 完成（最終成果物・成功ライン） |
-| `docs/PHASE1_ENV.md` | 初稿完成（詳細化待ち） |
-| `docs/PHASE2_WASM3.md` | 初稿完成（詳細化待ち） |
-| `docs/PHASE3_PARSER.md` | 初稿完成（詳細化待ち） |
-| `docs/PHASE4_INTERPRETER.md` | 初稿完成（詳細化待ち） |
-| `docs/PHASE5_PICO.md` | 初稿完成（詳細化待ち） |
-| `docs/PHASE6_IOS.md` | 初稿完成（詳細化待ち） |
-
-**次のステップ**: 各 Phase の詳細計画を順次詰める。実装は Phase 1（環境構築）から開始予定。
-
-重要: この現在の状況についてはプロジェクトの進捗と共に適宜更新します。
-
----
-
 ## VM 実装における設計方針
 
 WASM VM を実装する際は **`docs/SWIFT_VM_DESIGN.md` の設計方針に従う**こと。
@@ -124,7 +101,29 @@ WASM VM の実装は、macOS 上での開発段階においても **Embedded Swi
 
 - macOS フェーズ（現在）: `Array` / `String` / `throws` を自由に使い、正確さを優先する
 - Embedded フェーズ（Phase 5〜）: 動的確保箇所を固定サイズバッファに置き換えていく
-- バリデーション深度も切り替え可能に設計する（macOS: 型チェックあり、Pico: 構造チェックのみ）
+- バリデーションは macOS フェーズでのみ実装し、Embedded フェーズでは実装しない。
+
+---
+
+## Sub-Agent Workflow
+
+This project uses four sub-agents defined in `.claude/agents/`. They follow a structured loop for implementing and reviewing WASM Runtime components.
+
+### Agents
+
+| Agent | Role |
+|---|---|
+| `embedded-wasm-runtime-implementer` | Implements WASM Runtime components with Embedded Swift constraints in mind |
+| `wasm-embedded-researcher` | Researches reference implementations (wasm3, WasmKit) and Embedded Swift constraints when needed during implementation |
+| `wasm-runtime-reviewer` | Reviews implemented code for correctness, Embedded Swift compatibility, and design consistency |
+| `docs-sync-agent` | Updates documentation to reflect implementation changes after a task is complete |
+
+### Workflow
+
+1. **Implement** — Launch `embedded-wasm-runtime-implementer` for the implementation task. If technical research is needed mid-implementation, it delegates to `wasm-embedded-researcher`.
+2. **Review** — After implementation, launch `wasm-runtime-reviewer` to review the changes.
+3. **Revise** — If the review identifies valid issues, launch `embedded-wasm-runtime-implementer` to address them, then re-run `wasm-runtime-reviewer`. Repeat until no further changes are needed.
+4. **Sync docs** — Once implementation is stable, launch `docs-sync-agent` to update affected documentation as needed.
 
 ---
 
