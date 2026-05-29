@@ -440,9 +440,9 @@ struct WasmParser {
         instructions.append(.call(try readU32()))
 
       case 0x11:  // call_indirect: type_idx, table_idx
-        _ = try readU32()
-        _ = try readU32()
-        instructions.append(.unimplemented(0x11))
+        let typeIdx = try readU32()
+        let tableIdx = try readU32()
+        instructions.append(.callIndirect(typeIdx, tableIdx))
 
       case 0x1A:  // drop
         instructions.append(.drop)
@@ -465,10 +465,20 @@ struct WasmParser {
       case 0x24:  // global.set
         instructions.append(.globalSet(try readU32()))
 
+      case 0x28:  // i32.load
+        let align = try readU32()
+        let offset = try readU32()
+        instructions.append(.i32Load(align, offset))
+
+      case 0x36:  // i32.store
+        let align = try readU32()
+        let offset = try readU32()
+        instructions.append(.i32Store(align, offset))
+
       // Memory load/store — parsed with align+offset operands but not yet implemented
-      case 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,  // i32/i64/f32/f64 loads
+      case 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,  // i64/f32/f64 loads; i32 sign/zero
         0x30, 0x31, 0x32, 0x33, 0x34, 0x35,  // i64 sign/zero loads
-        0x36, 0x37, 0x38, 0x39,  // i32/i64/f32/f64 stores
+        0x37, 0x38, 0x39,  // i64/f32/f64 stores
         0x3A, 0x3B, 0x3C, 0x3D, 0x3E:  // i32/i64 truncated stores
         _ = try readU32()  // align
         _ = try readU32()  // offset
@@ -476,7 +486,7 @@ struct WasmParser {
 
       case 0x40:  // memory.grow (1-byte reserved operand = 0x00)
         _ = try readByte()
-        instructions.append(.unimplemented(0x40))
+        instructions.append(.memoryGrow)
 
       case 0x41:  // i32.const (signed LEB128)
         instructions.append(.i32Const(try readI32()))
@@ -596,7 +606,10 @@ struct WasmParser {
       case 0x89: instructions.append(.i64Rotl)
       case 0x8A: instructions.append(.i64Rotr)
 
-      // f64 and conversion instructions — parsed but not executed.
+      case 0xAC:  // i64.extend_i32_s
+        instructions.append(.i64ExtendI32S)
+
+      // f64 and other conversion instructions — parsed but not executed.
       // Encountering them at runtime throws invalidInstruction, causing spec tests to skip.
       case 0x61, 0x62, 0x63, 0x64, 0x65,  // f64 comparisons (eq/ne/lt/gt/le)
         0x66,  // f64.ge
@@ -605,7 +618,7 @@ struct WasmParser {
         0xA0, 0xA1, 0xA2, 0xA3, 0xA4,  // f64.add / sub / mul / div / min
         0xA5, 0xA6,  // f64.max / copysign
         0xA7, 0xA8, 0xA9, 0xAA,  // i32.wrap_i64, i32.trunc_f32_s/u, i32.trunc_f64_s
-        0xAB, 0xAC, 0xAD, 0xAE, 0xAF,  // i32.trunc_f64_u, i64 extend/trunc ops
+        0xAB, 0xAD, 0xAE, 0xAF,  // i32.trunc_f64_u, i64 extend/trunc ops (0xAC handled above)
         0xB0, 0xB1, 0xB2, 0xB3, 0xB4,  // more i64 trunc/convert ops
         0xB5, 0xB6, 0xB7, 0xB8,  // f32.demote_f64, f64.convert ops
         0xB9, 0xBA, 0xBB,  // f64.convert ops / f64.promote_f32

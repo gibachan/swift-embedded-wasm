@@ -103,9 +103,10 @@ private func loopBrArity(_ bt: BlockType, types: [FunctionType]) -> Int {
 // Does not conform to Sendable because HostFunction (a closure) is not Sendable.
 struct WasmInterpreter {
   let module: WasmModule
-  let memory: [UInt8]
+  var memory: [UInt8]
   private let hostFunctions: [HostFunction]
   private var globals: [Value]  // mutable global variable slots (global.get/set)
+  private var table: [UInt32?]  // function table: nil = uninitialized entry
 
   // MARK: - Init
 
@@ -136,6 +137,20 @@ struct WasmInterpreter {
     }
     self.hostFunctions = funcs
     self.globals = module.globals.map { $0.initValue }
+
+    // Build function table from Table section + Element section
+    var tableSize = 0
+    for t in module.tables { tableSize = max(tableSize, Int(t.min)) }
+    var tbl = [UInt32?](repeating: nil, count: tableSize)
+    for seg in module.elements {
+      let start = Int(seg.offset)
+      for (i, funcIdx) in seg.functionIndices.enumerated() {
+        let pos = start + i
+        guard pos < tbl.count else { throw .memoryAccessOutOfBounds }
+        tbl[pos] = funcIdx
+      }
+    }
+    self.table = tbl
 
     // Determine memory size: prefer imported memory, fall back to local memory definition
     var memPageCount: UInt32 = 0
@@ -1043,6 +1058,78 @@ struct WasmInterpreter {
         let ua = UInt64(bitPattern: a)
         let result = shift == 0 ? ua : (ua >> shift | ua << (64 - shift))
         valueStack.append(.i64(Int64(bitPattern: result)))
+
+      // MARK: i64 Conversions
+
+      case .i64ExtendI32S:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i64(Int64(a)))
+
+      // MARK: Memory
+
+      case .i32Load(_, let offset):
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
+        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
+        guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let value =
+          UInt32(memory[ea]) | (UInt32(memory[ea + 1]) << 8) | (UInt32(memory[ea + 2]) << 16)
+          | (UInt32(memory[ea + 3]) << 24)
+        valueStack.append(.i32(Int32(bitPattern: value)))
+
+      case .i32Store(_, let offset):
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let value) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
+        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
+        guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let u = UInt32(bitPattern: value)
+        memory[ea] = UInt8(u & 0xFF)
+        memory[ea + 1] = UInt8((u >> 8) & 0xFF)
+        memory[ea + 2] = UInt8((u >> 16) & 0xFF)
+        memory[ea + 3] = UInt8((u >> 24) & 0xFF)
+
+      case .memoryGrow:
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let delta) = valueStack.removeLast() else { throw .typeMismatch }
+        let oldPages = Int32(memory.count / 65536)
+        let pageSize = 65536
+        let currentPages = memory.count / pageSize
+        // delta is a u32 argument packed into i32; negative means huge grow → fail.
+        // Also guard against Int overflow before multiplying (important on 32-bit targets).
+        if delta < 0 || Int(delta) > pageSize - currentPages
+          || Int(delta) > Int.max / pageSize
+        {
+          valueStack.append(.i32(-1))
+        } else {
+          memory.append(contentsOf: [UInt8](repeating: 0, count: Int(delta) * pageSize))
+          valueStack.append(.i32(oldPages))
+        }
+
+      // MARK: call_indirect
+
+      case .callIndirect(let typeIdx, _):
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let tableIdx) = valueStack.removeLast() else { throw .typeMismatch }
+        let tIdx = Int(tableIdx)
+        guard tIdx >= 0 && tIdx < table.count, let funcIdx = table[tIdx] else {
+          throw .undefinedElement
+        }
+        let expectedType = module.types[Int(typeIdx)]
+        let actualType = module.functionType(at: Int(funcIdx))
+        guard
+          expectedType.params.count == actualType.params.count
+            && expectedType.results.count == actualType.results.count
+        else { throw .indirectCallTypeMismatch }
+        for (e, a) in zip(expectedType.params, actualType.params) {
+          guard e == a else { throw .indirectCallTypeMismatch }
+        }
+        let argCount = expectedType.params.count
+        guard valueStack.count >= argCount else { throw .stackUnderflow }
+        let callArgs = Array(valueStack.suffix(argCount))
+        valueStack.removeLast(argCount)
+        try pushFrame(funcIdx: Int(funcIdx), callArgs: callArgs)
 
       case .unimplemented(let op):
         throw WasmError.invalidInstruction(op)

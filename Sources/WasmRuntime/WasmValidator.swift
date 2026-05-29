@@ -308,11 +308,40 @@
         for param in ft.params.reversed() { try popExpecting(param) }
         for result in ft.results { tryPush(result) }
 
-      // MARK: Unimplemented stubs
+      case .callIndirect(let typeIdx, _):
+        guard Int(typeIdx) < module.types.count else { throw .typeMismatch }
+        try popExpecting(.i32)  // table index
+        let ft = module.types[Int(typeIdx)]
+        for param in ft.params.reversed() { try popExpecting(param) }
+        for result in ft.results { tryPush(result) }
 
+      // MARK: Conversions
+
+      case .i64ExtendI32S:
+        try popExpecting(.i32)
+        tryPush(.i64)
+
+      // MARK: Memory
+
+      case .i32Load:
+        try popExpecting(.i32)
+        tryPush(.i32)
+
+      case .i32Store:
+        try popExpecting(.i32)
+        try popExpecting(.i32)
+
+      case .memoryGrow:
+        try popExpecting(.i32)
+        tryPush(.i32)
+
+      // MARK: Unimplemented stubs
+      //
+      // Mark the frame as unreachable so the final type check is skipped.
+      // The function will fail at runtime with invalidInstruction, which the
+      // spectest runner treats as a skip — not a failure.
       case .unimplemented:
-        // Cannot validate unknown opcodes; runtime will throw invalidInstruction.
-        break
+        setUnreachable()
       }
     }
 

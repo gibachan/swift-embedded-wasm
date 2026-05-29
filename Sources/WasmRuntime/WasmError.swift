@@ -25,4 +25,6 @@ enum WasmError: Error, Equatable, Sendable {
   case integerOverflow  // signed division overflow (INT32_MIN / -1)
   case executionLimitExceeded  // instruction fuel exhausted (prevents infinite loops)
   case unreachableReached  // unreachable instruction executed (trap)
+  case undefinedElement  // call_indirect: table index out of bounds or uninitialized
+  case indirectCallTypeMismatch  // call_indirect: function type does not match expected type
 }

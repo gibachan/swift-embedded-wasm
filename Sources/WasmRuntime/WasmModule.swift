@@ -105,6 +105,7 @@ enum Instruction: Sendable {
   case brTable([UInt32], UInt32)  // 0x0E: target_labels[], default_label
   case return_  // 0x0F
   case call(UInt32)  // 0x10
+  case callIndirect(UInt32, UInt32)  // 0x11: typeIdx, tableIdx
   // stack operations
   case drop  // 0x1A
   case select  // 0x1B
@@ -212,6 +213,12 @@ enum Instruction: Sendable {
   case i64ShrU  // 0x88
   case i64Rotl  // 0x89
   case i64Rotr  // 0x8A
+  // conversions
+  case i64ExtendI32S  // 0xAC: sign-extend i32 to i64
+  // memory
+  case i32Load(UInt32, UInt32)  // 0x28: align, offset
+  case i32Store(UInt32, UInt32)  // 0x36: align, offset
+  case memoryGrow  // 0x40
   // Parsed but not yet implemented; throws invalidInstruction at runtime.
   case unimplemented(UInt8)
 }
