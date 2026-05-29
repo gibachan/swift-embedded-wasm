@@ -51,12 +51,16 @@ struct WasmParser {
       }
     }
 
-    return WasmModule(
+    let module = WasmModule(
       types: types, imports: imports, functions: functions,
       tables: tables, memories: memories, globals: globals,
       exports: exports, code: code,
       start: start, elements: elements, data: data
     )
+    #if !hasFeature(Embedded)
+      try WasmValidator(module: module).validate()
+    #endif
+    return module
   }
 
   // MARK: - Header
