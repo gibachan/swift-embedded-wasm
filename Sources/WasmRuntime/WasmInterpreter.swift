@@ -190,7 +190,7 @@ struct WasmInterpreter {
     for seg in module.data {
       let start = Int(seg.offset)
       let end = start + seg.bytes.count
-      guard end <= mem.count else { throw .memoryAccessOutOfBounds }
+      guard start >= 0 && end <= mem.count else { throw .memoryAccessOutOfBounds }
       mem.replaceSubrange(start..<end, with: seg.bytes)
     }
     self.memory = mem

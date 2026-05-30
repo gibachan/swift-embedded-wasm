@@ -193,3 +193,9 @@ struct GPIOPin {
 
 - `memory.size`（0x3F）: パース時に `invalidInstruction` を送出する既知の問題あり（`unimplemented` に変更すべき）
 - 32 ビットターゲットでの実効アドレス計算: 現在 `let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)` と記述しているが、32 ビット環境では `Int` が 32 ビット幅のため、加算がオーバーフローする可能性がある。Embedded フェーズでは `UInt64` 中間計算に変更が必要（詳細は `Documentations/EMBEDDED_SWIFT.md` の「メモリアクセスの実効アドレス計算」を参照）
+
+### 設計上の対象外事項
+
+**クロスモジュール・リンキング**（テーブル/メモリインポートによるモジュール間共有）は実装を見送っている。
+
+spectest の `linking0` が 1 件失敗しているのはこの設計判断による既知の制限事項である。詳細な理由は `Documentations/WASM_SPEC.md` の「クロスモジュール・リンキングを対象外とする理由」を参照。
