@@ -91,6 +91,9 @@ private struct ConformanceRunner {
   var currentInterp: WasmInterpreter?
   var currentModuleSkipped = false
   var namedModules: [String: WasmInterpreter] = [:]
+  // Modules registered via "register" commands; keyed by the "as" name.
+  // These are used to resolve cross-module function imports in subsequently loaded modules.
+  var registeredModules: [String: WasmInterpreter] = [:]
 
   // Set to true after an assert_uninstantiable that we handled (pass or skip).
   // The spec applies element segments before a trap-on-instantiation, producing
@@ -126,7 +129,7 @@ private struct ConformanceRunner {
       handleAssertInvalid(cmd)
     case "action": handleAction(cmd)
     case "assert_uninstantiable": handleAssertUninstantiable(cmd)
-    case "register": skipCount += 1  // cross-module imports: not yet
+    case "register": handleRegister(cmd)
     default: skipCount += 1  // assert_exhaustion etc.
     }
   }
@@ -145,7 +148,10 @@ private struct ConformanceRunner {
     }
     do {
       let module = try parseBytes(bytes)
-      let interp = try WasmInterpreter(module: module, hostImports: spectestHostImports())
+      // Build host imports: standard spectest imports plus any cross-module imports
+      // from modules previously registered via the "register" command.
+      let hostImports = spectestHostImports() + crossModuleImports(for: module)
+      let interp = try WasmInterpreter(module: module, hostImports: hostImports)
       currentInterp = interp
       currentModuleSkipped = false
       if let name = cmd.name {
@@ -163,6 +169,57 @@ private struct ConformanceRunner {
       currentModuleSkipped = true
       skipCount += 1
     }
+  }
+
+  // MARK: register
+
+  // register: binds the current (or named) module under a new name so that
+  // subsequently loaded modules can import from it by that name.
+  private mutating func handleRegister(_ cmd: WastCommand) {
+    guard let asName = cmd.asName else {
+      skipCount += 1
+      return
+    }
+    // If the command names a specific module (via cmd.name), use that; otherwise
+    // use the most recently instantiated module.
+    let interp: WasmInterpreter?
+    if let moduleName = cmd.name {
+      interp = namedModules[moduleName]
+    } else {
+      interp = currentInterp
+    }
+    guard let reg = interp else {
+      skipCount += 1
+      return
+    }
+    registeredModules[asName] = reg
+    passCount += 1
+  }
+
+  // MARK: Cross-module import helpers
+
+  // Builds HostImport entries for any function imports in `module` that refer to
+  // a module name present in `registeredModules`.
+  //
+  // The returned closures capture a value-copy of the registered interpreter.
+  // This is intentional: ef0-ef4 are pure constant functions and do not mutate
+  // state, so a value copy is safe and avoids shared-mutable state.
+  private func crossModuleImports(for module: WasmModule) -> [HostImport] {
+    var result: [HostImport] = []
+    for imp in module.imports {
+      guard case .function(let fi) = imp else { continue }
+      let modName = String(bytes: fi.module, encoding: .utf8) ?? ""
+      guard let regInterp = registeredModules[modName] else { continue }
+      // Value-copy the interpreter so the closure is self-contained.
+      var capturedInterp = regInterp
+      let fieldBytes = fi.name  // [UInt8]; captured by value
+      let hf: HostFunction = { args, _ in
+        return (try? capturedInterp.callExport(nameBytes: fieldBytes, args: args)) ?? []
+      }
+      let fieldName = String(bytes: fi.name, encoding: .utf8) ?? ""
+      result.append(.function(modName, fieldName, hf))
+    }
+    return result
   }
 
   // MARK: assert_return

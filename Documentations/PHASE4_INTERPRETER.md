@@ -177,6 +177,9 @@ struct GPIOPin {
   - 二項算術 7 種（0xA0–0xA6）: `f64.add` / `f64.sub` / `f64.mul` / `f64.div` / `f64.min` / `f64.max` / `f64.copysign` → `f64`
 - [x] `call_indirect`（複数テーブルサポート、result 型チェック含む）
 - [x] Global 変数（`global.get` / `global.set`）
+  - グローバルセクションの init 式で `ref.null`（0xD0）と `ref.func`（0xD2）をサポート済み
+    - `ref.null reftype`: null funcref として `.funcref(nil)` を設定
+    - `ref.func funcidx`: 非 null funcref として `.funcref(funcidx)` を設定
 - [x] フラット bytecode への移行（`block` / `loop` / `if` が `indirect case` を使わずジャンプオフセットで管理）
 - [x] メモリ命令（全 load/store 命令）
   - `i32.load`（0x28）、`i64.load`（0x29）、`f32.load`（0x2A）、`f64.load`（0x2B）
@@ -214,11 +217,26 @@ struct GPIOPin {
   - `elem.drop`（0xFC 0x0D）: element segment を解放済みとしてマーク（冪等）
   - `table.copy`（0xFC 0x0E）: テーブル内コピー（オーバーラップ対応）
     - n=0 の場合も境界チェックを適用（Wasm 仕様準拠）
-  - `ElementSegment` に `isPassive: Bool` を追加（`true` = passive、`false` = active）
-  - インタプリタ init 時: active element segments のみテーブルに書き込み、passive はスキップ
-  - active segment はインスタンス化完了後に dropped として扱う（Wasm 仕様 §4.5.4 準拠）
+    - spectest: `table_copy` 1728 pass / 0 skip / 0 fail（element segment flags 3–7 対応後に完全合格）
+  - `ElementSegment` の 3 分類と対応フィールド（Wasm 仕様 §4.5.4 準拠）:
+    - `isPassive: Bool`（`true` = passive または declarative、`false` = active）
+    - `isDeclarative: Bool`（`true` = declarative segment（flags=3/5/7））を追加
+    - `functionIndices: [UInt32?]`（`nil` エントリは null 参照を表す。表現式ベースセグメントで `ref.null` から生成）
+  - Element segment の 3 種類の扱い:
+    - **Active**: インスタンス化時にテーブルへ書き込み、完了後に dropped として扱う
+    - **Passive**（`isDeclarative=false`）: インスタンス化時はスキップ。`table.init` / `elem.drop` でランタイムに使用可能
+    - **Declarative**（`isDeclarative=true`）: インスタンス化時に即 dropped として扱う。`ref.func` 命令の正当性付与のみを目的とし、`table.init` からアクセス不可
+  - パーサー: Element セクション flags 0–7（Wasm 2.0 エンコーディング）を全対応:
+    - flags=0: active, table 0, i32.const offset, function index list（MVP）
+    - flags=1: passive, elemkind(0x00), function index list
+    - flags=2: active, explicit table index, i32.const offset, elemkind(0x00), function index list
+    - flags=3: declarative, elemkind(0x00), init_expr* list（`ref.func` / `ref.null` per element）
+    - flags=4: active, table 0, i32.const offset, init_expr* list
+    - flags=5: declarative, reftype byte, init_expr* list
+    - flags=6: active, explicit table index, offset expr, reftype byte, init_expr* list
+    - flags=7: declarative, reftype byte, init_expr* list
+  - `readFuncrefInitExpr()` ヘルパーを追加: `ref.null reftype 0x0B` → `nil`（null 参照）、`ref.func funcidx 0x0B` → `UInt32`
   - `WasmInterpreter` に `droppedElementSegments: [Bool]` を追加して `elem.drop` 状態を追跡
-  - パーサー: Element セクションで flags=1（passive）を追加。flags=1 / flags=2 の elemkind バイト検証を実装
   - バリデータ: `tableInit` / `elemDrop` / `tableCopy` のセグメント境界チェック・型チェックを実装
 - [x] 型変換命令（通常変換 0xA7–0xBF、Saturating truncation 0xFC 0x00–0x07）
   - 通常変換命令（opcode 0xA7–0xBF）:
@@ -271,5 +289,13 @@ struct GPIOPin {
 ### 設計上の対象外事項
 
 **クロスモジュール・リンキング**（テーブル/メモリインポートによるモジュール間共有）は実装を見送っている。
+詳細な理由は `Documentations/WASM_SPEC.md` の「クロスモジュール・リンキングを対象外とする理由」を参照。
 
-spectest の `linking0` が 1 件失敗しているのはこの設計判断による既知の制限事項である。詳細な理由は `Documentations/WASM_SPEC.md` の「クロスモジュール・リンキングを対象外とする理由」を参照。
+ただし、spectest における **`register` コマンド**（モジュールを名前付きで登録し、後続モジュールのホスト関数インポートとして使用する仕組み）は `SpectestTests.swift` に実装済みである。
+
+- `ConformanceRunner` に `registeredModules: [String: WasmInterpreter]` を追加
+- `handleRegister` により `currentInterp`（または named module）を指定の名前で登録
+- 新規モジュールロード時に `crossModuleImports(for:)` が登録済みモジュールからホスト関数インポートを生成
+- これにより `table_copy` spectest が 1728 pass / 0 skip を達成した（以前は skip=1117）
+
+この実装は値コピー（`var capturedInterp = regInterp`）で済む純粋関数のインポートに限定されており、テーブル/メモリの参照共有（真のクロスモジュール・リンキング）は実装していない。

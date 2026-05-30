@@ -73,14 +73,21 @@ struct GlobalDef: Sendable {
 
 /// An element segment from the Element section.
 ///
-/// Active segments (isPassive == false) are applied to a table at instantiation time.
-/// Passive segments (isPassive == true) are not applied at instantiation; they remain
-/// available for use by `table.init` and can be invalidated by `elem.drop`.
+/// Active segments (isPassive == false, isDeclarative == false) are applied to a table at
+/// instantiation time, then treated as dropped (Wasm spec §4.5.4).
+/// Passive segments (isPassive == true, isDeclarative == false) are not applied at
+/// instantiation; they remain available for use by `table.init` and can be invalidated by
+/// `elem.drop`.
+/// Declarative segments (isPassive == true, isDeclarative == true) are pre-dropped at
+/// instantiation — they exist only to make `ref.func` instructions valid, and must never
+/// be accessible via `table.init`.
 struct ElementSegment: Sendable {
-  let isPassive: Bool  // true = passive (no table/offset); false = active
+  let isPassive: Bool  // true = passive or declarative (not applied at instantiation)
+  let isDeclarative: Bool  // true = declarative (flags=3, 5, 7); pre-dropped per spec §4.5.4
   let tableIndex: UInt32  // valid only when isPassive == false
   let offset: Int32  // valid only when isPassive == false
-  let functionIndices: [UInt32]
+  // nil entries represent null references (ref.null in expression-based segments)
+  let functionIndices: [UInt32?]
 }
 
 // MARK: - Instructions

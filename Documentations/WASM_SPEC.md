@@ -53,7 +53,7 @@
   - `i32.store8`（0x3A）、`i32.store16`（0x3B）
   - `i64.store8`（0x3C）、`i64.store16`（0x3D）、`i64.store32`（0x3E）
   - `memory.size`（0x3F）、`memory.grow`（0x40）
-- Global 変数（`global.get` / `global.set`）。init 式で `i64.const` / `f64.const` をサポート済み
+- Global 変数（`global.get` / `global.set`）。init 式で `i64.const` / `f64.const` / `ref.null` / `ref.func` をサポート済み
 - テーブル参照命令（`table.get`（0x25）/ `table.set`（0x26））。`funcref` 型テーブルへの読み書きをサポート
 - Bulk Memory 命令（0xFC プレフィックス）— メモリ操作
   - `memory.init`（0xFC 0x08）: passive data segment の内容を線形メモリにコピー
@@ -67,6 +67,11 @@
   - `table.grow`（0xFC 0x0F）: テーブルを n 要素拡張し旧サイズを返す（失敗時 -1）
   - `table.size`（0xFC 0x10）: テーブルの現在の要素数を i32 でプッシュ
   - `table.fill`（0xFC 0x11）: テーブル範囲を参照値で埋める
+- Element セクション flags 0–7（Wasm 2.0 エンコーディング）を全対応:
+  - active（flags=0/2/4/6）、passive（flags=1）、declarative（flags=3/5/7）の 3 種類を正しく区別
+  - `ElementSegment` に `isDeclarative: Bool` フィールドを追加。declarative segment はインスタンス化時に即 dropped
+  - 表現式ベースセグメント（flags=3/4/5/6/7）は `ref.null` / `ref.func` init 式から要素を構築
+  - `functionIndices: [UInt32?]` の `nil` エントリが null 参照（`ref.null` から生成）を表す
 - 型変換命令（通常変換 0xA7–0xBF、Saturating truncation 0xFC 0x00–0x07）
   - 通常変換（opcode 0xA7–0xBF）: `i32.wrap_i64`、`i32.trunc_f32_s/u`、`i32.trunc_f64_s/u`、`i64.extend_i32_u`、`i64.trunc_f32_s/u`、`i64.trunc_f64_s/u`、`f32.convert_i32_s/u`、`f32.convert_i64_s/u`、`f32.demote_f64`、`f64.convert_i32_s/u`、`f64.convert_i64_s/u`、`f64.promote_f32`、`i32.reinterpret_f32`、`i64.reinterpret_f64`、`f32.reinterpret_i32`、`f64.reinterpret_i64`
   - Saturating truncation（0xFC 0x00–0x07）: `i32.trunc_sat_f32_s/u`、`i32.trunc_sat_f64_s/u`、`i64.trunc_sat_f32_s/u`、`i64.trunc_sat_f64_s/u`
@@ -79,7 +84,7 @@
 
 - SIMD / スレッド / 例外処理 / GC
 - WASI（WebAssembly System Interface）
-- **クロスモジュール・リンキング**（テーブルインポート / モジュール間共有）
+- **クロスモジュール・リンキング**（テーブル/メモリインポートによるモジュール間共有）
 
 #### クロスモジュール・リンキングを対象外とする理由
 
@@ -95,7 +100,7 @@
 2. **設計的なコスト**: テーブル共有には参照セマンティクスが必要となり、現在の値型（`struct`）中心の設計と相容れない。Embedded Swift では `class`（参照型）が制限されるため、Embedded フェーズとの整合が困難。
 3. **学習目的との兼ね合い**: Runtime 内部構造の理解が主目的であり、クロスモジュール・リンキングはそれとは独立した複雑さを伴う。
 
-spectest の `linking0` が 1 件失敗しているのはこの設計判断による既知の制限事項である。
+**なお、spectest テストスイートで使われる `register` コマンド**（モジュールを名前付きで登録し、後続モジュールへの関数インポートとして提供する仕組み）は `SpectestTests.swift` に実装している。これは値コピーによるホスト関数インポートであり、テーブル/メモリを共有参照する真のクロスモジュール・リンキングではない。この実装により `table_copy` spectest が完全合格（1728 pass / 0 skip）となった。
 
 ---
 

@@ -192,6 +192,12 @@ struct WasmParser {
       case 0x42: initValue = .i64(try readI64())
       case 0x43: initValue = .f32(try readF32())
       case 0x44: initValue = .f64(try readF64())
+      case 0xD0:  // ref.null: null funcref/externref
+        _ = try readByte()  // reftype byte (0x70 = funcref, 0x6F = externref)
+        initValue = .funcref(nil)
+      case 0xD2:  // ref.func: non-null funcref for the given function index
+        let funcIdx = try readU32()
+        initValue = .funcref(funcIdx)
       default: throw .invalidInstruction(opcode)
       }
       let endOp = try readByte()
@@ -204,10 +210,15 @@ struct WasmParser {
 
   /// Element section (id=9): table initialization segments
   ///
-  /// Supported flags:
+  /// Supported flags (Wasm 2.0 encoding):
   ///   0 — active, table 0, i32.const offset, function indices (MVP)
   ///   1 — passive, elemkind(0x00), function indices
   ///   2 — active, explicit table index, i32.const offset, elemkind(0x00), function indices
+  ///   3 — declarative, elemkind(0x00), init_expr* list (ref.func / ref.null per element)
+  ///   4 — active, table 0, i32.const offset, init_expr* list
+  ///   5 — passive, reftype byte, init_expr* list
+  ///   6 — active, explicit table index, offset expr, reftype byte, init_expr* list
+  ///   7 — declarative, reftype byte, init_expr* list
   private mutating func parseElementSection() throws(WasmError) -> [ElementSegment] {
     let count = try readU32()
     var segments: [ElementSegment] = []
@@ -222,21 +233,24 @@ struct WasmParser {
         let endOp = try readByte()
         guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
         let funcCount = try readU32()
-        var funcIndices: [UInt32] = []
+        var funcIndices: [UInt32?] = []
         for _ in 0..<funcCount { funcIndices.append(try readU32()) }
         segments.append(
           ElementSegment(
-            isPassive: false, tableIndex: 0, offset: offset, functionIndices: funcIndices))
+            isPassive: false, isDeclarative: false, tableIndex: 0, offset: offset,
+            functionIndices: funcIndices))
       case 1:
         // Passive segment: elemkind byte (0x00 = funcref), then function index list.
         // Not applied at instantiation; used by table.init / elem.drop at runtime.
         let elemkind1 = try readByte()
         guard elemkind1 == 0x00 else { throw .invalidValueType(elemkind1) }
         let funcCount = try readU32()
-        var funcIndices: [UInt32] = []
+        var funcIndices: [UInt32?] = []
         for _ in 0..<funcCount { funcIndices.append(try readU32()) }
         segments.append(
-          ElementSegment(isPassive: true, tableIndex: 0, offset: 0, functionIndices: funcIndices))
+          ElementSegment(
+            isPassive: true, isDeclarative: false, tableIndex: 0, offset: 0,
+            functionIndices: funcIndices))
       case 2:
         // Active with explicit table index: table_idx, i32.const offset, elemkind(0x00), funcidx list
         let tableIndex = try readU32()
@@ -248,16 +262,110 @@ struct WasmParser {
         let elemkind2 = try readByte()
         guard elemkind2 == 0x00 else { throw .invalidValueType(elemkind2) }
         let funcCount = try readU32()
-        var funcIndices: [UInt32] = []
+        var funcIndices: [UInt32?] = []
         for _ in 0..<funcCount { funcIndices.append(try readU32()) }
         segments.append(
           ElementSegment(
-            isPassive: false, tableIndex: tableIndex, offset: offset, functionIndices: funcIndices))
+            isPassive: false, isDeclarative: false, tableIndex: tableIndex, offset: offset,
+            functionIndices: funcIndices))
+      case 3:
+        // Declarative segment: elemkind(0x00), init_expr* list.
+        // Declarative segments are never applied to a table; they exist only to make
+        // ref.func instructions valid. Per Wasm spec §4.5.4 they must be pre-dropped at
+        // instantiation — table.init must not be able to access them.
+        let elemkind3 = try readByte()
+        guard elemkind3 == 0x00 else { throw .invalidValueType(elemkind3) }
+        let elemCount3 = try readU32()
+        var funcIndices: [UInt32?] = []
+        for _ in 0..<elemCount3 { funcIndices.append(try readFuncrefInitExpr()) }
+        segments.append(
+          ElementSegment(
+            isPassive: true, isDeclarative: true, tableIndex: 0, offset: 0,
+            functionIndices: funcIndices))
+      case 4:
+        // Active, table 0, i32.const offset, init_expr* list.
+        let constOp4 = try readByte()
+        guard constOp4 == 0x41 else { throw .invalidInstruction(constOp4) }
+        let offset4 = try readI32()
+        let endOp4 = try readByte()
+        guard endOp4 == 0x0B else { throw .invalidInstruction(endOp4) }
+        let elemCount4 = try readU32()
+        var funcIndices: [UInt32?] = []
+        for _ in 0..<elemCount4 { funcIndices.append(try readFuncrefInitExpr()) }
+        segments.append(
+          ElementSegment(
+            isPassive: false, isDeclarative: false, tableIndex: 0, offset: offset4,
+            functionIndices: funcIndices))
+      case 5:
+        // Declarative, reftype byte, init_expr* list.
+        // Like flags=3 but uses a reftype byte instead of elemkind(0x00).
+        // Per Wasm spec §4.5.4 declarative segments are pre-dropped at instantiation.
+        _ = try readByte()  // reftype byte (0x70 = funcref, 0x6F = externref)
+        let elemCount5 = try readU32()
+        var funcIndices: [UInt32?] = []
+        for _ in 0..<elemCount5 { funcIndices.append(try readFuncrefInitExpr()) }
+        segments.append(
+          ElementSegment(
+            isPassive: true, isDeclarative: true, tableIndex: 0, offset: 0,
+            functionIndices: funcIndices))
+      case 6:
+        // Active, explicit table index, offset expr, reftype byte, init_expr* list.
+        let tableIndex6 = try readU32()
+        let constOp6 = try readByte()
+        guard constOp6 == 0x41 else { throw .invalidInstruction(constOp6) }
+        let offset6 = try readI32()
+        let endOp6 = try readByte()
+        guard endOp6 == 0x0B else { throw .invalidInstruction(endOp6) }
+        _ = try readByte()  // reftype byte
+        let elemCount6 = try readU32()
+        var funcIndices: [UInt32?] = []
+        for _ in 0..<elemCount6 { funcIndices.append(try readFuncrefInitExpr()) }
+        segments.append(
+          ElementSegment(
+            isPassive: false, isDeclarative: false, tableIndex: tableIndex6, offset: offset6,
+            functionIndices: funcIndices))
+      case 7:
+        // Declarative, reftype byte, init_expr* list.
+        // Like flags=3 but uses a reftype byte instead of elemkind(0x00).
+        // Per Wasm spec §4.5.4 declarative segments are pre-dropped at instantiation.
+        _ = try readByte()  // reftype byte
+        let elemCount7 = try readU32()
+        var funcIndices: [UInt32?] = []
+        for _ in 0..<elemCount7 { funcIndices.append(try readFuncrefInitExpr()) }
+        segments.append(
+          ElementSegment(
+            isPassive: true, isDeclarative: true, tableIndex: 0, offset: 0,
+            functionIndices: funcIndices))
       default:
         throw .unsupportedElementSegment
       }
     }
     return segments
+  }
+
+  /// Reads a single init_expr from an expression-based element segment.
+  ///
+  /// Valid forms in Wasm 2.0 element segments:
+  ///   ref.null reftype 0x0B  → nil (null reference)
+  ///   ref.func funcidx 0x0B  → funcidx
+  ///
+  /// Returns nil for a null reference, or the function index for a non-null funcref.
+  private mutating func readFuncrefInitExpr() throws(WasmError) -> UInt32? {
+    let opcode = try readByte()
+    switch opcode {
+    case 0xD0:  // ref.null
+      _ = try readByte()  // reftype byte (0x70 = funcref)
+      let endByte = try readByte()
+      guard endByte == 0x0B else { throw .invalidInstruction(endByte) }
+      return nil
+    case 0xD2:  // ref.func
+      let funcIdx = try readU32()
+      let endByte = try readByte()
+      guard endByte == 0x0B else { throw .invalidInstruction(endByte) }
+      return funcIdx
+    default:
+      throw .invalidInstruction(opcode)
+    }
   }
 
   /// Function section (id=3): type index for each local function
