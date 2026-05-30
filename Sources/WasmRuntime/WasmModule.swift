@@ -247,7 +247,40 @@ enum Instruction: Sendable {
   case i64Rotl  // 0x89
   case i64Rotr  // 0x8A
   // conversions
+  case i32WrapI64  // 0xA7: truncate i64 to i32 (lower 32 bits)
+  case i32TruncF32S  // 0xA8: f32 → i32 (signed, traps on NaN/Inf/overflow)
+  case i32TruncF32U  // 0xA9: f32 → u32 as i32 (unsigned, traps on NaN/Inf/overflow)
+  case i32TruncF64S  // 0xAA: f64 → i32 (signed, traps on NaN/Inf/overflow)
+  case i32TruncF64U  // 0xAB: f64 → u32 as i32 (unsigned, traps on NaN/Inf/overflow)
   case i64ExtendI32S  // 0xAC: sign-extend i32 to i64
+  case i64ExtendI32U  // 0xAD: zero-extend i32 to i64 (interpret as UInt32)
+  case i64TruncF32S  // 0xAE: f32 → i64 (signed, traps on NaN/Inf/overflow)
+  case i64TruncF32U  // 0xAF: f32 → u64 as i64 (unsigned, traps on NaN/Inf/overflow)
+  case i64TruncF64S  // 0xB0: f64 → i64 (signed, traps on NaN/Inf/overflow)
+  case i64TruncF64U  // 0xB1: f64 → u64 as i64 (unsigned, traps on NaN/Inf/overflow)
+  case f32ConvertI32S  // 0xB2: i32 (signed) → f32
+  case f32ConvertI32U  // 0xB3: i32 (as UInt32) → f32
+  case f32ConvertI64S  // 0xB4: i64 (signed) → f32
+  case f32ConvertI64U  // 0xB5: i64 (as UInt64) → f32
+  case f32DemoteF64  // 0xB6: f64 → f32 (precision reduction)
+  case f64ConvertI32S  // 0xB7: i32 (signed) → f64
+  case f64ConvertI32U  // 0xB8: i32 (as UInt32) → f64
+  case f64ConvertI64S  // 0xB9: i64 (signed) → f64
+  case f64ConvertI64U  // 0xBA: i64 (as UInt64) → f64
+  case f64PromoteF32  // 0xBB: f32 → f64 (precision extension)
+  case i32ReinterpretF32  // 0xBC: f32 bit pattern → i32
+  case i64ReinterpretF64  // 0xBD: f64 bit pattern → i64
+  case f32ReinterpretI32  // 0xBE: i32 bit pattern → f32
+  case f64ReinterpretI64  // 0xBF: i64 bit pattern → f64
+  // saturating truncations (0xFC prefix, sub-ops 0x00–0x07): clamp instead of trap
+  case i32TruncSatF32S  // 0xFC 0x00
+  case i32TruncSatF32U  // 0xFC 0x01
+  case i32TruncSatF64S  // 0xFC 0x02
+  case i32TruncSatF64U  // 0xFC 0x03
+  case i64TruncSatF32S  // 0xFC 0x04
+  case i64TruncSatF32U  // 0xFC 0x05
+  case i64TruncSatF64S  // 0xFC 0x06
+  case i64TruncSatF64U  // 0xFC 0x07
   // memory loads
   case i32Load(UInt32, UInt32)  // 0x28: align, offset
   case i64Load(UInt32, UInt32)  // 0x29: align, offset

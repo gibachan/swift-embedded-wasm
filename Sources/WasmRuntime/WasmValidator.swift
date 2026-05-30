@@ -331,8 +331,88 @@
 
       // MARK: Conversions
 
+      case .i32WrapI64:
+        try popExpecting(.i64)
+        tryPush(.i32)
+
       case .i64ExtendI32S:
         try popExpecting(.i32)
+        tryPush(.i64)
+
+      case .i64ExtendI32U:
+        try popExpecting(.i32)
+        tryPush(.i64)
+
+      case .i32TruncF32S, .i32TruncF32U:
+        try popExpecting(.f32)
+        tryPush(.i32)
+
+      case .i32TruncF64S, .i32TruncF64U:
+        try popExpecting(.f64)
+        tryPush(.i32)
+
+      case .i64TruncF32S, .i64TruncF32U:
+        try popExpecting(.f32)
+        tryPush(.i64)
+
+      case .i64TruncF64S, .i64TruncF64U:
+        try popExpecting(.f64)
+        tryPush(.i64)
+
+      case .f32ConvertI32S, .f32ConvertI32U:
+        try popExpecting(.i32)
+        tryPush(.f32)
+
+      case .f32ConvertI64S, .f32ConvertI64U:
+        try popExpecting(.i64)
+        tryPush(.f32)
+
+      case .f64ConvertI32S, .f64ConvertI32U:
+        try popExpecting(.i32)
+        tryPush(.f64)
+
+      case .f64ConvertI64S, .f64ConvertI64U:
+        try popExpecting(.i64)
+        tryPush(.f64)
+
+      case .f32DemoteF64:
+        try popExpecting(.f64)
+        tryPush(.f32)
+
+      case .f64PromoteF32:
+        try popExpecting(.f32)
+        tryPush(.f64)
+
+      case .i32ReinterpretF32:
+        try popExpecting(.f32)
+        tryPush(.i32)
+
+      case .i64ReinterpretF64:
+        try popExpecting(.f64)
+        tryPush(.i64)
+
+      case .f32ReinterpretI32:
+        try popExpecting(.i32)
+        tryPush(.f32)
+
+      case .f64ReinterpretI64:
+        try popExpecting(.i64)
+        tryPush(.f64)
+
+      case .i32TruncSatF32S, .i32TruncSatF32U:
+        try popExpecting(.f32)
+        tryPush(.i32)
+
+      case .i32TruncSatF64S, .i32TruncSatF64U:
+        try popExpecting(.f64)
+        tryPush(.i32)
+
+      case .i64TruncSatF32S, .i64TruncSatF32U:
+        try popExpecting(.f32)
+        tryPush(.i64)
+
+      case .i64TruncSatF64S, .i64TruncSatF64U:
+        try popExpecting(.f64)
         tryPush(.i64)
 
       // MARK: Memory

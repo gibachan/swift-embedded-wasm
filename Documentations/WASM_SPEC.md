@@ -64,10 +64,12 @@
   - `table.init`（0xFC 0x0C）: passive element segment の内容をテーブルにコピー
   - `elem.drop`（0xFC 0x0D）: element segment を解放済みとしてマーク
   - `table.copy`（0xFC 0x0E）: テーブル内コピー（オーバーラップ対応）
+- 型変換命令（通常変換 0xA7–0xBF、Saturating truncation 0xFC 0x00–0x07）
+  - 通常変換（opcode 0xA7–0xBF）: `i32.wrap_i64`、`i32.trunc_f32_s/u`、`i32.trunc_f64_s/u`、`i64.extend_i32_u`、`i64.trunc_f32_s/u`、`i64.trunc_f64_s/u`、`f32.convert_i32_s/u`、`f32.convert_i64_s/u`、`f32.demote_f64`、`f64.convert_i32_s/u`、`f64.convert_i64_s/u`、`f64.promote_f32`、`i32.reinterpret_f32`、`i64.reinterpret_f64`、`f32.reinterpret_i32`、`f64.reinterpret_i64`
+  - Saturating truncation（0xFC 0x00–0x07）: `i32.trunc_sat_f32_s/u`、`i32.trunc_sat_f64_s/u`、`i64.trunc_sat_f32_s/u`、`i64.trunc_sat_f64_s/u`
 
 ### 後回し（MVP に含まれるが急がない）
 
-- 型変換命令（`i32.trunc_f32_s`、`f64.promote_f32`、`i32.reinterpret_f32` など）
 - `memory.size`（0x3F） — パース時に `invalidInstruction` を送出する既知の問題あり（`unimplemented` に変更すべき）
 
 ### 対象外

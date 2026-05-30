@@ -220,6 +220,29 @@ struct GPIOPin {
   - `WasmInterpreter` に `droppedElementSegments: [Bool]` を追加して `elem.drop` 状態を追跡
   - パーサー: Element セクションで flags=1（passive）を追加。flags=1 / flags=2 の elemkind バイト検証を実装
   - バリデータ: `tableInit` / `elemDrop` / `tableCopy` のセグメント境界チェック・型チェックを実装
+- [x] 型変換命令（通常変換 0xA7–0xBF、Saturating truncation 0xFC 0x00–0x07）
+  - 通常変換命令（opcode 0xA7–0xBF）:
+    - `i32.wrap_i64`（0xA7）
+    - `i32.trunc_f32_s`（0xA8）、`i32.trunc_f32_u`（0xA9）
+    - `i32.trunc_f64_s`（0xAA）、`i32.trunc_f64_u`（0xAB）
+    - `i64.extend_i32_u`（0xAD）
+    - `i64.trunc_f32_s`（0xAE）、`i64.trunc_f32_u`（0xAF）
+    - `i64.trunc_f64_s`（0xB0）、`i64.trunc_f64_u`（0xB1）
+    - `f32.convert_i32_s`（0xB2）、`f32.convert_i32_u`（0xB3）
+    - `f32.convert_i64_s`（0xB4）、`f32.convert_i64_u`（0xB5）
+    - `f32.demote_f64`（0xB6）
+    - `f64.convert_i32_s`（0xB7）、`f64.convert_i32_u`（0xB8）
+    - `f64.convert_i64_s`（0xB9）、`f64.convert_i64_u`（0xBA）
+    - `f64.promote_f32`（0xBB）
+    - `i32.reinterpret_f32`（0xBC）、`i64.reinterpret_f64`（0xBD）
+    - `f32.reinterpret_i32`（0xBE）、`f64.reinterpret_i64`（0xBF）
+  - Saturating truncation 命令（0xFC プレフィックス 0x00–0x07）:
+    - `i32.trunc_sat_f32_s`（0xFC 0x00）、`i32.trunc_sat_f32_u`（0xFC 0x01）
+    - `i32.trunc_sat_f64_s`（0xFC 0x02）、`i32.trunc_sat_f64_u`（0xFC 0x03）
+    - `i64.trunc_sat_f32_s`（0xFC 0x04）、`i64.trunc_sat_f32_u`（0xFC 0x05）
+    - `i64.trunc_sat_f64_s`（0xFC 0x06）、`i64.trunc_sat_f64_u`（0xFC 0x07）
+  - spectest: `conversions` 619 pass / 0 skip / 0 fail（完全合格）
+  - 全 spectest: 3587 件すべてパス
 
 ### 既知の未対応・TODO（Embedded フェーズ向け）
 

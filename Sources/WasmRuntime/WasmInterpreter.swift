@@ -1230,12 +1230,331 @@ struct WasmInterpreter {
         let result = shift == 0 ? ua : (ua >> shift | ua << (64 - shift))
         valueStack.append(.i64(Int64(bitPattern: result)))
 
-      // MARK: i64 Conversions
+      // MARK: Conversions
+
+      // --- wrap / extend ---
+
+      case .i32WrapI64:
+        // i32.wrap_i64: keep the lower 32 bits of an i64 value.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i32(Int32(truncatingIfNeeded: a)))
 
       case .i64ExtendI32S:
+        // i64.extend_i32_s: sign-extend a 32-bit integer to 64 bits.
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let a) = valueStack.removeLast() else { throw .typeMismatch }
         valueStack.append(.i64(Int64(a)))
+
+      case .i64ExtendI32U:
+        // i64.extend_i32_u: zero-extend a 32-bit integer to 64 bits (treat i32 as UInt32).
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i64(Int64(UInt32(bitPattern: a))))
+
+      // --- trunc (trapping) ---
+
+      case .i32TruncF32S:
+        // i32.trunc_f32_s: convert f32 to signed i32; traps on NaN, Inf, or out-of-range.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        guard !a.isNaN && !a.isInfinite else { throw .invalidConversionToInteger }
+        guard a >= -2147483648.0 && a < 2147483648.0 else { throw .invalidConversionToInteger }
+        valueStack.append(.i32(Int32(a)))
+
+      case .i32TruncF32U:
+        // i32.trunc_f32_u: convert f32 to unsigned i32 stored as i32 bit-pattern.
+        // Traps on NaN, Inf, values <= -1.0, or values >= 2^32.
+        // Values in (-1, 0) truncate toward zero to 0 — valid, not a trap.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        guard !a.isNaN && !a.isInfinite else { throw .invalidConversionToInteger }
+        guard a > -1.0 && a < 4294967296.0 else { throw .invalidConversionToInteger }
+        // For a in (-1, 0), UInt32(a) would trap in Swift; truncation toward zero gives 0.
+        let u32: UInt32 = a < 0.0 ? 0 : UInt32(a)
+        valueStack.append(.i32(Int32(bitPattern: u32)))
+
+      case .i32TruncF64S:
+        // i32.trunc_f64_s: convert f64 to signed i32; traps on NaN, Inf, or out-of-range.
+        // Lower bound: a > -2147483649.0 because f64 values in (-2147483649, -2147483648]
+        // truncate toward zero to values >= INT32_MIN and are thus valid.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        guard !a.isNaN && !a.isInfinite else { throw .invalidConversionToInteger }
+        guard a > -2147483649.0 && a < 2147483648.0 else { throw .invalidConversionToInteger }
+        valueStack.append(.i32(Int32(a)))
+
+      case .i32TruncF64U:
+        // i32.trunc_f64_u: convert f64 to unsigned i32 stored as i32 bit-pattern.
+        // Values in (-1, 0) truncate toward zero to 0 — valid, not a trap.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        guard !a.isNaN && !a.isInfinite else { throw .invalidConversionToInteger }
+        guard a > -1.0 && a < 4294967296.0 else { throw .invalidConversionToInteger }
+        // For a in (-1, 0), UInt32(a) would trap in Swift; truncation toward zero gives 0.
+        let u32: UInt32 = a < 0.0 ? 0 : UInt32(a)
+        valueStack.append(.i32(Int32(bitPattern: u32)))
+
+      case .i64TruncF32S:
+        // i64.trunc_f32_s: convert f32 to signed i64; traps on NaN, Inf, or out-of-range.
+        // -2^63 is exactly representable in f32 and valid; -2^63 as f32 is -9223372036854775808.0.
+        // The next smaller representable f32 is -9223372036854775808.0 * 2 (out of range).
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        guard !a.isNaN && !a.isInfinite else { throw .invalidConversionToInteger }
+        guard a >= -9223372036854775808.0 && a < 9223372036854775808.0
+        else { throw .invalidConversionToInteger }
+        valueStack.append(.i64(Int64(a)))
+
+      case .i64TruncF32U:
+        // i64.trunc_f32_u: convert f32 to unsigned i64 stored as i64 bit-pattern.
+        // Values in (-1, 0) truncate toward zero to 0 — valid, not a trap.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        guard !a.isNaN && !a.isInfinite else { throw .invalidConversionToInteger }
+        guard a > -1.0 && a < 18446744073709551616.0 else { throw .invalidConversionToInteger }
+        // For a in (-1, 0), UInt64(a) would trap in Swift; truncation toward zero gives 0.
+        let u64f32: UInt64 = a < 0.0 ? 0 : UInt64(a)
+        valueStack.append(.i64(Int64(bitPattern: u64f32)))
+
+      case .i64TruncF64S:
+        // i64.trunc_f64_s: convert f64 to signed i64; traps on NaN, Inf, or out-of-range.
+        // The lower bound is exactly -2^63 = INT64_MIN, which f64 can represent exactly
+        // and converts to Int64.min. The next more-negative f64 (-9223372036854777856.0)
+        // would truncate below INT64_MIN and must trap.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        guard !a.isNaN && !a.isInfinite else { throw .invalidConversionToInteger }
+        guard a >= -9223372036854775808.0 && a < 9223372036854775808.0
+        else { throw .invalidConversionToInteger }
+        valueStack.append(.i64(Int64(a)))
+
+      case .i64TruncF64U:
+        // i64.trunc_f64_u: convert f64 to unsigned i64 stored as i64 bit-pattern.
+        // Values in (-1, 0) truncate toward zero to 0 — valid, not a trap.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        guard !a.isNaN && !a.isInfinite else { throw .invalidConversionToInteger }
+        guard a > -1.0 && a < 18446744073709551616.0 else { throw .invalidConversionToInteger }
+        // For a in (-1, 0), UInt64(a) would trap in Swift; truncation toward zero gives 0.
+        let u64f64: UInt64 = a < 0.0 ? 0 : UInt64(a)
+        valueStack.append(.i64(Int64(bitPattern: u64f64)))
+
+      // --- convert (integer → float) ---
+
+      case .f32ConvertI32S:
+        // f32.convert_i32_s: signed i32 to f32.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f32(Float(a)))
+
+      case .f32ConvertI32U:
+        // f32.convert_i32_u: unsigned i32 (stored as signed i32) to f32.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f32(Float(UInt32(bitPattern: a))))
+
+      case .f32ConvertI64S:
+        // f32.convert_i64_s: signed i64 to f32.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f32(Float(a)))
+
+      case .f32ConvertI64U:
+        // f32.convert_i64_u: unsigned i64 (stored as signed i64) to f32.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f32(Float(UInt64(bitPattern: a))))
+
+      case .f64ConvertI32S:
+        // f64.convert_i32_s: signed i32 to f64.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f64(Double(a)))
+
+      case .f64ConvertI32U:
+        // f64.convert_i32_u: unsigned i32 (stored as signed i32) to f64.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f64(Double(UInt32(bitPattern: a))))
+
+      case .f64ConvertI64S:
+        // f64.convert_i64_s: signed i64 to f64.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f64(Double(a)))
+
+      case .f64ConvertI64U:
+        // f64.convert_i64_u: unsigned i64 (stored as signed i64) to f64.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f64(Double(UInt64(bitPattern: a))))
+
+      // --- demote / promote ---
+
+      case .f32DemoteF64:
+        // f32.demote_f64: reduce f64 to f32 (may lose precision; NaN/Inf preserved).
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f32(Float(a)))
+
+      case .f64PromoteF32:
+        // f64.promote_f32: extend f32 to f64 (exact; NaN/Inf preserved).
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f64(Double(a)))
+
+      // --- reinterpret ---
+
+      case .i32ReinterpretF32:
+        // i32.reinterpret_f32: reinterpret the IEEE 754 bit pattern of f32 as i32.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i32(Int32(bitPattern: a.bitPattern)))
+
+      case .i64ReinterpretF64:
+        // i64.reinterpret_f64: reinterpret the IEEE 754 bit pattern of f64 as i64.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i64(Int64(bitPattern: a.bitPattern)))
+
+      case .f32ReinterpretI32:
+        // f32.reinterpret_i32: reinterpret i32 bits as a f32 IEEE 754 value.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f32(Float(bitPattern: UInt32(bitPattern: a))))
+
+      case .f64ReinterpretI64:
+        // f64.reinterpret_i64: reinterpret i64 bits as a f64 IEEE 754 value.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.f64(Double(bitPattern: UInt64(bitPattern: a))))
+
+      // --- saturating trunc (0xFC prefix): clamp instead of trap ---
+
+      case .i32TruncSatF32S:
+        // i32.trunc_sat_f32_s: f32 → signed i32, NaN→0, Inf→INT32_MAX, -Inf→INT32_MIN.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        let result: Int32
+        if a.isNaN {
+          result = 0
+        } else if a < -2147483648.0 {
+          result = Int32.min
+        } else if a >= 2147483648.0 {
+          result = Int32.max
+        } else {
+          result = Int32(a)
+        }
+        valueStack.append(.i32(result))
+
+      case .i32TruncSatF32U:
+        // i32.trunc_sat_f32_u: f32 → unsigned i32 (as i32 bits), NaN→0, clamp to [0, UINT32_MAX].
+        // Any negative value (including (-1,0)) clamps to 0; UInt32(a) is unsafe for negatives.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        let result: UInt32
+        if a.isNaN || a < 0.0 {
+          result = 0
+        } else if a >= 4294967296.0 {
+          result = UInt32.max
+        } else {
+          result = UInt32(a)
+        }
+        valueStack.append(.i32(Int32(bitPattern: result)))
+
+      case .i32TruncSatF64S:
+        // i32.trunc_sat_f64_s: f64 → signed i32, NaN→0, Inf→INT32_MAX, -Inf→INT32_MIN.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        let result: Int32
+        if a.isNaN {
+          result = 0
+        } else if a < -2147483648.0 {
+          result = Int32.min
+        } else if a >= 2147483648.0 {
+          result = Int32.max
+        } else {
+          result = Int32(a)
+        }
+        valueStack.append(.i32(result))
+
+      case .i32TruncSatF64U:
+        // i32.trunc_sat_f64_u: f64 → unsigned i32 (as i32 bits), NaN→0, clamp to [0, UINT32_MAX].
+        // Any negative value (including (-1,0)) clamps to 0; UInt32(a) is unsafe for negatives.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        let result: UInt32
+        if a.isNaN || a < 0.0 {
+          result = 0
+        } else if a >= 4294967296.0 {
+          result = UInt32.max
+        } else {
+          result = UInt32(a)
+        }
+        valueStack.append(.i32(Int32(bitPattern: result)))
+
+      case .i64TruncSatF32S:
+        // i64.trunc_sat_f32_s: f32 → signed i64, NaN→0, Inf→INT64_MAX, -Inf→INT64_MIN.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        let result: Int64
+        if a.isNaN {
+          result = 0
+        } else if a < -9223372036854775808.0 {
+          result = Int64.min
+        } else if a >= 9223372036854775808.0 {
+          result = Int64.max
+        } else {
+          result = Int64(a)
+        }
+        valueStack.append(.i64(result))
+
+      case .i64TruncSatF32U:
+        // i64.trunc_sat_f32_u: f32 → unsigned i64 (as i64 bits), NaN→0, clamp to [0, UINT64_MAX].
+        // Any negative value (including (-1,0)) clamps to 0; UInt64(a) is unsafe for negatives.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        let result: UInt64
+        if a.isNaN || a < 0.0 {
+          result = 0
+        } else if a >= 18446744073709551616.0 {
+          result = UInt64.max
+        } else {
+          result = UInt64(a)
+        }
+        valueStack.append(.i64(Int64(bitPattern: result)))
+
+      case .i64TruncSatF64S:
+        // i64.trunc_sat_f64_s: f64 → signed i64, NaN→0, Inf→INT64_MAX, -Inf→INT64_MIN.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        let result: Int64
+        if a.isNaN {
+          result = 0
+        } else if a < -9223372036854775808.0 {
+          result = Int64.min
+        } else if a >= 9223372036854775808.0 {
+          result = Int64.max
+        } else {
+          result = Int64(a)
+        }
+        valueStack.append(.i64(result))
+
+      case .i64TruncSatF64U:
+        // i64.trunc_sat_f64_u: f64 → unsigned i64 (as i64 bits), NaN→0, clamp to [0, UINT64_MAX].
+        // Any negative value (including (-1,0)) clamps to 0; UInt64(a) is unsafe for negatives.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else { throw .typeMismatch }
+        let result: UInt64
+        if a.isNaN || a < 0.0 {
+          result = 0
+        } else if a >= 18446744073709551616.0 {
+          result = UInt64.max
+        } else {
+          result = UInt64(a)
+        }
+        valueStack.append(.i64(Int64(bitPattern: result)))
 
       // MARK: Memory
 

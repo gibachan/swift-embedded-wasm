@@ -27,4 +27,5 @@ enum WasmError: Error, Equatable, Sendable {
   case unreachableReached  // unreachable instruction executed (trap)
   case undefinedElement  // call_indirect: table index out of bounds or uninitialized
   case indirectCallTypeMismatch  // call_indirect: function type does not match expected type
+  case invalidConversionToInteger  // trunc: NaN, Inf, or out-of-range float → integer (Wasm trap)
 }
