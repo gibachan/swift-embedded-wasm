@@ -2,6 +2,17 @@
 
 Embedded Swift で実装する WebAssembly Runtime（Raspberry Pi Pico 2 / RP2350 向け）。
 
+## 仕様準拠水準
+
+公式 [WebAssembly Spec Testsuite](https://github.com/WebAssembly/testsuite) による評価（2026-05-31 時点）:
+
+- **WebAssembly 2.0 をほぼカバー**（SIMD / Memory64 を除く）
+- 総テスト 59,889 件のうち **31,925 件 PASS・FAIL ゼロ**
+- SIMD と Memory64 を除いたパスレートは **95.7%**（21,632 / 22,608）
+
+SIMD（v128）と Memory64（64 ビットアドレッシング）は Embedded ターゲットに不要なため意図的に未実装。
+詳細は [`Documentations/SPEC_COMPLIANCE.md`](Documentations/SPEC_COMPLIANCE.md) を参照。
+
 ## 構成
 
 ```
