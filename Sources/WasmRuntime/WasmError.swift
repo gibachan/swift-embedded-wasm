@@ -13,6 +13,7 @@ enum WasmError: Error, Equatable, Sendable {
   case unsupportedElementSegment  // element segment format not yet supported
   case invalidInstruction(UInt8)  // unknown opcode
   case leb128Error(LEB128Error)  // LEB128 decode failure
+  case malformedUTF8  // invalid UTF-8 sequence in a name field (e.g. custom section name)
 
   // --- Interpreter ---
   case functionNotFound  // no export with the given name exists

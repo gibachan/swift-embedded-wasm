@@ -32,8 +32,8 @@ struct WasmParser {
     while !stream.isExhausted {
       let id = try readByte()
       let size = try readU32()
-
       switch id {
+      case 0: try parseCustomSection(size: Int(size))  // custom section: validate name UTF-8
       case 1: types = try parseTypeSection()
       case 2: imports = try parseImportSection()
       case 3: functions = try parseFunctionSection()
@@ -46,10 +46,13 @@ struct WasmParser {
       case 10: code = try parseCodeSection()
       case 11: data = try parseDataSection()
       default:
-        // Unknown sections are skipped by size (required by the Wasm spec for extensibility)
+        // Unknown sections (id > 12) are skipped by size (required by the Wasm spec for extensibility)
         for _ in 0..<Int(size) { _ = try readByte() }
       }
     }
+
+    // After the while loop stream.isExhausted is always true here, so no guard is needed.
+    // (The loop exits only when isExhausted, and every section consumes exactly `size` bytes.)
 
     let module = WasmModule(
       types: types, imports: imports, functions: functions,
@@ -74,6 +77,92 @@ struct WasmParser {
   }
 
   // MARK: - Section Parsers
+
+  /// Custom section (id=0): name + arbitrary bytes.
+  ///
+  /// The Wasm spec (§5.5.3) requires the section name to be a valid UTF-8 string.
+  /// We validate the name and skip the section payload, as the runtime does not
+  /// use custom section content.
+  private mutating func parseCustomSection(size: Int) throws(WasmError) {
+    // Read the name length and name bytes within the section.
+    // We must be careful: 'size' includes the name-length field and name bytes.
+    let startOffset = stream.offset
+    let nameLen = try readU32()
+    var nameBytes: [UInt8] = []
+    for _ in 0..<nameLen { nameBytes.append(try readByte()) }
+
+    // Validate the section name is well-formed UTF-8 (Wasm spec §5.5.3).
+    try validateUTF8(nameBytes)
+
+    // Skip the rest of the custom section payload.
+    let consumed = stream.offset - startOffset
+    let remaining = size - consumed
+    guard remaining >= 0 else { throw .unexpectedEnd }
+    for _ in 0..<remaining { _ = try readByte() }
+  }
+
+  /// Validates that `bytes` is a valid UTF-8 sequence.
+  ///
+  /// Checks:
+  ///   - Each sequence starts with a valid leading byte.
+  ///   - Continuation bytes are present and well-formed (0x80..0xBF).
+  ///   - No overlong encodings (e.g. 0xC0 0x80 for U+0000).
+  ///   - No surrogate pairs (U+D800..U+DFFF).
+  ///   - Code points are within the valid Unicode range (≤ U+10FFFF).
+  private func validateUTF8(_ bytes: [UInt8]) throws(WasmError) {
+    var i = 0
+    while i < bytes.count {
+      let b = bytes[i]
+      let seqLen: Int
+      if b & 0x80 == 0 {
+        // ASCII: U+0000..U+007F
+        seqLen = 1
+      } else if b & 0xE0 == 0xC0 {
+        // 2-byte sequence: U+0080..U+07FF
+        seqLen = 2
+      } else if b & 0xF0 == 0xE0 {
+        // 3-byte sequence: U+0800..U+FFFF
+        seqLen = 3
+      } else if b & 0xF8 == 0xF0 {
+        // 4-byte sequence: U+10000..U+10FFFF
+        seqLen = 4
+      } else {
+        // Invalid leading byte (0x80..0xBF continuation or 0xF8..0xFF)
+        throw .malformedUTF8
+      }
+
+      guard i + seqLen <= bytes.count else { throw .malformedUTF8 }
+
+      // Validate continuation bytes (all must be 0x80..0xBF)
+      for j in 1..<seqLen {
+        guard bytes[i + j] & 0xC0 == 0x80 else { throw .malformedUTF8 }
+      }
+
+      // Decode code point and check for overlong encodings and surrogates.
+      switch seqLen {
+      case 2:
+        let cp = (UInt32(b & 0x1F) << 6) | UInt32(bytes[i + 1] & 0x3F)
+        // Overlong: must be >= 0x80 (otherwise it should be encoded as 1 byte)
+        guard cp >= 0x80 else { throw .malformedUTF8 }
+      case 3:
+        let cp =
+          (UInt32(b & 0x0F) << 12) | (UInt32(bytes[i + 1] & 0x3F) << 6)
+          | UInt32(bytes[i + 2] & 0x3F)
+        // Overlong: must be >= 0x800; surrogates U+D800..U+DFFF are forbidden
+        guard cp >= 0x800 && !(cp >= 0xD800 && cp <= 0xDFFF) else { throw .malformedUTF8 }
+      case 4:
+        let cp =
+          (UInt32(b & 0x07) << 18) | (UInt32(bytes[i + 1] & 0x3F) << 12)
+          | (UInt32(bytes[i + 2] & 0x3F) << 6) | UInt32(bytes[i + 3] & 0x3F)
+        // Overlong: must be >= 0x10000; must not exceed U+10FFFF
+        guard cp >= 0x10000 && cp <= 0x10FFFF else { throw .malformedUTF8 }
+      default:
+        break  // seqLen == 1 (ASCII): always valid
+      }
+
+      i += seqLen
+    }
+  }
 
   /// Type section (id=1): array of function signatures
   ///
@@ -193,8 +282,11 @@ struct WasmParser {
       case 0x43: initValue = .f32(try readF32())
       case 0x44: initValue = .f64(try readF64())
       case 0xD0:  // ref.null: null funcref/externref
-        _ = try readByte()  // reftype byte (0x70 = funcref, 0x6F = externref)
-        initValue = .funcref(nil)
+        let refByte = try readByte()  // reftype byte (0x70 = funcref, 0x6F = externref)
+        guard let refType = RefType(rawValue: refByte) else {
+          throw .invalidRefType(refByte)
+        }
+        initValue = refType == .funcRef ? .funcref(nil) : .externref(nil)
       case 0xD2:  // ref.func: non-null funcref for the given function index
         let funcIdx = try readU32()
         initValue = .funcref(funcIdx)
@@ -941,13 +1033,12 @@ struct WasmParser {
       case 0xA6: instructions.append(.f64Copysign)
 
       // ref instructions
-      case 0xD0:  // ref.null reftype: [] → [funcref]
-        let reftype = try readByte()
-        guard reftype == 0x70 || reftype == 0x6F else {  // funcref (0x70) or externref (0x6F)
-          instructions.append(.unimplemented(0xD0))
-          break
+      case 0xD0:  // ref.null reftype: [] → [funcref | externref]
+        let reftypeByte = try readByte()
+        guard let refType = RefType(rawValue: reftypeByte) else {
+          throw .invalidRefType(reftypeByte)
         }
-        instructions.append(.refNull)
+        instructions.append(.refNull(refType))
 
       case 0xD1:  // ref.is_null: [funcref] → [i32]
         instructions.append(.refIsNull)

@@ -120,7 +120,9 @@ struct WasmInterpreter {
   var memory: [UInt8]
   private let hostFunctions: [HostFunction]
   private var globals: [Value]  // mutable global variable slots (global.get/set)
-  private var tables: [[UInt32?]]  // function tables: tables[tableIdx][elemIdx], nil = uninitialized
+  // Tables store Value (.funcref or .externref) directly to support both funcref and externref tables.
+  // The reftype of each slot is determined by the table's declared RefType.
+  private var tables: [[Value]]  // reference tables: tables[tableIdx][elemIdx]
   // TODO: Embedded — replace with fixed-size buffer
   private var droppedDataSegments: [Bool]  // true = segment has been dropped via data.drop
   // TODO: Embedded — replace with fixed-size buffer
@@ -157,18 +159,24 @@ struct WasmInterpreter {
     self.globals = module.globals.map { $0.initValue }
 
     // Build per-table arrays from the Table section; one entry per declared table.
+    // Each table slot holds a Value (.funcref or .externref) matching the table's declared refType.
     // Only active segments are applied at instantiation; passive segments are skipped
     // and remain available for use by table.init / elem.drop at runtime.
-    var tbls: [[UInt32?]] = module.tables.map { [UInt32?](repeating: nil, count: Int($0.min)) }
+    var tbls: [[Value]] = module.tables.map { tbl in
+      let nullVal: Value = tbl.refType == .externRef ? .externref(nil) : .funcref(nil)
+      return [Value](repeating: nullVal, count: Int(tbl.min))
+    }
     for seg in module.elements {
       guard !seg.isPassive else { continue }  // passive segments are not applied at instantiation
       let ti = Int(seg.tableIndex)
       guard ti < tbls.count else { throw .memoryAccessOutOfBounds }
       let start = Int(seg.offset)
+      // Use the table's declared refType to produce the correct Value variant.
+      let refType = module.tables[ti].refType
       for (i, funcIdx) in seg.functionIndices.enumerated() {
         let pos = start + i
         guard pos < tbls[ti].count else { throw .memoryAccessOutOfBounds }
-        tbls[ti][pos] = funcIdx
+        tbls[ti][pos] = refType == .externRef ? .externref(funcIdx) : .funcref(funcIdx)
       }
     }
     self.tables = tbls
@@ -293,6 +301,7 @@ struct WasmInterpreter {
         case .f32: locals.append(.f32(0.0))
         case .f64: locals.append(.f64(0.0))
         case .funcref: locals.append(.funcref(nil))  // nil = null reference per Wasm spec default
+        case .externref: locals.append(.externref(nil))  // nil = null reference per Wasm spec default
         }
       }
       frames.append(
@@ -1837,10 +1846,9 @@ struct WasmInterpreter {
       // MARK: Table
 
       case .tableGet(let tableIdx):
-        // table.get: [i32] → [funcref]
-        // Pops an i32 element index, pushes the funcref stored at that table slot.
-        // Out-of-bounds or uninitialized slots push .funcref(nil) only for the
-        // null-reference case; out-of-bounds indices trap per the Wasm spec.
+        // table.get: [i32] → [funcref | externref]
+        // Pops an i32 element index, pushes the reference stored at that table slot.
+        // The returned Value type (.funcref or .externref) matches the table's declared refType.
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let idx) = valueStack.removeLast() else { throw .typeMismatch }
         let ti = Int(tableIdx)
@@ -1849,34 +1857,48 @@ struct WasmInterpreter {
         // Negative values become large UInt32 values and will fail the bounds check.
         let i = Int(UInt32(bitPattern: idx))
         guard i < tables[ti].count else { throw .undefinedElement }
-        valueStack.append(.funcref(tables[ti][i]))
+        // Tables now store Value directly — push the stored value as-is.
+        valueStack.append(tables[ti][i])
 
       case .tableSet(let tableIdx):
-        // table.set: [i32, funcref] → []
-        // Pops a funcref then an i32 element index; stores the ref into the table.
-        // Stack order: [..., i32_idx, funcref_val] — funcref is on top.
+        // table.set: [i32, funcref | externref] → []
+        // Pops a reference value then an i32 element index; stores the ref into the table.
+        // Stack order: [..., i32_idx, ref_val] — ref is on top.
         guard valueStack.count >= 2 else { throw .stackUnderflow }
-        guard case .funcref(let ref) = valueStack.removeLast() else { throw .typeMismatch }
+        let refVal = valueStack.removeLast()
         guard case .i32(let idx) = valueStack.removeLast() else { throw .typeMismatch }
         let ti = Int(tableIdx)
         guard ti < tables.count else { throw .undefinedElement }
+        // Verify the value type matches the table's declared refType (Wasm spec §3.4.9).
+        // funcRef tables accept only .funcref values; externRef tables accept only .externref.
+        let tableRefType = ti < module.tables.count ? module.tables[ti].refType : .funcRef
+        switch (tableRefType, refVal) {
+        case (.funcRef, .funcref), (.externRef, .externref): break
+        default: throw WasmError.typeMismatch
+        }
         let i = Int(UInt32(bitPattern: idx))
         guard i < tables[ti].count else { throw .undefinedElement }
-        tables[ti][i] = ref
+        tables[ti][i] = refVal
 
       // MARK: Reference instructions
 
-      case .refNull:
-        // ref.null: [] → [funcref]
-        // Pushes a null function reference. externref is not currently supported.
-        valueStack.append(.funcref(nil))
+      case .refNull(let refType):
+        // ref.null reftype: [] → [funcref | externref]
+        // Pushes a null reference of the appropriate type.
+        switch refType {
+        case .funcRef: valueStack.append(.funcref(nil))
+        case .externRef: valueStack.append(.externref(nil))
+        }
 
       case .refIsNull:
-        // ref.is_null: [funcref] → [i32]
-        // Pops a funcref; pushes 1 if null, 0 if non-null.
+        // ref.is_null: [funcref | externref] → [i32]
+        // Pops any reference type; pushes 1 if null, 0 if non-null.
         guard !valueStack.isEmpty else { throw .stackUnderflow }
-        guard case .funcref(let ref) = valueStack.removeLast() else { throw .typeMismatch }
-        valueStack.append(.i32(ref == nil ? 1 : 0))
+        switch valueStack.removeLast() {
+        case .funcref(let r): valueStack.append(.i32(r == nil ? 1 : 0))
+        case .externref(let r): valueStack.append(.i32(r == nil ? 1 : 0))
+        default: throw WasmError.typeMismatch
+        }
 
       case .refFunc(let funcIdx):
         // ref.func x: [] → [funcref]
@@ -1895,7 +1917,10 @@ struct WasmInterpreter {
         let ti = Int(tableIdxOp)
         guard ti < tables.count else { throw .undefinedElement }
         let tbl = tables[ti]
-        guard eIdx >= 0 && eIdx < tbl.count, let funcIdx = tbl[eIdx] else {
+        // Tables now store Value; extract the funcref index from the slot.
+        // Null funcref (.funcref(nil)) or an externref in a funcref table both trap.
+        guard eIdx >= 0 && eIdx < tbl.count else { throw .undefinedElement }
+        guard case .funcref(let optFuncIdx) = tbl[eIdx], let funcIdx = optFuncIdx else {
           throw .undefinedElement
         }
         let expectedType = module.types[Int(typeIdx)]
@@ -2050,7 +2075,14 @@ struct WasmInterpreter {
         guard dstOff + copyCount <= tables[ti].count else { throw .undefinedElement }
         if copyCount > 0 {
           let elems = module.elements[ei].functionIndices
-          for i in 0..<copyCount { tables[ti][dstOff + i] = elems[srcOff + i] }
+          // element segment stores UInt32? indices; convert to the appropriate Value for the table.
+          // Use the table's declared refType to produce the correct .funcref or .externref variant.
+          let tableRefType = ti < module.tables.count ? module.tables[ti].refType : .funcRef
+          for i in 0..<copyCount {
+            tables[ti][dstOff + i] =
+              tableRefType == .externRef
+              ? .externref(elems[srcOff + i]) : .funcref(elems[srcOff + i])
+          }
         }
 
       case .elemDrop(let elemIdx):
@@ -2103,14 +2135,20 @@ struct WasmInterpreter {
         }
 
       case .tableGrow(let tableIdx):
-        // table.grow t: [funcref, i32] → [i32]
-        // Stack (top first): n (i32 delta), ref (funcref initial value).
+        // table.grow t: [funcref | externref, i32] → [i32]
+        // Stack (top first): n (i32 delta), ref (initial reference value).
         // Extends the table by n entries initialised to ref.
         // Returns the old table size on success, or -1 on failure.
         // Fails when the result would exceed the table's declared maximum.
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .i32(let delta) = valueStack.removeLast() else { throw .typeMismatch }
-        guard case .funcref(let ref) = valueStack.removeLast() else { throw .typeMismatch }
+        // Accept any reference type (funcref or externref) as the fill value.
+        let refVal = valueStack.removeLast()
+        // Validate that the value is a reference type (funcref or externref); i32/i64/f32/f64 are invalid.
+        switch refVal {
+        case .funcref, .externref: break
+        default: throw WasmError.typeMismatch
+        }
         let ti = Int(tableIdx)
         guard ti < tables.count else { throw .undefinedElement }
         // delta is encoded as u32 packed into i32; treat as unsigned.
@@ -2128,7 +2166,7 @@ struct WasmInterpreter {
           // Growth would exceed the declared maximum: return -1 (failure sentinel).
           valueStack.append(.i32(-1))
         } else {
-          tables[ti].append(contentsOf: [UInt32?](repeating: ref, count: n))
+          tables[ti].append(contentsOf: [Value](repeating: refVal, count: n))
           valueStack.append(.i32(oldSize))
         }
 
@@ -2140,14 +2178,21 @@ struct WasmInterpreter {
         valueStack.append(.i32(Int32(tables[ti].count)))
 
       case .tableFill(let tableIdx):
-        // table.fill t: [i32, funcref, i32] → []
-        // Stack (top first): n (i32 fill count), ref (funcref value), dst (i32 start index).
+        // table.fill t: [i32, funcref | externref, i32] → []
+        // Stack (top first): n (i32 fill count), ref (reference value), dst (i32 start index).
         guard valueStack.count >= 3 else { throw .stackUnderflow }
         guard case .i32(let n) = valueStack.removeLast() else { throw .typeMismatch }
-        guard case .funcref(let ref) = valueStack.removeLast() else { throw .typeMismatch }
+        let fillRef = valueStack.removeLast()
         guard case .i32(let dst) = valueStack.removeLast() else { throw .typeMismatch }
         let ti = Int(tableIdx)
         guard ti < tables.count else { throw .undefinedElement }
+        // Verify the fill value type matches the table's declared refType (Wasm spec §3.4.9).
+        // funcRef tables accept only .funcref values; externRef tables accept only .externref.
+        let tableFillRefType = ti < module.tables.count ? module.tables[ti].refType : .funcRef
+        switch (tableFillRefType, fillRef) {
+        case (.funcRef, .funcref), (.externRef, .externref): break
+        default: throw WasmError.typeMismatch
+        }
         // Treat dst and n as unsigned (packed into i32).
         let dstOff = Int(UInt32(bitPattern: dst))
         let fillCount = Int(UInt32(bitPattern: n))
@@ -2157,7 +2202,7 @@ struct WasmInterpreter {
           throw .undefinedElement
         }
         for i in 0..<fillCount {
-          tables[ti][dstOff + i] = ref
+          tables[ti][dstOff + i] = fillRef
         }
 
       case .unimplemented(let op):

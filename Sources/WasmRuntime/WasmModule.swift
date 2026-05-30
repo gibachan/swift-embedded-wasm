@@ -8,6 +8,7 @@ enum ValueType: UInt8, Sendable {
   case f32 = 0x7D
   case f64 = 0x7C
   case funcref = 0x70  // reference to a function; used in table types and signatures
+  case externref = 0x6F  // opaque host reference; used in table types and signatures
 }
 
 // MARK: - Block Type
@@ -316,8 +317,8 @@ enum Instruction: Sendable {
   case memorySize  // 0x3F: push current memory page count as i32
   case memoryGrow  // 0x40
   // reference instructions
-  case refNull  // 0xD0: push null funcref (.funcref(nil))
-  case refIsNull  // 0xD1: [funcref] → [i32]; 1 if null, 0 otherwise
+  case refNull(RefType)  // 0xD0: push null reference (.funcref(nil) or .externref(nil))
+  case refIsNull  // 0xD1: [ref] → [i32]; 1 if null, 0 otherwise
   case refFunc(UInt32)  // 0xD2: push funcref for the given function index
   // bulk memory operations (0xFC prefix)
   case memoryInit(UInt32)  // 0xFC 0x08: data segment index
@@ -497,4 +498,5 @@ enum Value: Sendable, Equatable {
   case f32(Float)
   case f64(Double)
   case funcref(UInt32?)  // nil = null reference; UInt32 = function index
+  case externref(UInt32?)  // nil = null reference; UInt32 = opaque host index
 }

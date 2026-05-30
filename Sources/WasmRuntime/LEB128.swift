@@ -85,12 +85,15 @@ func decodeULEB128<T: FixedWidthInteger & UnsignedInteger, S: ByteStream>(
         throw .integerRepresentationTooLong
       }
       result |= slice << shift
+      // Continuation bit set here means there is a 6th+ byte, which exceeds the maximum.
       guard byte & 0x80 == 0 else { throw .integerRepresentationTooLong }
       return result
     }
 
     result |= slice << shift
-    guard byte & 0x80 != 0 else { return result }
+    if byte & 0x80 == 0 {
+      return result
+    }
     shift = nextShift
   }
 }

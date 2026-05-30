@@ -403,6 +403,7 @@ private struct ConformanceRunner {
   private func isSupportedType(_ type: String) -> Bool {
     // Expand this list as more value types are implemented in the interpreter.
     type == "i32" || type == "i64" || type == "f32" || type == "f64" || type == "funcref"
+      || type == "externref"
   }
 
   private func convertValue(_ v: WastValue) throws -> Value {
@@ -433,6 +434,11 @@ private struct ConformanceRunner {
       if str == "null" { return .funcref(nil) }
       guard let idx = UInt32(str) else { throw WasmError.typeMismatch }
       return .funcref(idx)
+    case "externref":
+      let str = v.value ?? "null"
+      if str == "null" { return .externref(nil) }
+      guard let idx = UInt32(str) else { throw WasmError.typeMismatch }
+      return .externref(idx)
     default:
       throw WasmError.typeMismatch
     }
@@ -490,6 +496,12 @@ private struct ConformanceRunner {
       }
     case "funcref":
       guard case .funcref(let ar) = actual else { return false }
+      let expStr = expected.value ?? "null"
+      if expStr == "null" { return ar == nil }
+      guard let idx = UInt32(expStr) else { return false }
+      return ar == idx
+    case "externref":
+      guard case .externref(let ar) = actual else { return false }
       let expStr = expected.value ?? "null"
       if expStr == "null" { return ar == nil }
       guard let idx = UInt32(expStr) else { return false }

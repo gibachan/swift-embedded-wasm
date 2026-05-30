@@ -507,9 +507,10 @@
         try popExpecting(.i32)  // dst
 
       case .tableGrow(let tableIdx):
-        // table.grow t: [funcref, i32] → [i32]
+        // table.grow t: [funcref | externref, i32] → [i32]
         guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
-        let elemType: ValueType = .funcref
+        let elemType: ValueType =
+          module.tables[Int(tableIdx)].refType == .externRef ? .externref : .funcref
         try popExpecting(.i32)  // delta (n)
         try popExpecting(elemType)  // initial value (ref)
         tryPush(.i32)  // old size (or -1 on failure)
@@ -520,9 +521,10 @@
         tryPush(.i32)
 
       case .tableFill(let tableIdx):
-        // table.fill t: [i32, funcref, i32] → []
+        // table.fill t: [i32, funcref | externref, i32] → []
         guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
-        let elemType: ValueType = .funcref
+        let elemType: ValueType =
+          module.tables[Int(tableIdx)].refType == .externRef ? .externref : .funcref
         try popExpecting(.i32)  // n (fill count)
         try popExpecting(elemType)  // ref (fill value)
         try popExpecting(.i32)  // dst (start index)
@@ -532,27 +534,37 @@
       case .tableGet(let tableIdx):
         guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
         // Element type is determined by the table's declared refType.
-        // The parser currently rejects externRef tables, so funcref is always the result.
-        // Update this mapping when externRef is added to ValueType.
-        let elemType: ValueType = .funcref
+        let elemType: ValueType =
+          module.tables[Int(tableIdx)].refType == .externRef ? .externref : .funcref
         try popExpecting(.i32)
         tryPush(elemType)
 
       case .tableSet(let tableIdx):
         guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
-        let elemType: ValueType = .funcref
+        let elemType: ValueType =
+          module.tables[Int(tableIdx)].refType == .externRef ? .externref : .funcref
         try popExpecting(elemType)
         try popExpecting(.i32)
 
       // MARK: Reference instructions
 
-      case .refNull:
-        // ref.null: [] → [funcref]
-        tryPush(.funcref)
+      case .refNull(let refType):
+        // ref.null reftype: [] → [funcref | externref]
+        switch refType {
+        case .funcRef: tryPush(.funcref)
+        case .externRef: tryPush(.externref)
+        }
 
       case .refIsNull:
-        // ref.is_null: [funcref] → [i32]
-        try popExpecting(.funcref)
+        // ref.is_null: [funcref | externref] → [i32]
+        // Accept either reference type; pop any ref, push i32.
+        if !isUnreachable() {
+          guard let frame = frames.last, stack.count > frame.startHeight else {
+            throw .typeMismatch
+          }
+          let top = stack.removeLast()
+          guard top == .funcref || top == .externref else { throw .typeMismatch }
+        }
         tryPush(.i32)
 
       case .refFunc(let funcIdx):
