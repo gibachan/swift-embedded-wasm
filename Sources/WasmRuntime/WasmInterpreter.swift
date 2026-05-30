@@ -269,6 +269,7 @@ struct WasmInterpreter {
         case .i64: locals.append(.i64(0))
         case .f32: locals.append(.f32(0.0))
         case .f64: locals.append(.f64(0.0))
+        case .funcref: locals.append(.funcref(nil))  // nil = null reference per Wasm spec default
         }
       }
       frames.append(
@@ -1472,6 +1473,36 @@ struct WasmInterpreter {
           memory.append(contentsOf: [UInt8](repeating: 0, count: Int(delta) * pageSize))
           valueStack.append(.i32(oldPages))
         }
+
+      // MARK: Table
+
+      case .tableGet(let tableIdx):
+        // table.get: [i32] → [funcref]
+        // Pops an i32 element index, pushes the funcref stored at that table slot.
+        // Out-of-bounds or uninitialized slots push .funcref(nil) only for the
+        // null-reference case; out-of-bounds indices trap per the Wasm spec.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .i32(let idx) = valueStack.removeLast() else { throw .typeMismatch }
+        let ti = Int(tableIdx)
+        guard ti < tables.count else { throw .undefinedElement }
+        // Convert the signed i32 stack value to an unsigned element index.
+        // Negative values become large UInt32 values and will fail the bounds check.
+        let i = Int(UInt32(bitPattern: idx))
+        guard i < tables[ti].count else { throw .undefinedElement }
+        valueStack.append(.funcref(tables[ti][i]))
+
+      case .tableSet(let tableIdx):
+        // table.set: [i32, funcref] → []
+        // Pops a funcref then an i32 element index; stores the ref into the table.
+        // Stack order: [..., i32_idx, funcref_val] — funcref is on top.
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .funcref(let ref) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let idx) = valueStack.removeLast() else { throw .typeMismatch }
+        let ti = Int(tableIdx)
+        guard ti < tables.count else { throw .undefinedElement }
+        let i = Int(UInt32(bitPattern: idx))
+        guard i < tables[ti].count else { throw .undefinedElement }
+        tables[ti][i] = ref
 
       // MARK: call_indirect
 

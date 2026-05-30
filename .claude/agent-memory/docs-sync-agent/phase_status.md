@@ -21,6 +21,11 @@ As of 2026-05-30, the project is in Phase 4 (macOS development phase).
   - Store: `i32.store`(0x36) through `i64.store32`(0x3E), plus `f32.store`(0x38) and `f64.store`(0x39)
   - `memory.grow`(0x40)
 - `i64.extend_i32_s` (one conversion instruction)
+- `table.get` (0x25) / `table.set` (0x26): funcref table element read/write
+  - `Value` enum has `.funcref(UInt32?)` case (nil = null reference, UInt32 = function index)
+  - `ValueType` enum has `.funcref = 0x70` case
+  - funcref locals default-initialized to nil (Wasm spec compliant)
+  - Validator: bounds + type checking for table.get/table.set
 - Linear memory with data segment initialization
 - Host function import via `HostImport` enum (array-based, not `class HostFunctionTable`)
 - Type-checking validator (`WasmValidator`) — macOS only

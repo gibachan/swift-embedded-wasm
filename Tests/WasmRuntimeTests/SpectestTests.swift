@@ -345,7 +345,7 @@ private struct ConformanceRunner {
 
   private func isSupportedType(_ type: String) -> Bool {
     // Expand this list as more value types are implemented in the interpreter.
-    type == "i32" || type == "i64" || type == "f32" || type == "f64"
+    type == "i32" || type == "i64" || type == "f32" || type == "f64" || type == "funcref"
   }
 
   private func convertValue(_ v: WastValue) throws -> Value {
@@ -371,6 +371,11 @@ private struct ConformanceRunner {
       }
       guard let bits = UInt64(str) else { throw WasmError.typeMismatch }
       return .f64(Double(bitPattern: bits))
+    case "funcref":
+      let str = v.value ?? "null"
+      if str == "null" { return .funcref(nil) }
+      guard let idx = UInt32(str) else { throw WasmError.typeMismatch }
+      return .funcref(idx)
     default:
       throw WasmError.typeMismatch
     }
@@ -426,6 +431,12 @@ private struct ConformanceRunner {
         guard let bits = UInt64(expStr) else { return false }
         return af.bitPattern == bits
       }
+    case "funcref":
+      guard case .funcref(let ar) = actual else { return false }
+      let expStr = expected.value ?? "null"
+      if expStr == "null" { return ar == nil }
+      guard let idx = UInt32(expStr) else { return false }
+      return ar == idx
     default:
       return false
     }

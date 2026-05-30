@@ -381,6 +381,25 @@
         try popExpecting(.i32)
         tryPush(.i32)
 
+      // MARK: Table operations: table.get, table.set
+
+      case .tableGet(let tableIdx):
+        guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
+        // Element type is determined by the table's declared refType.
+        // The parser currently rejects externRef tables, so funcref is always the result.
+        // Update this mapping when externRef is added to ValueType.
+        let elemType: ValueType =
+          module.tables[Int(tableIdx)].refType == .funcRef ? .funcref : .funcref
+        try popExpecting(.i32)
+        tryPush(elemType)
+
+      case .tableSet(let tableIdx):
+        guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
+        let elemType: ValueType =
+          module.tables[Int(tableIdx)].refType == .funcRef ? .funcref : .funcref
+        try popExpecting(elemType)
+        try popExpecting(.i32)
+
       // MARK: Unimplemented stubs
       //
       // Mark the frame as unreachable so the final type check is skipped.

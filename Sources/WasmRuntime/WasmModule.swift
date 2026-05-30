@@ -7,6 +7,7 @@ enum ValueType: UInt8, Sendable {
   case i64 = 0x7E
   case f32 = 0x7D
   case f64 = 0x7C
+  case funcref = 0x70  // reference to a function; used in table types and signatures
 }
 
 // MARK: - Block Type
@@ -115,6 +116,9 @@ enum Instruction: Sendable {
   case localTee(UInt32)  // 0x22
   case globalGet(UInt32)  // 0x23
   case globalSet(UInt32)  // 0x24
+  // table operations
+  case tableGet(UInt32)  // 0x25: tableIdx
+  case tableSet(UInt32)  // 0x26: tableIdx
   // constants
   case i32Const(Int32)  // 0x41
   case i64Const(Int64)  // 0x42
@@ -427,4 +431,5 @@ enum Value: Sendable, Equatable {
   case i64(Int64)
   case f32(Float)
   case f64(Double)
+  case funcref(UInt32?)  // nil = null reference; UInt32 = function index
 }

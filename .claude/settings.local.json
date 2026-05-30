@@ -13,7 +13,9 @@
       "Bash(git mv *)",
       "Bash(swift build *)",
       "Bash(make format *)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Bash(make build *)",
+      "Bash(make clean *)"
     ]
   }
 }

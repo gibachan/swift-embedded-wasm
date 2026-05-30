@@ -9,7 +9,7 @@ metadata:
 - Value stack: `var valueStack: [Value]` inside `runIterative()` — shared across all frames
 - Frame stack: `var frames: [Frame]` — Frame owns `locals: [Value]`, `labels: [Label]`, `ip: Int`
 - Instruction enum: `Sources/WasmRuntime/WasmModule.swift` — `enum Instruction`
-- Value enum: `Sources/WasmRuntime/WasmModule.swift` — `enum Value { case i32(Int32); case i64(Int64); case f32(Float); case f64(Double) }`
+- Value enum: `Sources/WasmRuntime/WasmModule.swift` — `enum Value { case i32(Int32); case i64(Int64); case f32(Float); case f64(Double); case funcref(UInt32?) }` (funcref added for table.get/set)
 - Parser: `Sources/WasmRuntime/WasmParser.swift` — `parseFlatBody()` for instruction body, section parsers above it
 - WasmError: `Sources/WasmRuntime/WasmError.swift`
 - Validator (macOS-only): `Sources/WasmRuntime/WasmValidator.swift` — gated on `#if !hasFeature(Embedded)`

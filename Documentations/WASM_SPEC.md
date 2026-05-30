@@ -54,6 +54,7 @@
   - `i64.store8`（0x3C）、`i64.store16`（0x3D）、`i64.store32`（0x3E）
   - `memory.grow`（0x40）
 - Global 変数（`global.get` / `global.set`）。init 式で `i64.const` / `f64.const` をサポート済み
+- テーブル参照命令（`table.get`（0x25）/ `table.set`（0x26））。`funcref` 型テーブルへの読み書きをサポート
 
 ### 後回し（MVP に含まれるが急がない）
 
@@ -174,6 +175,9 @@ return        → 戻り値として 7 を返す
 | `i64` | 64 ビット整数 |
 | `f32` | 32 ビット浮動小数点 |
 | `f64` | 64 ビット浮動小数点 |
+| `funcref` | 関数への参照。テーブル要素型として使用。null 参照（未初期化スロット）を表せる |
+
+`funcref` は WebAssembly 1.0 MVP に含まれるテーブル要素型。`call_indirect` が内部で使用するテーブルの要素型がこれにあたる。値としてはスタック上に積むことができ、`table.get` / `table.set` 命令で読み書きする。
 
 ---
 

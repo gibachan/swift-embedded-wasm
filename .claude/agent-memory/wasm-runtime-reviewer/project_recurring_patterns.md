@@ -30,3 +30,11 @@ metadata:
 10. **Validator store pop order**: Validator pops value first then address (matching interpreter's removeLast() order for a stack). The Wasm spec push order is [addr, value] (addr pushed first, value on top), so removeLast() gives value first — this is correct and consistent between validator and interpreter.
 
 11. **wasmF64Min/Max NaN propagation**: The helpers check `a.isNaN || b.isNaN` and return `.nan`. Per Wasm spec, either operand being NaN causes the result to be a canonical NaN (not the arithmetic NaN). Swift's `.nan` is the canonical quiet NaN, so this is correct for spec purposes even though NaN payloads are not preserved by this path.
+
+12. **table.get/set negative index handling**: `tableGet`/`tableSet` use `Int(UInt32(bitPattern: idx))` to convert the i32 stack value to a table index. This reinterprets negative i32 as large UInt32 values, which will fail the `< tables[ti].count` bounds check — correct per spec (trap). `callIndirect` uses a different (but equally correct) approach: raw `Int(elemIdx)` with `eIdx >= 0` guard. The UInt32-bitPattern approach is the cleaner pattern.
+
+13. **Value.funcref encoding**: `Value` enum carries `.funcref(UInt32?)` where `nil` = null reference. This is different from WasmKit which uses a separate `Reference` type. The `nil`-means-null encoding is compact and correct for this project's funcref-only table support.
+
+14. **Validator: table.get/set hardcode funcref**: The validator at WasmValidator.swift (case .tableGet, .tableSet) hardcodes `funcref` as the table element type. This is correct only for funcref tables. The spec requires looking up the table's declared element type. Currently this is fine because the parser only supports funcref tables (RefType.funcRef), but if externref tables are added the validator must be updated to look up table[x].refType.
+
+15. **SpectestTests.swift funcref comparison**: The `valueMatches` case for "funcref" checks `expStr == "null"` → `ar == nil`, otherwise `UInt32(expStr)` → `ar == idx`. The wast2json format for funcref values encodes null as the string "null" and non-null as the decimal function index. This is correctly handled.

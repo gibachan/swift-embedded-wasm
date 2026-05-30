@@ -486,6 +486,12 @@ struct WasmParser {
       case 0x24:  // global.set
         instructions.append(.globalSet(try readU32()))
 
+      case 0x25:  // table.get
+        instructions.append(.tableGet(try readU32()))
+
+      case 0x26:  // table.set
+        instructions.append(.tableSet(try readU32()))
+
       case 0x28:  // i32.load
         instructions.append(.i32Load(try readU32(), try readU32()))
 

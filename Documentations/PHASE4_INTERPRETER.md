@@ -188,6 +188,11 @@ struct GPIOPin {
   - `i64.store8`（0x3C）、`i64.store16`（0x3D）、`i64.store32`（0x3E）
   - `memory.grow`（0x40）
 - [x] `i64.extend_i32_s`（型変換命令の一部）
+- [x] テーブル参照命令: `table.get`（0x25）/ `table.set`（0x26）
+  - `funcref` 型テーブルに対する要素の読み書きをサポート
+  - `Value` enum に `.funcref(UInt32?)` ケースを追加（`nil` = null reference、`UInt32` = 関数インデックス）
+  - `funcref` ローカル変数のデフォルト初期値は `nil`（Wasm 仕様準拠）
+  - バリデータ (`WasmValidator`) での境界チェック・型チェックを実装済み
 
 ### 既知の未対応・TODO（Embedded フェーズ向け）
 

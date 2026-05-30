@@ -72,6 +72,7 @@ enum Value: Sendable, Equatable {
     case i64(Int64)
     case f32(Float)
     case f64(Double)
+    case funcref(UInt32?)  // nil = null reference; UInt32 = function index
 }
 ```
 
@@ -84,6 +85,7 @@ enum ValueType: UInt8 {
     case i64 = 0x7E
     case f32 = 0x7D
     case f64 = 0x7C
+    case funcref = 0x70  // reference to a function; used in table types and signatures
 }
 ```
 
