@@ -306,7 +306,12 @@ enum Instruction: Sendable {
   case i64Store8(UInt32, UInt32)  // 0x3C: align, offset
   case i64Store16(UInt32, UInt32)  // 0x3D: align, offset
   case i64Store32(UInt32, UInt32)  // 0x3E: align, offset
+  case memorySize  // 0x3F: push current memory page count as i32
   case memoryGrow  // 0x40
+  // reference instructions
+  case refNull  // 0xD0: push null funcref (.funcref(nil))
+  case refIsNull  // 0xD1: [funcref] → [i32]; 1 if null, 0 otherwise
+  case refFunc(UInt32)  // 0xD2: push funcref for the given function index
   // bulk memory operations (0xFC prefix)
   case memoryInit(UInt32)  // 0xFC 0x08: data segment index
   case dataDrop(UInt32)  // 0xFC 0x09: data segment index
@@ -315,6 +320,9 @@ enum Instruction: Sendable {
   case tableInit(UInt32, UInt32)  // 0xFC 0x0C: elem_idx, table_idx
   case elemDrop(UInt32)  // 0xFC 0x0D: elem_idx — marks element segment as dropped
   case tableCopy(UInt32, UInt32)  // 0xFC 0x0E: dst_table_idx, src_table_idx
+  case tableGrow(UInt32)  // 0xFC 0x0F: table_idx; [funcref, i32] → [i32]
+  case tableSize(UInt32)  // 0xFC 0x10: table_idx; [] → [i32]
+  case tableFill(UInt32)  // 0xFC 0x11: table_idx; [i32, funcref, i32] → []
   // Parsed but not yet implemented; throws invalidInstruction at runtime.
   case unimplemented(UInt8)
 }

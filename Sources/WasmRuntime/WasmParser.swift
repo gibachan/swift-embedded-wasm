@@ -599,6 +599,10 @@ struct WasmParser {
       case 0x3E:  // i64.store32
         instructions.append(.i64Store32(try readU32(), try readU32()))
 
+      case 0x3F:  // memory.size (1-byte reserved operand = 0x00)
+        _ = try readByte()
+        instructions.append(.memorySize)
+
       case 0x40:  // memory.grow (1-byte reserved operand = 0x00)
         _ = try readByte()
         instructions.append(.memoryGrow)
@@ -647,17 +651,14 @@ struct WasmParser {
           let srcTable = try readU32()
           instructions.append(.tableCopy(dstTable, srcTable))
         case 0x0F:
-          // table.grow table_idx
-          _ = try readU32()  // table index
-          instructions.append(.unimplemented(0xFC))
+          // table.grow table_idx: [funcref, i32] → [i32]
+          instructions.append(.tableGrow(try readU32()))
         case 0x10:
-          // table.size table_idx
-          _ = try readU32()  // table index
-          instructions.append(.unimplemented(0xFC))
+          // table.size table_idx: [] → [i32]
+          instructions.append(.tableSize(try readU32()))
         case 0x11:
-          // table.fill table_idx
-          _ = try readU32()  // table index
-          instructions.append(.unimplemented(0xFC))
+          // table.fill table_idx: [i32, funcref, i32] → []
+          instructions.append(.tableFill(try readU32()))
         default:
           throw .invalidInstruction(0xFC)
         }
@@ -830,6 +831,21 @@ struct WasmParser {
       case 0xA4: instructions.append(.f64Min)
       case 0xA5: instructions.append(.f64Max)
       case 0xA6: instructions.append(.f64Copysign)
+
+      // ref instructions
+      case 0xD0:  // ref.null reftype: [] → [funcref]
+        let reftype = try readByte()
+        guard reftype == 0x70 || reftype == 0x6F else {  // funcref (0x70) or externref (0x6F)
+          instructions.append(.unimplemented(0xD0))
+          break
+        }
+        instructions.append(.refNull)
+
+      case 0xD1:  // ref.is_null: [funcref] → [i32]
+        instructions.append(.refIsNull)
+
+      case 0xD2:  // ref.func funcIdx: [] → [funcref]
+        instructions.append(.refFunc(try readU32()))
 
       default:
         throw .invalidInstruction(opcode)

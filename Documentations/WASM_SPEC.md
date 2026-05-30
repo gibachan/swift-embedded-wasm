@@ -52,7 +52,7 @@
   - `i32.store`（0x36）、`i64.store`（0x37）、`f32.store`（0x38）、`f64.store`（0x39）
   - `i32.store8`（0x3A）、`i32.store16`（0x3B）
   - `i64.store8`（0x3C）、`i64.store16`（0x3D）、`i64.store32`（0x3E）
-  - `memory.grow`（0x40）
+  - `memory.size`（0x3F）、`memory.grow`（0x40）
 - Global 変数（`global.get` / `global.set`）。init 式で `i64.const` / `f64.const` をサポート済み
 - テーブル参照命令（`table.get`（0x25）/ `table.set`（0x26））。`funcref` 型テーブルへの読み書きをサポート
 - Bulk Memory 命令（0xFC プレフィックス）— メモリ操作
@@ -64,13 +64,16 @@
   - `table.init`（0xFC 0x0C）: passive element segment の内容をテーブルにコピー
   - `elem.drop`（0xFC 0x0D）: element segment を解放済みとしてマーク
   - `table.copy`（0xFC 0x0E）: テーブル内コピー（オーバーラップ対応）
+  - `table.grow`（0xFC 0x0F）: テーブルを n 要素拡張し旧サイズを返す（失敗時 -1）
+  - `table.size`（0xFC 0x10）: テーブルの現在の要素数を i32 でプッシュ
+  - `table.fill`（0xFC 0x11）: テーブル範囲を参照値で埋める
 - 型変換命令（通常変換 0xA7–0xBF、Saturating truncation 0xFC 0x00–0x07）
   - 通常変換（opcode 0xA7–0xBF）: `i32.wrap_i64`、`i32.trunc_f32_s/u`、`i32.trunc_f64_s/u`、`i64.extend_i32_u`、`i64.trunc_f32_s/u`、`i64.trunc_f64_s/u`、`f32.convert_i32_s/u`、`f32.convert_i64_s/u`、`f32.demote_f64`、`f64.convert_i32_s/u`、`f64.convert_i64_s/u`、`f64.promote_f32`、`i32.reinterpret_f32`、`i64.reinterpret_f64`、`f32.reinterpret_i32`、`f64.reinterpret_i64`
   - Saturating truncation（0xFC 0x00–0x07）: `i32.trunc_sat_f32_s/u`、`i32.trunc_sat_f64_s/u`、`i64.trunc_sat_f32_s/u`、`i64.trunc_sat_f64_s/u`
-
-### 後回し（MVP に含まれるが急がない）
-
-- `memory.size`（0x3F） — パース時に `invalidInstruction` を送出する既知の問題あり（`unimplemented` に変更すべき）
+- 参照型命令
+  - `ref.null`（0xD0）: null funcref をプッシュ
+  - `ref.is_null`（0xD1）: [funcref] → [i32]（null なら 1、非 null なら 0）
+  - `ref.func x`（0xD2）: 関数インデックス x の funcref をプッシュ
 
 ### 対象外
 
@@ -198,6 +201,7 @@ Wasm モジュールが持つ連続したバイト配列。Wasm から直接ア�
 
 - 単位は **Page**（1 Page = 64KB）
 - 初期サイズと最大サイズをモジュールで宣言
+- `memory.size` 命令で現在のページ数を取得可能
 - `memory.grow` 命令で動的拡張可能（Embedded では固定サイズにする）
 - すべてのアクセスに境界チェックが必要（範囲外はトラップ）
 

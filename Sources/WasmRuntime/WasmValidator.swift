@@ -457,6 +457,10 @@
         try popExpecting(.f64)
         try popExpecting(.i32)
 
+      case .memorySize:
+        // memory.size: [] → [i32]
+        tryPush(.i32)
+
       case .memoryGrow:
         try popExpecting(.i32)
         tryPush(.i32)
@@ -502,6 +506,27 @@
         try popExpecting(.i32)  // src
         try popExpecting(.i32)  // dst
 
+      case .tableGrow(let tableIdx):
+        // table.grow t: [funcref, i32] → [i32]
+        guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
+        let elemType: ValueType = .funcref
+        try popExpecting(.i32)  // delta (n)
+        try popExpecting(elemType)  // initial value (ref)
+        tryPush(.i32)  // old size (or -1 on failure)
+
+      case .tableSize(let tableIdx):
+        // table.size t: [] → [i32]
+        guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
+        tryPush(.i32)
+
+      case .tableFill(let tableIdx):
+        // table.fill t: [i32, funcref, i32] → []
+        guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
+        let elemType: ValueType = .funcref
+        try popExpecting(.i32)  // n (fill count)
+        try popExpecting(elemType)  // ref (fill value)
+        try popExpecting(.i32)  // dst (start index)
+
       // MARK: Table operations: table.get, table.set
 
       case .tableGet(let tableIdx):
@@ -509,17 +534,33 @@
         // Element type is determined by the table's declared refType.
         // The parser currently rejects externRef tables, so funcref is always the result.
         // Update this mapping when externRef is added to ValueType.
-        let elemType: ValueType =
-          module.tables[Int(tableIdx)].refType == .funcRef ? .funcref : .funcref
+        let elemType: ValueType = .funcref
         try popExpecting(.i32)
         tryPush(elemType)
 
       case .tableSet(let tableIdx):
         guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
-        let elemType: ValueType =
-          module.tables[Int(tableIdx)].refType == .funcRef ? .funcref : .funcref
+        let elemType: ValueType = .funcref
         try popExpecting(elemType)
         try popExpecting(.i32)
+
+      // MARK: Reference instructions
+
+      case .refNull:
+        // ref.null: [] → [funcref]
+        tryPush(.funcref)
+
+      case .refIsNull:
+        // ref.is_null: [funcref] → [i32]
+        try popExpecting(.funcref)
+        tryPush(.i32)
+
+      case .refFunc(let funcIdx):
+        // ref.func x: [] → [funcref]
+        // Validates that the function index is within the unified function index space.
+        let totalFunctions = module.importedFunctionCount + module.functions.count
+        guard Int(funcIdx) < totalFunctions else { throw .typeMismatch }
+        tryPush(.funcref)
 
       // MARK: Unimplemented stubs
       //

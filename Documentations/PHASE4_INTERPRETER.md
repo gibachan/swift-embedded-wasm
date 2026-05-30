@@ -186,7 +186,7 @@ struct GPIOPin {
   - `i32.store`（0x36）、`i64.store`（0x37）、`f32.store`（0x38）、`f64.store`（0x39）
   - `i32.store8`（0x3A）、`i32.store16`（0x3B）
   - `i64.store8`（0x3C）、`i64.store16`（0x3D）、`i64.store32`（0x3E）
-  - `memory.grow`（0x40）
+  - `memory.size`（0x3F）、`memory.grow`（0x40）
 - [x] `i64.extend_i32_s`（型変換命令の一部）
 - [x] テーブル参照命令: `table.get`（0x25）/ `table.set`（0x26）
   - `funcref` 型テーブルに対する要素の読み書きをサポート
@@ -243,10 +243,29 @@ struct GPIOPin {
     - `i64.trunc_sat_f64_s`（0xFC 0x06）、`i64.trunc_sat_f64_u`（0xFC 0x07）
   - spectest: `conversions` 619 pass / 0 skip / 0 fail（完全合格）
   - 全 spectest: 3587 件すべてパス
+- [x] メモリ管理命令
+  - `memory.size`（0x3F）: 現在のメモリページ数を i32 でプッシュ（1 ページ = 65536 バイト）
+    - spectest: `memory_size` 42 pass（完全合格）
+  - `memory.grow`（0x40）: delta を u32 として解釈するよう修正（負の i32 ビットパターンを大きな u32 と見なす）。
+    宣言された最大ページ数（`MemoryType.max`）を考慮したオーバーフローチェックも追加
+- [x] テーブル管理命令（0xFC プレフィックス、追加分）
+  - `table.size`（0xFC 0x10）: テーブルの現在の要素数を i32 でプッシュ
+    - spectest: `table_size` 39 pass（完全合格）
+  - `table.grow`（0xFC 0x0F）: テーブルを n 要素拡張し、旧サイズを返す。失敗時は -1
+    - delta を u32 として解釈。テーブルの宣言最大値（`TableType.max`）を考慮したオーバーフローチェックを実装
+    - spectest: `table_grow` 24 pass
+  - `table.fill`（0xFC 0x11）: テーブルの dst から n 要素を ref 値で埋める
+    - dst・n を u32 として解釈。n=0 かつ dst = table size の境界ケースを含む
+    - spectest: `table_fill` 9 pass
+  - バリデータ: `tableGrow` / `tableSize` / `tableFill` の型チェック・境界チェックを実装
+- [x] 参照型命令
+  - `ref.null`（0xD0）: null funcref をプッシュ（funcref / externref バイトを受け入れるがどちらも `.funcref(nil)` として扱う）
+  - `ref.is_null`（0xD1）: スタックの funcref が null なら 1、そうでなければ 0 を i32 でプッシュ
+  - `ref.func x`（0xD2）: 関数インデックス x の funcref をプッシュ（範囲外なら `functionNotFound` トラップ）
+  - バリデータ: `refNull` / `refIsNull` / `refFunc` の型チェック・境界チェックを実装
 
 ### 既知の未対応・TODO（Embedded フェーズ向け）
 
-- `memory.size`（0x3F）: パース時に `invalidInstruction` を送出する既知の問題あり（`unimplemented` に変更すべき）
 - 32 ビットターゲットでの実効アドレス計算: 現在 `let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)` と記述しているが、32 ビット環境では `Int` が 32 ビット幅のため、加算がオーバーフローする可能性がある。Embedded フェーズでは `UInt64` 中間計算に変更が必要（詳細は `Documentations/EMBEDDED_SWIFT.md` の「メモリアクセスの実効アドレス計算」を参照）
 
 ### 設計上の対象外事項

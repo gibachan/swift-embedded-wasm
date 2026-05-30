@@ -1796,21 +1796,39 @@ struct WasmInterpreter {
         memory[ea + 2] = UInt8((u >> 16) & 0xFF)
         memory[ea + 3] = UInt8((u >> 24) & 0xFF)
 
+      case .memorySize:
+        // memory.size: [] → [i32]
+        // Pushes the current number of pages in linear memory.
+        // 1 page = 65536 bytes; result is always a non-negative i32.
+        let pageCount = Int32(memory.count / 65536)
+        valueStack.append(.i32(pageCount))
+
       case .memoryGrow:
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let delta) = valueStack.removeLast() else { throw .typeMismatch }
-        let oldPages = Int32(memory.count / 65536)
         let pageSize = 65536
-        let currentPages = memory.count / pageSize
-        // delta is a u32 argument packed into i32; negative means huge grow → fail.
-        // Also guard against Int overflow before multiplying (important on 32-bit targets).
-        if delta < 0 || Int(delta) > pageSize - currentPages
-          || Int(delta) > Int.max / pageSize
-        {
+        let oldPages = memory.count / pageSize
+        let oldPagesI32 = Int32(oldPages)
+        // delta is a u32 argument packed into i32; treat as unsigned.
+        // A negative i32 bit pattern becomes a huge u32, which will exceed any max — safe.
+        let n = Int(UInt32(bitPattern: delta))
+        let newPages = oldPages + n
+        // Guard against Int overflow before multiplying (important on 32-bit targets).
+        let overflows = n > Int.max / pageSize
+        // Check the memory's declared maximum limit (from MemoryType.max, in pages).
+        let memMax: UInt32? = module.memories.first?.max
+        let exceedsMax: Bool
+        if let maxPages = memMax {
+          exceedsMax = newPages > Int(maxPages)
+        } else {
+          // No declared max: Wasm spec hard-limits to 65536 pages (4 GiB).
+          exceedsMax = newPages > 65536
+        }
+        if overflows || exceedsMax {
           valueStack.append(.i32(-1))
         } else {
-          memory.append(contentsOf: [UInt8](repeating: 0, count: Int(delta) * pageSize))
-          valueStack.append(.i32(oldPages))
+          memory.append(contentsOf: [UInt8](repeating: 0, count: n * pageSize))
+          valueStack.append(.i32(oldPagesI32))
         }
 
       // MARK: Table
@@ -1842,6 +1860,28 @@ struct WasmInterpreter {
         let i = Int(UInt32(bitPattern: idx))
         guard i < tables[ti].count else { throw .undefinedElement }
         tables[ti][i] = ref
+
+      // MARK: Reference instructions
+
+      case .refNull:
+        // ref.null: [] → [funcref]
+        // Pushes a null function reference. externref is not currently supported.
+        valueStack.append(.funcref(nil))
+
+      case .refIsNull:
+        // ref.is_null: [funcref] → [i32]
+        // Pops a funcref; pushes 1 if null, 0 if non-null.
+        guard !valueStack.isEmpty else { throw .stackUnderflow }
+        guard case .funcref(let ref) = valueStack.removeLast() else { throw .typeMismatch }
+        valueStack.append(.i32(ref == nil ? 1 : 0))
+
+      case .refFunc(let funcIdx):
+        // ref.func x: [] → [funcref]
+        // Pushes a non-null funcref for function index x.
+        // The function index must be within the valid range (imports + local functions).
+        let totalFunctions = module.importedFunctionCount + module.functions.count
+        guard Int(funcIdx) < totalFunctions else { throw .functionNotFound }
+        valueStack.append(.funcref(funcIdx))
 
       // MARK: call_indirect
 
@@ -2057,6 +2097,64 @@ struct WasmInterpreter {
             // Different tables: no aliasing possible; always copy forward.
             for i in 0..<copyCount { tables[di][dstOff + i] = tables[si][srcOff + i] }
           }
+        }
+
+      case .tableGrow(let tableIdx):
+        // table.grow t: [funcref, i32] → [i32]
+        // Stack (top first): n (i32 delta), ref (funcref initial value).
+        // Extends the table by n entries initialised to ref.
+        // Returns the old table size on success, or -1 on failure.
+        // Fails when the result would exceed the table's declared maximum.
+        guard valueStack.count >= 2 else { throw .stackUnderflow }
+        guard case .i32(let delta) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .funcref(let ref) = valueStack.removeLast() else { throw .typeMismatch }
+        let ti = Int(tableIdx)
+        guard ti < tables.count else { throw .undefinedElement }
+        // delta is encoded as u32 packed into i32; treat as unsigned.
+        let n = Int(UInt32(bitPattern: delta))
+        let oldSize = Int32(tables[ti].count)
+        // Overflow guard: if n alone overflows Int, growth is impossible.
+        guard n <= Int.max - tables[ti].count else {
+          valueStack.append(.i32(-1))
+          break
+        }
+        let newSize = tables[ti].count + n
+        // Check the table's declared maximum limit if present.
+        let tableMax = ti < module.tables.count ? module.tables[ti].max : nil
+        if let maxPages = tableMax, newSize > Int(maxPages) {
+          // Growth would exceed the declared maximum: return -1 (failure sentinel).
+          valueStack.append(.i32(-1))
+        } else {
+          tables[ti].append(contentsOf: [UInt32?](repeating: ref, count: n))
+          valueStack.append(.i32(oldSize))
+        }
+
+      case .tableSize(let tableIdx):
+        // table.size t: [] → [i32]
+        // Pushes the current number of elements in the specified table.
+        let ti = Int(tableIdx)
+        guard ti < tables.count else { throw .undefinedElement }
+        valueStack.append(.i32(Int32(tables[ti].count)))
+
+      case .tableFill(let tableIdx):
+        // table.fill t: [i32, funcref, i32] → []
+        // Stack (top first): n (i32 fill count), ref (funcref value), dst (i32 start index).
+        guard valueStack.count >= 3 else { throw .stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .funcref(let ref) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let dst) = valueStack.removeLast() else { throw .typeMismatch }
+        let ti = Int(tableIdx)
+        guard ti < tables.count else { throw .undefinedElement }
+        // Treat dst and n as unsigned (packed into i32).
+        let dstOff = Int(UInt32(bitPattern: dst))
+        let fillCount = Int(UInt32(bitPattern: n))
+        // Bounds check: dst + n must not exceed table size; checked unconditionally.
+        // Zero-length fill is valid only when dst <= table size.
+        guard dstOff + fillCount <= tables[ti].count else {
+          throw .undefinedElement
+        }
+        for i in 0..<fillCount {
+          tables[ti][dstOff + i] = ref
         }
 
       case .unimplemented(let op):
