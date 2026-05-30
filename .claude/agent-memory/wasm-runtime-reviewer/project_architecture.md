@@ -13,5 +13,7 @@ metadata:
 - Parser: `Sources/WasmRuntime/WasmParser.swift` — `parseFlatBody()` for instruction body, section parsers above it
 - WasmError: `Sources/WasmRuntime/WasmError.swift`
 - Validator (macOS-only): `Sources/WasmRuntime/WasmValidator.swift` — gated on `#if !hasFeature(Embedded)`
-- Tables: `var tables: [[UInt32?]]` in `WasmInterpreter` — changed from single table to multi-table in this iteration
+- Tables: `var tables: [[Value]]` in `WasmInterpreter` — changed from `[[UInt32?]]` to `[[Value]]` to support externref. Filled with `.funcref(nil)` or `.externref(nil)` null sentinels per declared table refType.
 - HostFunction type: `typealias HostFunction = ([Value], [UInt8]) -> [Value]` — [macOS-phase-OK, Embedded-TODO] heap closure
+- Value enum: now includes `.externref(UInt32?)` alongside `.funcref(UInt32?)`; both use nil=null encoding
+- WasmError: added `.malformedUTF8` and `.unexpectedContent`; `unexpectedContent` guard after parse() loop is dead code (loop exits only when stream is exhausted)

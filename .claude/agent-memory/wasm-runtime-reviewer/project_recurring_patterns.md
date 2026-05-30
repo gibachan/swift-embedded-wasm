@@ -60,3 +60,41 @@ metadata:
 25. **droppedElementSegments parallel to droppedDataSegments**: Same `[Bool]` pattern, initialized to `false` for passive segments and `true` for active segments (post-instantiation). Consistent with existing data segment pattern. Flagged `[macOS-phase-OK, Embedded-TODO]` for fixed-size buffer replacement.
 
 26. **Passive element segment (flags=1) parser**: `_ = try readByte()` for elemkind silently consumes any byte. Per spec, flags=1 elemkind=0x00 means funcref. No guard on the value, same as the existing flags=2 case. Acceptable but leaves a potential correctness gap if non-funcref elemkind bytes appear.
+
+27. **trunc bounds for signed f64→i32 (i32.trunc_f64_s)**: Lower bound is `a > -2147483649.0` (strict), not `a >= -2147483648.0`. This is correct because f64 values in (-2147483649.0, -2147483648.0) are non-integer and truncate toward zero to -2147483648 = INT32_MIN (valid). -2147483649.0 truncates to -2147483649 < INT32_MIN (trap). The asymmetry between the f32 and f64 lower bounds is deliberate and spec-correct.
+
+28. **trunc bounds for f32→i32 signed (i32.trunc_f32_s)**: Lower bound is `a >= -2147483648.0` (non-strict). This is correct because there is no f32 between -2147483648.0 and the next more-negative f32 (-2147483904.0), and -2147483904.0 would truncate below INT32_MIN. The strict-vs-non-strict distinction between f64 and f32 cases is critical.
+
+29. **unsigned trunc lower bound uses `a > -1.0` not `a >= 0.0`**: Values in (-1, 0) truncate toward zero to 0 (valid for unsigned). The code then guards `a < 0.0 ? 0 : UInt32/UInt64(a)` to prevent Swift runtime trap on negative UInt conversion.
+
+30. **i64TruncF64S comment inaccuracy**: Code says "Values in (-9223372036854777856.0, -9223372036854775808.0)" but these are consecutive f64 values — no f64 exists in the interior of that range. The code `a >= -9223372036854775808.0` is correct; only the comment is slightly misleading. The code accepts exactly -2^63 and rejects the next more-negative f64.
+
+31. **i64TruncF32S with Int64(-2^63)**: Calling `Int64(Float(-9223372036854775808.0))` is safe in Swift because -2^63 is exactly representable as both Float and Int64. The bounds check `a >= -9223372036854775808.0` passes for this exact value, and the resulting conversion is valid.
+
+32. **Saturating trunc boundary overlap (i32TruncSatF32S)**: For `a == -2147483648.0` (exactly INT32_MIN), both the saturation path (`a <= -2147483648.0 → Int32.min`) and the else path (`Int32(a) = Int32.min`) give identical results. The overlap is harmless and correct.
+
+33. **tableGrow missing overflow guard**: Unlike `memoryGrow` (which has `let overflows = n > Int.max / pageSize`), `tableGrow` at line 2116 does `let newSize = tables[ti].count + n` without an overflow check. On 32-bit Embedded targets this can cause a Swift runtime trap. `[macOS-phase-OK, Embedded-TODO]` — add `guard n <= Int.max - tables[ti].count else { return -1 }`.
+
+34. **ref.null reftype byte consumed but not validated**: Parser line 839 reads the reftype byte (`_ = try readByte()`) without checking it. `ref.null externref` (0xD0 0x6F) is silently treated as funcref. Acceptable for MVP funcref-only support.
+
+35. **Validator tableGrow/tableFill dead ternary**: `module.tables[ti].refType == .funcRef ? .funcref : .funcref` — both branches are identical. This is the same pattern as tableGet/tableSet (recurring pattern #14). Acceptable until externref is added, but should be cleaned up or documented as intentional.
+
+36. **tableFill bounds check correctness**: `guard dstOff <= tables[ti].count && dstOff + fillCount <= tables[ti].count` — the first condition is subsumed by the second for all non-negative fillCount. The expression is logically correct (no bug) but the first clause is redundant. This mirrors the spec comment "n=0 is valid only when dst <= table_size" which is also enforced by the second clause. A minor clarity issue only.
+
+37. **Declarative element segments (flags=3, flags=7) stored as isPassive=true**: Marking declarative segments as passive causes droppedElementSegments[i] to start as false, allowing erroneous table.init on them at runtime. The Wasm spec treats declarative segments as pre-dropped (inaccessible to table.init). The correct fix is to initialize droppedElementSegments[i]=true for declarative segments just as active segments are. In practice the spectest conformance runner skips modules that fail, so this is unlikely to be caught by current tests.
+
+38. **Cross-module HostFunction closure mutation semantics**: The crossModuleImports HostFunction closure captures `var capturedInterp` by value. Since WasmInterpreter is a struct, mutations inside callExport (e.g. globals updated by the called function) are lost after each call through the closure. The closure always calls from the snapshot state captured at module-load time. For pure functions this is correct; for stateful exports this silently discards mutations.
+
+39. **`try? capturedInterp.callExport(...)` silently swallows errors**: Any WasmError thrown by a cross-module call is mapped to `[]` (empty return). For assert_return tests this causes a false-pass (returns [] which may match a [] expected result) or a value mismatch fail rather than a trapped-as-expected result. The behavior is acceptable for the skip-heavy spectest runner but could mask real implementation bugs.
+
+40. **`unexpectedContent` guard is dead code**: `parse()` uses `while !stream.isExhausted { ... }` which only exits when the stream IS exhausted. The `guard stream.isExhausted else { throw .unexpectedContent }` immediately after is always true and never throws. The spec requires trailing-byte detection but the implementation cannot detect it via this guard. Section parsers also don't verify they consume exactly `size` bytes — section-internal padding corrupts subsequent reads.
+
+41. **`tableSet` runtime type mismatch not enforced**: The interpreter's `tableSet` accepts any `.funcref` or `.externref` value without checking against the table's declared `refType`. The validator (macOS-only) catches this at compile time. In Embedded (no validator), storing externref into a funcref table is silently allowed at runtime.
+
+42. **`call_indirect` with externref table correctly traps**: Pattern match `case .funcref(let optFuncIdx) = tbl[eIdx]` fails for `.externref(...)`, throwing `.undefinedElement`. This is correct per spec.
+
+43. **LEB128 canonical check covers 0x00 and 0x7F terminators for SLEB128**: The canonical check `if byte == 0x00 && prevSign == 0` and `if byte == 0x7F && prevSign != 0` is applied in both the overflow and normal terminator paths. However, the single-byte path has no `byteCount > 1` guard issue since single-byte decodes go through the while loop then the post-loop check — byteCount=1 so the guard is `> 1` → not entered. Single-byte encodings are always canonical.
+
+44. **tableInit copies funcref indices as .funcref(optIdx)**: Element segments store `[UInt32?]` (funcref indices), and `tableInit` converts each to `.funcref(elems[srcOff + i])`. This is correct for funcref tables. For externref tables (hypothetical), the copy would incorrectly store `.funcref` values. Not a current bug since externref element segments are not parsed.
+
+45. **externref test coverage gap**: The `isSupportedType` in SpectestTests includes "externref", and `convertValue` / `valueMatches` handle externref. But current element segment parsing only supports funcref indices — externref element segments are not parseable, so spectest externref tests involving non-null externref values in tables will fail or skip at module load time.

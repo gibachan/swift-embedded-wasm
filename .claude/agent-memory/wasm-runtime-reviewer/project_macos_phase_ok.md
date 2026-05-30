@@ -21,3 +21,6 @@ All items below are [macOS-phase-OK, Embedded-TODO] and should be tracked for Ph
 12. `Int(UInt32(bitPattern: ...))` for bulk memory address/count arithmetic — safe on 64-bit macOS; on 32-bit Embedded would overflow for values > Int32.max. Fix: use `UInt32` arithmetic with `addingReportingOverflow` for Phase 5
 13. `var droppedElementSegments: [Bool]` — dynamic Array of Bools parallel to droppedDataSegments; replace with fixed-size bitfield or static array in Embedded phase
 14. `Int(UInt32(bitPattern: ...))` used in memoryFill, tableInit, tableCopy, tableCopy — same 32-bit overflow risk as item #12 above. Consistent with existing bulk-memory pattern.
+15. `tableGrow`: `let newSize = tables[ti].count + n` — no overflow guard (unlike memoryGrow which has `let overflows = n > Int.max / pageSize`). On 32-bit RP2350 this can overflow silently. Fix: add `guard n <= Int.max - tables[ti].count else { valueStack.append(.i32(-1)); break }`.
+16. `tableSize`/`tableGrow`'s `oldSize`: `Int32(tables[ti].count)` — truncates if table size > Int32.max. Spec says table sizes are u32-ranged; on 64-bit macOS table counts won't exceed Int32.max in practice. For Embedded, table sizes are bounded by available RAM so this is safe.
+17. `Int(UInt32(bitPattern:))` used in tableFill dstOff + fillCount — same 32-bit overflow risk as item #12. Consistent pattern.
