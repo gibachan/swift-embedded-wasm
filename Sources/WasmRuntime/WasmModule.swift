@@ -269,6 +269,10 @@ enum Instruction: Sendable {
   case i64Store16(UInt32, UInt32)  // 0x3D: align, offset
   case i64Store32(UInt32, UInt32)  // 0x3E: align, offset
   case memoryGrow  // 0x40
+  // bulk memory operations (0xFC prefix)
+  case memoryInit(UInt32)  // 0xFC 0x08: data segment index
+  case dataDrop(UInt32)  // 0xFC 0x09: data segment index
+  case memoryCopy  // 0xFC 0x0A: dst_mem=0, src_mem=0 (MVP always uses memory 0)
   // Parsed but not yet implemented; throws invalidInstruction at runtime.
   case unimplemented(UInt8)
 }
@@ -318,10 +322,14 @@ enum Import: Sendable {
 
 // MARK: - Data Segments
 
-/// An initialization segment from the Data section (active form only)
+/// An initialization segment from the Data section.
+///
+/// Active segments (offset != nil) are copied into linear memory at instantiation time.
+/// Passive segments (offset == nil) are not applied at instantiation; they remain available
+/// for use by `memory.init` and can be invalidated by `data.drop`.
 struct DataSegment: Sendable {
-  let offset: Int32  // write offset into linear memory
-  let bytes: [UInt8]  // data to write
+  let offset: Int32?  // nil = passive segment; non-nil = active (write offset into memory)
+  let bytes: [UInt8]  // data bytes
 }
 
 // MARK: - Exports

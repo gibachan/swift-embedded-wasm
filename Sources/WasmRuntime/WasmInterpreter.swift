@@ -121,6 +121,8 @@ struct WasmInterpreter {
   private let hostFunctions: [HostFunction]
   private var globals: [Value]  // mutable global variable slots (global.get/set)
   private var tables: [[UInt32?]]  // function tables: tables[tableIdx][elemIdx], nil = uninitialized
+  // TODO: Embedded — replace with fixed-size buffer
+  private var droppedDataSegments: [Bool]  // true = segment has been dropped via data.drop
 
   // MARK: - Init
 
@@ -185,15 +187,20 @@ struct WasmInterpreter {
       memPageCount = localMem.min
     }
 
-    // Allocate memory and initialize it from data segments (1 page = 64 KiB)
+    // Allocate memory and initialize it from active data segments only (1 page = 64 KiB).
+    // Passive segments (offset == nil) are retained in module.data for use by memory.init
+    // at runtime; they are not applied at instantiation.
     var mem = [UInt8](repeating: 0, count: Int(memPageCount) * 65536)
     for seg in module.data {
-      let start = Int(seg.offset)
+      guard let offset = seg.offset else { continue }  // skip passive segments
+      let start = Int(offset)
       let end = start + seg.bytes.count
       guard start >= 0 && end <= mem.count else { throw .memoryAccessOutOfBounds }
       mem.replaceSubrange(start..<end, with: seg.bytes)
     }
     self.memory = mem
+    // TODO: Embedded — replace with fixed-size buffer
+    self.droppedDataSegments = [Bool](repeating: false, count: module.data.count)
 
     // Wasm spec: the start function is called automatically at instantiation
     if let startIdx = module.start {
@@ -1533,6 +1540,89 @@ struct WasmInterpreter {
         let callArgs = Array(valueStack.suffix(argCount))
         valueStack.removeLast(argCount)
         try pushFrame(funcIdx: Int(funcIdx), callArgs: callArgs)
+
+      // MARK: Bulk Memory
+
+      case .memoryInit(let segIdx):
+        // memory.init x: [dst: i32, src: i32, n: i32] → []
+        //
+        // Copies n bytes from data segment x (starting at src offset within the segment)
+        // into linear memory (starting at dst address).
+        //
+        // Trap conditions (per Wasm spec, checked unconditionally regardless of n):
+        //   - segment index out of bounds
+        //   - src + n > |seg|  (including n=0 cases where src > segLen)
+        //   - dst + n > |mem|  (including n=0 cases where dst > memLen)
+        //   - dropped segment: treated as having length 0, so any non-zero (src+n) traps
+        //
+        // Wasm spec §3.4.10: the bounds check is s+n > |data| OR d+n > |mem|,
+        // not guarded by n > 0. A zero-length copy with out-of-range src or dst still traps.
+        guard valueStack.count >= 3 else { throw .stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let src) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let dst) = valueStack.removeLast() else { throw .typeMismatch }
+        let si = Int(segIdx)
+        guard si < module.data.count else { throw .memoryAccessOutOfBounds }
+        let copyCount = Int(UInt32(bitPattern: n))
+        let srcOff = Int(UInt32(bitPattern: src))
+        let dstOff = Int(UInt32(bitPattern: dst))
+        // A dropped segment has effective length 0; avoid allocating an empty array.
+        let segLen = droppedDataSegments[si] ? 0 : module.data[si].bytes.count
+        // Bounds check: applies unconditionally (n=0 with out-of-range src/dst still traps).
+        guard srcOff + copyCount <= segLen else { throw .memoryAccessOutOfBounds }
+        guard dstOff + copyCount <= memory.count else { throw .memoryAccessOutOfBounds }
+        if copyCount > 0 {
+          // Only reached when !droppedDataSegments[si] (segLen > 0 implied by bounds check above).
+          let segBytes = module.data[si].bytes
+          for i in 0..<copyCount {
+            memory[dstOff + i] = segBytes[srcOff + i]
+          }
+        }
+
+      case .dataDrop(let segIdx):
+        // data.drop x: [] → []
+        //
+        // Marks data segment x as dropped. Subsequent memory.init from this segment
+        // will trap (even for n == 0, per spec errata: a dropped segment has length 0,
+        // so any access including zero-length is valid only if src == 0 && n == 0).
+        // Dropping an already-dropped segment is a no-op (idempotent).
+        let si = Int(segIdx)
+        guard si < droppedDataSegments.count else { throw .memoryAccessOutOfBounds }
+        droppedDataSegments[si] = true
+
+      case .memoryCopy:
+        // memory.copy: [dst: i32, src: i32, n: i32] → []
+        //
+        // Copies n bytes from memory[src..src+n) into memory[dst..dst+n).
+        // Overlapping regions are handled correctly (memmove semantics):
+        //   - If dst <= src or regions do not overlap: copy forward.
+        //   - If dst > src and regions overlap: copy backward to avoid clobbering src bytes.
+        //
+        // Bounds check is applied unconditionally (even when n == 0):
+        //   - src + n > memory.count → trap
+        //   - dst + n > memory.count → trap
+        // This mirrors the Wasm spec §3.4.10 semantics for memory.copy.
+        guard valueStack.count >= 3 else { throw .stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let src) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let dst) = valueStack.removeLast() else { throw .typeMismatch }
+        let copyCount = Int(UInt32(bitPattern: n))
+        let srcOff = Int(UInt32(bitPattern: src))
+        let dstOff = Int(UInt32(bitPattern: dst))
+        // Bounds check: applies unconditionally (n=0 with out-of-range dst/src still traps).
+        guard srcOff + copyCount <= memory.count else { throw .memoryAccessOutOfBounds }
+        guard dstOff + copyCount <= memory.count else { throw .memoryAccessOutOfBounds }
+        if copyCount > 0 {
+          // Overlap-safe copy: copy forward when dst <= src or regions do not overlap,
+          // backward when dst > src and the regions overlap (avoids overwriting src bytes).
+          if dstOff <= srcOff || dstOff >= srcOff + copyCount {
+            for i in 0..<copyCount { memory[dstOff + i] = memory[srcOff + i] }
+          } else {
+            for i in stride(from: copyCount - 1, through: 0, by: -1) {
+              memory[dstOff + i] = memory[srcOff + i]
+            }
+          }
+        }
 
       case .unimplemented(let op):
         throw WasmError.invalidInstruction(op)

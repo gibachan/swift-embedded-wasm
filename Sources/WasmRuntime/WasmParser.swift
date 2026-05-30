@@ -313,25 +313,49 @@ struct WasmParser {
 
   /// Data section (id=11): array of initial data segments for linear memory
   ///
-  /// Only active segments (flags=0) are supported (MVP).
-  /// Format: flags=0, i32.const offset end, data bytes
+  /// Supported flags:
+  ///   0 — active, memory 0, i32.const offset expression, data bytes
+  ///   1 — passive: no offset expression; segment is not applied at instantiation
+  ///   2 — active with explicit memory index, i32.const offset expression, data bytes
   private mutating func parseDataSection() throws(WasmError) -> [DataSegment] {
     let count = try readU32()
     var segments: [DataSegment] = []
     for _ in 0..<count {
-      _ = try readU32()  // flags: 0 = active, memory index 0
-
-      // Constant offset expression: i32.const <value> end
-      let constOp = try readByte()
-      guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
-      let offset = try readI32()
-      let endOp = try readByte()
-      guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
-
-      let byteLen = try readU32()
-      var bytes: [UInt8] = []
-      for _ in 0..<byteLen { bytes.append(try readByte()) }
-      segments.append(DataSegment(offset: offset, bytes: bytes))
+      let flags = try readU32()
+      switch flags {
+      case 0:
+        // Active segment: memory 0 (implicit), constant offset expression, then data bytes.
+        let constOp = try readByte()
+        guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
+        let offset = try readI32()
+        let endOp = try readByte()
+        guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
+        let byteLen = try readU32()
+        var bytes: [UInt8] = []
+        for _ in 0..<byteLen { bytes.append(try readByte()) }
+        segments.append(DataSegment(offset: offset, bytes: bytes))
+      case 1:
+        // Passive segment: no memory index, no offset expression; just raw data bytes.
+        // Not applied at instantiation; used by memory.init / data.drop at runtime.
+        let byteLen = try readU32()
+        var bytes: [UInt8] = []
+        for _ in 0..<byteLen { bytes.append(try readByte()) }
+        segments.append(DataSegment(offset: nil, bytes: bytes))
+      case 2:
+        // Active segment with explicit memory index.
+        _ = try readU32()  // memory index (always 0 in MVP; multi-memory is not supported here)
+        let constOp = try readByte()
+        guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
+        let offset = try readI32()
+        let endOp = try readByte()
+        guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
+        let byteLen = try readU32()
+        var bytes: [UInt8] = []
+        for _ in 0..<byteLen { bytes.append(try readByte()) }
+        segments.append(DataSegment(offset: offset, bytes: bytes))
+      default:
+        throw .unsupportedElementSegment
+      }
     }
     return segments
   }
@@ -564,6 +588,62 @@ struct WasmParser {
       case 0x40:  // memory.grow (1-byte reserved operand = 0x00)
         _ = try readByte()
         instructions.append(.memoryGrow)
+
+      case 0xFC:  // bulk memory / SIMD-saturating-truncate prefix
+        let subOp = try readByte()
+        switch subOp {
+        case 0x00...0x07:
+          // i32/i64.trunc_sat_f32/f64_s/u — saturating truncations; no extra operands.
+          // Parsed but not executed (fall through to .unimplemented at runtime).
+          instructions.append(.unimplemented(0xFC))
+        case 0x08:
+          // memory.init seg_idx mem_idx
+          // Copies n bytes from a passive data segment into linear memory.
+          let segIdx = try readU32()
+          _ = try readByte()  // mem_idx: always 0x00 in MVP (single memory)
+          instructions.append(.memoryInit(segIdx))
+        case 0x09:
+          // data.drop seg_idx
+          // Marks a data segment as dropped (idempotent; frees its bytes per the spec).
+          instructions.append(.dataDrop(try readU32()))
+        case 0x0A:
+          // memory.copy dst_mem src_mem
+          _ = try readByte()  // dst memory index (always 0x00 in MVP)
+          _ = try readByte()  // src memory index (always 0x00 in MVP)
+          instructions.append(.memoryCopy)
+        case 0x0B:
+          // memory.fill mem_idx
+          _ = try readByte()  // memory index
+          instructions.append(.unimplemented(0xFC))
+        case 0x0C:
+          // table.init elem_idx table_idx
+          _ = try readU32()  // element segment index
+          _ = try readU32()  // table index
+          instructions.append(.unimplemented(0xFC))
+        case 0x0D:
+          // elem.drop elem_idx
+          _ = try readU32()  // element segment index
+          instructions.append(.unimplemented(0xFC))
+        case 0x0E:
+          // table.copy dst_table src_table
+          _ = try readU32()  // destination table index
+          _ = try readU32()  // source table index
+          instructions.append(.unimplemented(0xFC))
+        case 0x0F:
+          // table.grow table_idx
+          _ = try readU32()  // table index
+          instructions.append(.unimplemented(0xFC))
+        case 0x10:
+          // table.size table_idx
+          _ = try readU32()  // table index
+          instructions.append(.unimplemented(0xFC))
+        case 0x11:
+          // table.fill table_idx
+          _ = try readU32()  // table index
+          instructions.append(.unimplemented(0xFC))
+        default:
+          throw .invalidInstruction(0xFC)
+        }
 
       case 0x41:  // i32.const (signed LEB128)
         instructions.append(.i32Const(try readI32()))

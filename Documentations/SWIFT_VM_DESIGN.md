@@ -49,8 +49,8 @@ macOS ビルド（開発・デバッグ用）と Pico ビルド（組み込み�
 |---|---|
 | `Parser` | Wasm バイナリを `Module` に変換する |
 | `Validator` | Module の型整合性を検証する（ビルドターゲットにより深度が異なる） |
-| `Interpreter` | Module を実行する（Stack Machine） |
-| `Module` | パース済みの Wasm モジュール（関数・メモリ・グローバル変数） |
+| `Interpreter` | Module を実行する（Stack Machine）。`droppedDataSegments: [Bool]` で `data.drop` 状態を追跡 |
+| `Module` | パース済みの Wasm モジュール（関数・メモリ・グローバル変数）。`DataSegment.offset: Int32?`（nil = passive、非 nil = active のメモリ書き込みオフセット） |
 | `LinearMemory` | Wasm の線形メモリ空間。境界チェックを担う |
 | `HostFunctionTable` | Swift の関数を Wasm に公開するテーブル |
 

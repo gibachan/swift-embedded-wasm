@@ -16,3 +16,6 @@ All items below are [macOS-phase-OK, Embedded-TODO] and should be tracked for Ph
 7. `String` usage in `HostImport.function(String, String, HostFunction)` — replace with [UInt8] in Embedded phase
 8. `[UInt8]` arrays for module/name bytes in imports/exports — acceptable per project design (already uses byte comparison)
 9. `indirect case` not currently used in Instruction enum (good — flat bytecode approach avoids it)
+10. `var droppedDataSegments: [Bool]` — dynamic Array of Bools; replace with fixed-size bitfield or static array in Embedded phase
+11. `droppedDataSegments[si] ? [] : module.data[si].bytes` — creates empty `[UInt8]()` heap allocation for dropped segments; replace with explicit boolean check in hot path
+12. `Int(UInt32(bitPattern: ...))` for bulk memory address/count arithmetic — safe on 64-bit macOS; on 32-bit Embedded would overflow for values > Int32.max. Fix: use `UInt32` arithmetic with `addingReportingOverflow` for Phase 5

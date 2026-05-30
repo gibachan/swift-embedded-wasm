@@ -193,6 +193,19 @@ struct GPIOPin {
   - `Value` enum に `.funcref(UInt32?)` ケースを追加（`nil` = null reference、`UInt32` = 関数インデックス）
   - `funcref` ローカル変数のデフォルト初期値は `nil`（Wasm 仕様準拠）
   - バリデータ (`WasmValidator`) での境界チェック・型チェックを実装済み
+- [x] Bulk Memory 命令（0xFC プレフィックス）
+  - `memory.init`（0xFC 0x08）: passive data segment の内容を線形メモリにコピー
+    - n=0 の場合も境界チェックを適用（Wasm 仕様準拠）
+    - dropped segment は長さ 0 として扱う（境界チェックは通す）
+  - `data.drop`（0xFC 0x09）: data segment を解放済みとしてマーク（冪等）
+  - `memory.copy`（0xFC 0x0A）: 線形メモリ内コピー（オーバーラップ対応、memmove 相当）
+    - n=0 の場合も境界チェックを適用（Wasm 仕様準拠）
+  - `DataSegment.offset` を `Int32?` に変更（`nil` = passive、非 `nil` = active のメモリ書き込みオフセット）
+  - インタプリタ init 時: active segments のみメモリに書き込み、passive はスキップ
+  - `WasmInterpreter` に `droppedDataSegments: [Bool]` を追加して `data.drop` 状態を追跡
+  - パーサー: Data セクションで flags=0（active）/ flags=1（passive）/ flags=2（active + explicit mem index）に対応
+  - バリデータ: `memoryInit` / `dataDrop` / `memoryCopy` のセグメント境界チェック・型チェックを実装
+  - spectest: `memory_init` 240 pass / 0 skip / 0 fail（完全合格）
 
 ### 既知の未対応・TODO（Embedded フェーズ向け）
 

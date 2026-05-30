@@ -38,3 +38,13 @@ metadata:
 14. **Validator: table.get/set hardcode funcref**: The validator at WasmValidator.swift (case .tableGet, .tableSet) hardcodes `funcref` as the table element type. This is correct only for funcref tables. The spec requires looking up the table's declared element type. Currently this is fine because the parser only supports funcref tables (RefType.funcRef), but if externref tables are added the validator must be updated to look up table[x].refType.
 
 15. **SpectestTests.swift funcref comparison**: The `valueMatches` case for "funcref" checks `expStr == "null"` → `ar == nil`, otherwise `UInt32(expStr)` → `ar == idx`. The wast2json format for funcref values encodes null as the string "null" and non-null as the decimal function index. This is correctly handled.
+
+16. **Bulk memory Int overflow on 32-bit (Embedded-TODO)**: `memory.init`, `memory.copy` compute `Int(UInt32(bitPattern: ...))` for addresses and counts. On 64-bit macOS this is safe (the sum fits in Int64). On 32-bit RP2350, `Int(UInt32(0xFFFF_FFFF))` would overflow Int32, causing a runtime trap. The fix for Embedded is to work in `UInt32` throughout and use `addingReportingOverflow`. Annotated `[macOS-phase-OK, Embedded-TODO]` — same pattern as ea computation in loads/stores (pattern #9).
+
+17. **`data.drop` on active segments**: The spec allows dropping active segments (they are NOT auto-dropped at instantiation in the finalized Wasm 2.0 spec). The `droppedDataSegments` array is initialized to `false` for ALL segments including active ones, which is correct.
+
+18. **memory.init dropped segment empty-array allocation**: `droppedDataSegments[si] ? [] : module.data[si].bytes` creates an empty `[UInt8]()` heap allocation on every call when the segment is dropped. For Embedded, replace with an explicit boolean check and skip the bytes path. `[macOS-phase-OK, Embedded-TODO]`.
+
+19. **memory.copy overlap detection correctness**: The condition `dstOff <= srcOff || dstOff >= srcOff + copyCount` correctly handles both the non-overlapping case and the dst-before-src case. The backward copy path handles dst > src with overlap. This mirrors memmove semantics and is spec-correct.
+
+20. **memory.init n=0 spec behavior**: When n=0, the spec requires `src <= len(seg)` AND `dst <= len(mem)` (i.e., equality is allowed). The check `srcOff + 0 <= segBytes.count` correctly allows src == len(seg) without trapping. The code comment previously described this as "unconditional success" but the code is correct — it does the proper bounds check.

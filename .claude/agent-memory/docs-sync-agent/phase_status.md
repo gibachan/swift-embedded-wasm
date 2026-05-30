@@ -26,7 +26,15 @@ As of 2026-05-30, the project is in Phase 4 (macOS development phase).
   - `ValueType` enum has `.funcref = 0x70` case
   - funcref locals default-initialized to nil (Wasm spec compliant)
   - Validator: bounds + type checking for table.get/table.set
-- Linear memory with data segment initialization
+- Bulk Memory instructions (0xFC prefix):
+  - `memory.init` (0xFC 0x08): copies passive data segment into linear memory; n=0 still bounds-checks; dropped segment treated as length 0
+  - `data.drop` (0xFC 0x09): idempotent flag set; tracked by `droppedDataSegments: [Bool]` in WasmInterpreter
+  - `memory.copy` (0xFC 0x0A): overlap-safe (memmove equivalent); n=0 still bounds-checks
+  - `DataSegment.offset` changed to `Int32?` (nil = passive, non-nil = active write offset)
+  - Parser: Data section flags 0/1/2 supported
+  - Validator: segment bounds and type checking for all three instructions
+  - spectest memory_init: 240 pass / 0 skip / 0 fail
+- Linear memory with data segment initialization (active segments only applied at init)
 - Host function import via `HostImport` enum (array-based, not `class HostFunctionTable`)
 - Type-checking validator (`WasmValidator`) — macOS only
 - Spectest runner (`SpectestTests.swift`) with f64 type support added
@@ -42,7 +50,7 @@ As of 2026-05-30, the project is in Phase 4 (macOS development phase).
 
 **Why:** Incremental implementation strategy — each instruction group is added when needed for Spectest coverage.
 
-**How to apply:** When updating WASM_SPEC.md or PHASE4_INTERPRETER.md, reflect this boundary: f64 arithmetic is now implemented. The main remaining unimplemented group is type conversion instructions.
+**How to apply:** When updating WASM_SPEC.md or PHASE4_INTERPRETER.md, reflect this boundary: f64 arithmetic and bulk memory instructions (memory.init / data.drop / memory.copy) are now implemented. The main remaining unimplemented group is type conversion instructions.
 
 [[project-architecture]]
 [[doc-cross-references]]

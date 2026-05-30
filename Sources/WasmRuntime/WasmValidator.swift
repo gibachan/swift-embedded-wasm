@@ -381,6 +381,21 @@
         try popExpecting(.i32)
         tryPush(.i32)
 
+      case .memoryInit(let segIdx):
+        guard Int(segIdx) < module.data.count else { throw .typeMismatch }
+        try popExpecting(.i32)  // n
+        try popExpecting(.i32)  // src
+        try popExpecting(.i32)  // dst
+
+      case .dataDrop(let segIdx):
+        guard Int(segIdx) < module.data.count else { throw .typeMismatch }
+
+      case .memoryCopy:
+        // memory.copy: [dst: i32, src: i32, n: i32] → []
+        try popExpecting(.i32)  // n
+        try popExpecting(.i32)  // src
+        try popExpecting(.i32)  // dst
+
       // MARK: Table operations: table.get, table.set
 
       case .tableGet(let tableIdx):
