@@ -315,7 +315,7 @@ private struct ConformanceRunner {
 
   private func isSupportedType(_ type: String) -> Bool {
     // Expand this list as more value types are implemented in the interpreter.
-    type == "i32" || type == "i64" || type == "f32"
+    type == "i32" || type == "i64" || type == "f32" || type == "f64"
   }
 
   private func convertValue(_ v: WastValue) throws -> Value {
@@ -334,6 +334,13 @@ private struct ConformanceRunner {
       }
       guard let bits = UInt32(str) else { throw WasmError.typeMismatch }
       return .f32(Float(bitPattern: bits))
+    case "f64":
+      let str = v.value ?? "nan:canonical"
+      if str == "nan:canonical" || str == "nan:arithmetic" {
+        return .f64(.nan)
+      }
+      guard let bits = UInt64(str) else { throw WasmError.typeMismatch }
+      return .f64(Double(bitPattern: bits))
     default:
       throw WasmError.typeMismatch
     }
@@ -373,6 +380,20 @@ private struct ConformanceRunner {
         return af.isNaN
       } else {
         guard let bits = UInt32(expStr) else { return false }
+        return af.bitPattern == bits
+      }
+    case "f64":
+      guard case .f64(let af) = actual else { return false }
+      let expStr = expected.value ?? ""
+      if expStr == "nan:canonical" {
+        // Canonical NaN for f64: quiet bit (bit 51) set, lower 51 bits zero
+        // Bit pattern (ignoring sign): 0x7FF8_0000_0000_0000
+        guard af.isNaN else { return false }
+        return (af.bitPattern & 0x7FFF_FFFF_FFFF_FFFF) == 0x7FF8_0000_0000_0000
+      } else if expStr == "nan:arithmetic" {
+        return af.isNaN
+      } else {
+        guard let bits = UInt64(expStr) else { return false }
         return af.bitPattern == bits
       }
     default:

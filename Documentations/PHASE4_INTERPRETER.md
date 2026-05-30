@@ -9,13 +9,13 @@ Stack Machine・Validation・Linear Memory・Host Function を段階的に実装
 
 ## Wasm 仕様について
 
-スタックマシンの仕組み・値型・トラップ・対象バージョン・命令セットの詳細は `docs/WASM_SPEC.md` を参照。
+スタックマシンの仕組み・値型・トラップ・対象バージョン・命令セットの詳細は `Documentations/WASM_SPEC.md` を参照。
 
 実装上の要点のみ以下に抜粋する。
 
 - 対象: **WebAssembly 1.0 MVP**、初期は `i32` 命令サブセットのみ
 - Wasm はレジスタを持たないスタックマシン。命令はスタックを介して値をやり取りする
-- 実行時コンポーネント: Value Stack / Call Stack / Call Frame（詳細は `docs/WASM_SPEC.md`）
+- 実行時コンポーネント: Value Stack / Call Stack / Call Frame（詳細は `Documentations/WASM_SPEC.md`）
 
 ---
 
@@ -160,9 +160,20 @@ struct GPIOPin {
 
 ## 成功基準
 
-- [ ] `i32.add` を含む簡単な Wasm 関数を実行できる
-- [ ] ローカル変数の get/set が正しく動作する
-- [ ] 関数呼び出し（call / return）が動作する
-- [ ] Type Validation が不正な Wasm を弾ける
-- [ ] Linear Memory への load/store が動作する
-- [ ] Host Function 経由で Swift のコードを呼び出せる
+- [x] `i32.add` を含む簡単な Wasm 関数を実行できる
+- [x] ローカル変数の get/set が正しく動作する
+- [x] 関数呼び出し（call / return）が動作する
+- [x] Type Validation が不正な Wasm を弾ける（macOS ビルドのみ）
+- [x] Linear Memory への load/store が動作する
+- [x] Host Function 経由で Swift のコードを呼び出せる
+
+## 追加実装済み（Step 1〜4 以降）
+
+- [x] `i64` 全算術・比較・ビット演算命令（`i64.add` / `i64.sub` / `i64.mul` / `i64.div_s` / ... など）
+- [x] `f32` 算術・比較・単項演算命令（`f32.add` / `f32.sqrt` / `f32.le` など）
+- [x] `f64.const`（`Value.f64(Double)` として表現）
+- [x] `call_indirect`（複数テーブルサポート、result 型チェック含む）
+- [x] Global 変数（`global.get` / `global.set`）
+- [x] フラット bytecode への移行（`block` / `loop` / `if` が `indirect case` を使わずジャンプオフセットで管理）
+- [x] `memory.grow`
+- [x] `i64.extend_i32_s`（型変換命令の一部）

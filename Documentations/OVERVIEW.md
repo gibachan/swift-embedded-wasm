@@ -9,7 +9,7 @@ Embedded Swift を用いて Raspberry Pi Pico 上で動作する WebAssembly イ
 
 Embedded Swift のツールチェーンをセットアップし、Raspberry Pi Pico への書き込みと基本動作を確認する。
 
-詳細計画: `docs/PHASE1_ENV.md`
+詳細計画: `Documentations/PHASE1_ENV.md`
 
 ---
 
@@ -18,7 +18,7 @@ Embedded Swift のツールチェーンをセットアップし、Raspberry Pi P
 組み込み向け Wasm Runtime である Wasm3 のソースコードを読解し、
 本プロジェクトへの設計上の参考点を整理する。
 
-詳細計画: `docs/PHASE2_WASM3.md`
+詳細計画: `Documentations/PHASE2_WASM3.md`
 
 ---
 
@@ -26,7 +26,7 @@ Embedded Swift のツールチェーンをセットアップし、Raspberry Pi P
 
 Wasm バイナリフォーマットを仕様に基づいて解析するパーサーを Swift で実装する。
 
-詳細計画: `docs/PHASE3_PARSER.md`
+詳細計画: `Documentations/PHASE3_PARSER.md`
 
 ---
 
@@ -35,7 +35,7 @@ Wasm バイナリフォーマットを仕様に基づいて解析するパーサ
 Stack machine、Validation、Linear Memory、Host Function を段階的に実装し、
 Wasm モジュールを実行できるインタプリタを構築する。
 
-詳細計画: `docs/PHASE4_INTERPRETER.md`
+詳細計画: `Documentations/PHASE4_INTERPRETER.md`
 
 ---
 
@@ -44,7 +44,7 @@ Wasm モジュールを実行できるインタプリタを構築する。
 Phase 3〜4 で実装したコンポーネントを Embedded Swift 向けにクロスコンパイルし、
 Pico 上で Wasm を実行して GPIO 制御まで動作確認する。
 
-詳細計画: `docs/PHASE5_PICO.md`
+詳細計画: `Documentations/PHASE5_PICO.md`
 
 ---
 
@@ -53,7 +53,7 @@ Pico 上で Wasm を実行して GPIO 制御まで動作確認する。
 BLE または Wi-Fi 経由で iPhone から Wasm バイナリを Pico へアップロードする仕組みを構築し、
 Scriptable Device として完成させる。
 
-詳細計画: `docs/PHASE6_IOS.md`
+詳細計画: `Documentations/PHASE6_IOS.md`
 
 ---
 
@@ -116,7 +116,7 @@ swift-embedded-wasm/
 ├── wasm-interpreter/   # Wasm インタプリタ
 ├── host-api/           # Host Function 実装
 ├── ios-controller/     # iOS コントローラーアプリ
-├── docs/               # ドキュメント
+├── Documentations/     # ドキュメント
 └── experiments/        # 実験・調査用コード
 ```
 

@@ -106,7 +106,7 @@ struct WasmInterpreter {
   var memory: [UInt8]
   private let hostFunctions: [HostFunction]
   private var globals: [Value]  // mutable global variable slots (global.get/set)
-  private var table: [UInt32?]  // function table: nil = uninitialized entry
+  private var tables: [[UInt32?]]  // function tables: tables[tableIdx][elemIdx], nil = uninitialized
 
   // MARK: - Init
 
@@ -138,19 +138,19 @@ struct WasmInterpreter {
     self.hostFunctions = funcs
     self.globals = module.globals.map { $0.initValue }
 
-    // Build function table from Table section + Element section
-    var tableSize = 0
-    for t in module.tables { tableSize = max(tableSize, Int(t.min)) }
-    var tbl = [UInt32?](repeating: nil, count: tableSize)
+    // Build per-table arrays from the Table section; one entry per declared table.
+    var tbls: [[UInt32?]] = module.tables.map { [UInt32?](repeating: nil, count: Int($0.min)) }
     for seg in module.elements {
+      let ti = Int(seg.tableIndex)
+      guard ti < tbls.count else { throw .memoryAccessOutOfBounds }
       let start = Int(seg.offset)
       for (i, funcIdx) in seg.functionIndices.enumerated() {
         let pos = start + i
-        guard pos < tbl.count else { throw .memoryAccessOutOfBounds }
-        tbl[pos] = funcIdx
+        guard pos < tbls[ti].count else { throw .memoryAccessOutOfBounds }
+        tbls[ti][pos] = funcIdx
       }
     }
-    self.table = tbl
+    self.tables = tbls
 
     // Determine memory size: prefer imported memory, fall back to local memory definition
     var memPageCount: UInt32 = 0
@@ -254,7 +254,7 @@ struct WasmInterpreter {
         case .i32: locals.append(.i32(0))
         case .i64: locals.append(.i64(0))
         case .f32: locals.append(.f32(0.0))
-        case .f64: locals.append(.i32(0))  // f64 not implemented; placeholder
+        case .f64: locals.append(.f64(0.0))
         }
       }
       frames.append(
@@ -370,6 +370,9 @@ struct WasmInterpreter {
 
       case .f32Const(let value):
         valueStack.append(.f32(value))
+
+      case .f64Const(let value):
+        valueStack.append(.f64(value))
 
       // MARK: Flat Control Flow
 
@@ -1109,11 +1112,14 @@ struct WasmInterpreter {
 
       // MARK: call_indirect
 
-      case .callIndirect(let typeIdx, _):
+      case .callIndirect(let typeIdx, let tableIdxOp):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
-        guard case .i32(let tableIdx) = valueStack.removeLast() else { throw .typeMismatch }
-        let tIdx = Int(tableIdx)
-        guard tIdx >= 0 && tIdx < table.count, let funcIdx = table[tIdx] else {
+        guard case .i32(let elemIdx) = valueStack.removeLast() else { throw .typeMismatch }
+        let eIdx = Int(elemIdx)
+        let ti = Int(tableIdxOp)
+        guard ti < tables.count else { throw .undefinedElement }
+        let tbl = tables[ti]
+        guard eIdx >= 0 && eIdx < tbl.count, let funcIdx = tbl[eIdx] else {
           throw .undefinedElement
         }
         let expectedType = module.types[Int(typeIdx)]
@@ -1123,6 +1129,9 @@ struct WasmInterpreter {
             && expectedType.results.count == actualType.results.count
         else { throw .indirectCallTypeMismatch }
         for (e, a) in zip(expectedType.params, actualType.params) {
+          guard e == a else { throw .indirectCallTypeMismatch }
+        }
+        for (e, a) in zip(expectedType.results, actualType.results) {
           guard e == a else { throw .indirectCallTypeMismatch }
         }
         let argCount = expectedType.params.count

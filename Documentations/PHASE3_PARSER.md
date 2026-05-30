@@ -9,7 +9,7 @@ Wasm バイナリフォーマット（`.wasm`）を仕様に基づいて解析�
 
 ## Wasm 仕様について
 
-バイナリフォーマット・セクション構造・LEB128・対象バージョンの詳細は `docs/WASM_SPEC.md` を参照。
+バイナリフォーマット・セクション構造・LEB128・対象バージョンの詳細は `Documentations/WASM_SPEC.md` を参照。
 
 実装上の要点のみ以下に抜粋する。
 
@@ -60,41 +60,48 @@ mutating func readByte() throws(WasmParseError) -> UInt8
 mutating func readULEB128() throws(WasmParseError) -> UInt32
 ```
 
-### 3. Code Section はゼロコピーで持つ
+### 3. Code Section の扱い
 
 Section ごとにデータの扱いを分ける。
 
-| Section | データ量 | 方針 |
-|---------|---------|------|
-| Type | 小（シグネチャ定義） | 即パースして構造体に格納 |
-| Function | 小（インデックス列） | 即パースして格納 |
-| Export | 小 | 即パースして格納 |
-| **Code** | **大（関数本体のバイトコード）** | **ゼロコピー：範囲だけ記録** |
+| Section | データ量 | Embedded 目標方針 | 現在の macOS フェーズ実装 |
+|---------|---------|------|------|
+| Type | 小（シグネチャ定義） | 即パースして構造体に格納 | 同左 |
+| Function | 小（インデックス列） | 即パースして格納 | 同左 |
+| Export | 小 | 即パースして格納 | 同左 |
+| **Code** | **大（関数本体のバイトコード）** | **ゼロコピー：範囲だけ記録** | **全命令をパース時に展開して `FunctionBody` として格納** |
 
-Code Section の各関数は、バイナリ内でのオフセットとサイズだけを保持する。
-実際のデコードはインタプリタが実行時に行う（全関数のバイトコードを一度に展開しない）。
+Embedded フェーズへの移行時には、Code Section を `FunctionHandle`（オフセット＋サイズ）として
+ゼロコピーで保持し、インタプリタが実行時に逐次デコードする形に変更することが目標。
+現在の macOS フェーズでは、パース時に全命令を `Instruction` enum の配列へ展開している。
 
 ```swift
+// Embedded フェーズの目標設計（未実装）
 struct FunctionHandle {
     let codeOffset: UInt32  // バイナリ内のバイトコード開始位置
     let codeSize: UInt32    // バイトコードのバイト数
 }
+
+// 現在の macOS フェーズ実装（WasmModule.swift: FunctionBody）
+struct FunctionBody {
+    let locals: [ValueType]
+    let instructions: [Instruction]  // パース時に全命令を展開
+}
 ```
 
-### 4. 固定サイズ上限の設計
+### 4. 固定サイズ上限の設計（Embedded フェーズで必要）
 
-動的配列が使えないため、モジュールが持てる要素数に上限を設ける。
-上限値はターゲット Wasm の規模に合わせて調整する。
+Embedded フェーズでは動的配列が使えないため、モジュールが持てる要素数に上限を設ける。
+macOS フェーズでは `Array<T>` を使用しているため、現時点では上限は設けていない。
 
 ```swift
+// Embedded フェーズで必要になる設計（未実装）
 enum WasmLimits {
     static let maxFunctionTypes = 64
     static let maxFunctions     = 64
     static let maxExports       = 32
 }
 ```
-
-固定上限を超えた場合は `WasmParseError` としてトラップする。
 
 ---
 
@@ -172,11 +179,15 @@ enum Instruction {
 
 ---
 
-## 成功基準
+## 成功基準（macOS フェーズ）
 
-- [ ] `\0asm` マジックナンバーを検証できる
-- [ ] LEB128 のデコードが正しく動作する
-- [ ] Type / Function / Export Section をパースして構造体に格納できる
-- [ ] Code Section を `FunctionHandle`（オフセット＋サイズ）としてゼロコピーで保持できる
-- [ ] 固定上限を超えた場合に `WasmParseError` を返せる
-- [ ] 簡単な Wasm バイナリ（add 関数など）を解析して内容を出力できる
+- [x] `\0asm` マジックナンバーを検証できる
+- [x] LEB128 のデコードが正しく動作する
+- [x] Type / Function / Export / Import / Table / Memory / Global / Element / Data Section をパースして構造体に格納できる
+- [x] Code Section を `FunctionBody`（`[Instruction]` の展開済み配列）として保持できる
+- [x] 簡単な Wasm バイナリ（add 関数など）を解析して内容を出力できる
+
+## 今後の課題（Embedded フェーズ）
+
+- [ ] Code Section を `FunctionHandle`（オフセット＋サイズ）としてゼロコピーで保持する
+- [ ] 固定上限 (`WasmLimits`) を設けて動的配列を排除する

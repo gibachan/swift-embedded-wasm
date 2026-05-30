@@ -12,7 +12,8 @@
       "Bash(xxd *)",
       "Bash(git mv *)",
       "Bash(swift build *)",
-      "Bash(make format *)"
+      "Bash(make format *)",
+      "Bash(git stash *)"
     ]
   }
 }

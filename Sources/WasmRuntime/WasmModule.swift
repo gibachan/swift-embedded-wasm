@@ -119,6 +119,7 @@ enum Instruction: Sendable {
   case i32Const(Int32)  // 0x41
   case i64Const(Int64)  // 0x42
   case f32Const(Float)  // 0x43
+  case f64Const(Double)  // 0x44
   // i32 unary
   case i32Eqz  // 0x45
   case i32Clz  // 0x67
@@ -380,4 +381,5 @@ enum Value: Sendable, Equatable {
   case i32(Int32)
   case i64(Int64)
   case f32(Float)
+  case f64(Double)
 }

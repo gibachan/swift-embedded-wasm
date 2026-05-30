@@ -122,6 +122,7 @@
       case .i32Const: tryPush(.i32)
       case .i64Const: tryPush(.i64)
       case .f32Const: tryPush(.f32)
+      case .f64Const: tryPush(.f64)
 
       // MARK: i32 unary: i32 → i32
       case .i32Eqz, .i32Clz, .i32Ctz, .i32Popcnt, .i32Extend8S, .i32Extend16S:

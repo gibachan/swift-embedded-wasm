@@ -101,7 +101,7 @@ enum Instruction {
 }
 ```
 
-詳細な移行計画は `SWIFT_VM_DESIGN.md` のインタプリタループ方針（Section 5）を参照。
+詳細は `Documentations/SWIFT_VM_DESIGN.md` のインタプリタループ方針（Section 5）を参照。なお、フラット bytecode への移行はフェーズ 1.5 として完了済み。
 
 #### `malloc` の提供元
 

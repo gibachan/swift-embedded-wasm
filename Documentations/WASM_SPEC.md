@@ -36,12 +36,19 @@
 - 制御フロー: `if` / `block` / `loop` / `br` / `br_if`
 - `i64`（必要になったタイミングで）
 
+### 実装済み（Phase 4 で追加）
+
+- `f32` — `f32.const` および算術・比較・単項演算命令（`add` / `sub` / `mul` / `div` / `min` / `max` / `sqrt` / `abs` / `neg` / `ceil` / `floor` / `trunc` / `nearest` / `copysign` / 比較 6 種）
+- `f64` — `f64.const` および値の表現（ランタイム上の `Value.f64(Double)`）。算術演算は未実装
+- `call_indirect` — 複数テーブルのサポートを含む。型チェック（result 型含む）を実装済み
+- `memory.grow`
+- Global 変数（`global.get` / `global.set`）。init 式で `i64.const` / `f64.const` をサポート済み
+
 ### 後回し（MVP に含まれるが急がない）
 
-- `f32` / `f64`（浮動小数点 — GPIO 制御には不要）
-- `call_indirect`（テーブル経由の間接呼び出し）
-- `memory.grow` / `memory.size`
-- Global 変数
+- `f64` 算術命令（`f64.add` / `f64.sub` / `f64.mul` / `f64.div` など — `f64.const` は動作するが演算命令は未実装）
+- 型変換命令（`i32.trunc_f32_s`、`f64.promote_f32`、`i32.reinterpret_f32` など）
+- `memory.size`
 
 ### 対象外
 

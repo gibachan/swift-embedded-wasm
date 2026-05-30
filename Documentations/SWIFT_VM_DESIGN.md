@@ -1,7 +1,7 @@
 # Swift Wasm VM 設計方針
 
 本ドキュメントは、Swift で Wasm VM を実装するにあたっての設計方針をまとめる。
-wasm3 の調査結果（`docs/PHASE2_WASM3.md`）を踏まえ、Swift の言語機能を活かしながら
+wasm3 の調査結果（`Documentations/PHASE2_WASM3.md`）を踏まえ、Swift の言語機能を活かしながら
 組み込み制約にも対応できる設計を定義する。
 
 ---
@@ -22,7 +22,7 @@ macOS ビルド（開発・デバッグ用）と Pico ビルド（組み込み�
 両者で共通のコアを保ちながら、制約の厳しい部分だけを分岐させる。
 
 ### 原則 4: Incremental に動くものを作る
-1 命令ずつ確認できる粒度で実装を進める（`docs/OVERVIEW.md` の方針に従う）。
+1 命令ずつ確認できる粒度で実装を進める（`Documentations/OVERVIEW.md` の方針に従う）。
 
 ---
 
@@ -63,8 +63,11 @@ macOS ビルド（開発・デバッグ用）と Pico ビルド（組み込み�
 wasm3 は `union { i32; i64; f32; f64 } + u8 type` で値を保持し、型の不一致はランタイムエラー。
 Swift では associated value 付き enum で型安全に表現する。
 
+実装では `Value`（ランタイム値）と `ValueType`（型コード）に分けている。
+
 ```swift
-enum WasmValue {
+// ランタイム上の値 (WasmModule.swift: enum Value)
+enum Value: Sendable, Equatable {
     case i32(Int32)
     case i64(Int64)
     case f32(Float)
@@ -75,7 +78,8 @@ enum WasmValue {
 ### 3.2 Wasm 型
 
 ```swift
-enum WasmType: UInt8 {
+// 型コード (WasmModule.swift: enum ValueType)
+enum ValueType: UInt8 {
     case i32 = 0x7F
     case i64 = 0x7E
     case f32 = 0x7D
@@ -86,9 +90,10 @@ enum WasmType: UInt8 {
 ### 3.3 関数シグネチャ
 
 ```swift
-struct FuncType: Equatable {
-    let params: [WasmType]
-    let results: [WasmType]
+// 実装では FunctionType という名前 (WasmModule.swift)
+struct FunctionType: Sendable {
+    let params: [ValueType]
+    let results: [ValueType]
 }
 ```
 
@@ -97,28 +102,26 @@ struct FuncType: Equatable {
 wasm3 は `M3Result = const char*`（NULL が成功、非 NULL がエラーメッセージ）という設計。
 Swift では型安全な `Error` enum に分類する。
 
-```swift
-// パース・バリデーション時のエラー
-enum WasmFormatError: Error {
-    case invalidMagicNumber
-    case unsupportedVersion(UInt32)
-    case malformedSection(id: UInt8)
-    case misorderedSection
-    case typeMismatch(expected: WasmType, got: WasmType)
-    case indexOutOfRange(index: UInt32, count: UInt32)
-    case unknownOpcode(UInt8)
-}
+実装ではパース時エラーと実行時トラップを `WasmError` として統合している（`WasmError.swift`）。
 
-// 実行時のトラップ（Wasm 仕様で定義された実行中断）
-enum WasmTrap: Error {
-    case unreachable
-    case stackOverflow
-    case outOfBoundsMemoryAccess(offset: UInt64, size: UInt32, limit: Int)
-    case integerDivisionByZero
+```swift
+// パーサー・インタプリタ共通のエラー型 (WasmError.swift)
+enum WasmError: Error, Equatable, Sendable {
+    // Parser
+    case invalidMagic
+    case invalidVersion
+    case unexpectedEnd
+    case invalidInstruction(UInt8)
+    // Interpreter（トラップ相当）
+    case stackUnderflow
+    case typeMismatch
+    case memoryAccessOutOfBounds
+    case divisionByZero
     case integerOverflow
+    case unreachableReached
     case indirectCallTypeMismatch
-    case tableIndexOutOfRange
-    case callStackExhausted
+    case undefinedElement
+    // ...
 }
 ```
 
@@ -233,43 +236,40 @@ mutating func step() throws {
 }
 ```
 
-### フェーズ 1.5: Flat Bytecode への移行（Phase 5 前に必須）
+### フェーズ 1.5: Flat Bytecode への移行（完了）
 
-現在の実装では `block` / `loop` / `if` 命令が子命令を入れ子の配列として保持している。
+以前の実装では `block` / `loop` / `if` 命令が子命令を入れ子の配列として保持していた。
 
 ```swift
-indirect case block(BlockType, [Instruction])   // ← ヒープ確保（malloc 必要）
+// 旧実装（indirect case = ヒープ確保）
+indirect case block(BlockType, [Instruction])
 indirect case loop(BlockType, [Instruction])
 indirect case ifElse(BlockType, thenBody: [Instruction], elseBody: [Instruction])
 ```
 
 `indirect case` は Embedded Swift でも**コンパイルは通るがリンク時に `malloc` が要求される**。
-`malloc` のない純粋ベアメタル環境では動作しないため、Phase 5 移行前に対処が必要。
+`malloc` のない純粋ベアメタル環境では動作しないため、Phase 5 移行前に対処が必要であった。
 
-**解決策: Flat Bytecode + ジャンプオフセット**
+**採用した解決策: Flat Bytecode + ジャンプオフセット**（実装済み）
 
 子命令の入れ子を廃止し、全命令をフラットな配列に並べ、
-block/loop/if にはジャンプ先の PC を直接持たせる。
-パース時（またはインスタンス化時）にオフセットを計算して埋め込む。
+block/loop/if にはジャンプ先の PC を直接持たせる設計に移行した。
+パーサーがオフセットを計算して埋め込む。
 
 ```swift
-// Before: 入れ子ツリー（indirect case = ヒープ）
-indirect case block(BlockType, [Instruction])
-
-// After: フラット + オフセット（ヒープ不要）
-case block(BlockType, endPc: Int)       // endPc: block 出口の命令インデックス
-case loop(BlockType, startPc: Int)      // startPc: br 0 で戻る先（通常 loop 自身の次）
-case ifElse(BlockType, elsePc: Int, endPc: Int)  // elsePc: else の先頭、endPc: end の先頭
+// 現在の実装（ヒープ不要）
+case block(BlockType, Int)           // endPc: block 出口の命令インデックス
+case loop(BlockType, Int)            // startPc: br 0 で戻る先（loop の先頭）
+case ifElse(BlockType, Int, Int)     // elsePc, endPc
+case blockEnd                        // block/loop/if 本体の終端マーカー
+case jump(Int)                       // else 本体をスキップする無条件ジャンプ
 ```
 
 この設計の利点:
 - `indirect case` がなくなり、malloc 不要になる
-- 命令フェッチが `instructions[ip]` の単純アクセスになる（現在の多段ネスト解消）
+- 命令フェッチが `instructions[ip]` の単純アクセスになる
 - `br` / `br_if` のジャンプがオフセットの代入一発で完了する
 - CPython bytecode や JavaScriptCore が実際に採用している方式であり、学習価値も高い
-
-変更範囲: Parser（`WasmParser.swift`）でオフセットを計算しながらパースする処理、
-および Interpreter（`WasmInterpreter.swift`）のスコープスタック管理が不要になる。
 
 ### フェーズ 2: さらなる最適化（必要になった時点で）
 
@@ -329,47 +329,41 @@ let linearMemory = LinearMemory(staticSize: 65536)
 wasm3 はシグネチャ文字列 `"v(ii)"` でランタイム型チェック。
 Swift ではクロージャで登録し、コンパイル時に型を確認できる方向を目指す。
 
-### 基本設計
+### 基本設計方針
+
+上記は当初の設計案。実際の実装では、`class HostFunctionTable` は Embedded Swift 非準拠（`class` 禁止）のため採用せず、
+import 宣言の順序に合わせた配列でホスト関数を保持するシンプルな設計を採用している。
 
 ```swift
-struct HostFunction {
-    let module: String
-    let name: String
-    let type: FuncType
-    let body: ([WasmValue], inout LinearMemory) throws -> [WasmValue]
+// 実際の実装 (WasmInterpreter.swift)
+typealias HostFunction = ([Value], [UInt8]) -> [Value]
+
+enum HostImport {
+    case function(String, String, HostFunction)  // (module, name, body)
+    case memory(String, String, UInt32)           // (module, name, pages)
 }
 
-class HostFunctionTable {
-    private var table: [String: HostFunction] = [:]
-
-    func register(_ fn: HostFunction) {
-        table["\(fn.module).\(fn.name)"] = fn
-    }
-
-    func call(module: String, name: String,
-              args: [WasmValue], memory: inout LinearMemory) throws -> [WasmValue] {
-        guard let fn = table["\(module).\(name)"] else {
-            throw WasmFormatError.unknownOpcode(0) // TODO: 専用エラー
-        }
-        return try fn.body(args, &memory)
-    }
-}
+// WasmInterpreter.init() で hostImports を import 宣言順にマッチングし、配列として保持
 ```
+
+この設計の利点:
+- `class` を使わないため Embedded Swift 準拠
+- `Dictionary` (`[String: ...]`) の代わりに配列を使うことで動的ハッシュ計算を回避
+- モジュール名・関数名の比較は `elementsEqual` によるバイト列比較（`String ==` を回避）
 
 ### 初期 Host API（GPIO）
 
 ```swift
-let table = HostFunctionTable()
-
-table.register(HostFunction(
-    module: "env", name: "digitalWrite",
-    type: FuncType(params: [.i32, .i32], results: [])
-) { args, _ in
-    let pin = args[0].asI32!
-    let value = args[1].asI32!
-    GPIO.write(pin: UInt8(pin), value: value != 0)
-    return []
-})
+// WasmInterpreter に hostImports として渡す
+let hostImports: [HostImport] = [
+    .function("env", "digitalWrite") { args, _ in
+        let pin = args[0]
+        let value = args[1]
+        // GPIO.write(pin: ..., value: ...)
+        return []
+    }
+]
+let interpreter = try WasmInterpreter(module: module, hostImports: hostImports)
 ```
 
 ---
@@ -378,14 +372,15 @@ table.register(HostFunction(
 
 | 項目 | wasm3 (C) | 本プロジェクト (Swift) |
 |---|---|---|
-| エラー型 | `const char*`（NULL = 成功） | `enum WasmFormatError / WasmTrap: Error` |
-| 値の保持 | `union + u8 type` | `enum WasmValue` with associated value |
-| バリデーション | なし（スタブ） | macOS: フル / Pico: 構造チェックのみ |
-| Host Function 登録 | 文字列シグネチャ `"v(ii)"` | クロージャ（型は Swift 型システムで確認） |
-| Opcode ディスパッチ | Threaded Code（関数ポインタ + tail call） | switch ベース（フェーズ 1） |
-| メモリ管理 | 手動（`malloc` / `realloc`） | `deinit` / 固定バッファ（Pico） |
-| スレッド安全性 | なし | `actor` で分離（macOS のみ） |
-| 所有権 | `IM3Runtime*` などポインタで疑似管理 | `class` + ARC / value semantics |
+| エラー型 | `const char*`（NULL = 成功） | `enum WasmError: Error`（パーサー・インタプリタ統合） |
+| 値の保持 | `union + u8 type` | `enum Value` with associated value |
+| バリデーション | なし（スタブ） | macOS: フル（`WasmValidator`） / Pico: 省略 |
+| Host Function 登録 | 文字列シグネチャ `"v(ii)"` | `HostFunction` クロージャ配列（import 順で管理） |
+| Opcode ディスパッチ | Threaded Code（関数ポインタ + tail call） | `switch` on `Instruction` enum（フェーズ 1） |
+| 制御フロー表現 | ネストした関数呼び出し | フラット bytecode + ジャンプオフセット（フェーズ 1.5 完了） |
+| メモリ管理 | 手動（`malloc` / `realloc`） | `[UInt8]`（macOS）/ 固定バッファ（Pico 予定） |
+| スレッド安全性 | なし | シングルスレッド前提の `struct`（`actor` は Embedded 非対応のため見送り） |
+| 所有権 | `IM3Runtime*` などポインタで疑似管理 | `struct` + value semantics |
 
 ---
 
@@ -696,8 +691,8 @@ CLAUDE.md にある通り「Embedded Swift の理解を深める」はプロジ�
 
 | ドキュメント | 内容 |
 |---|---|
-| `docs/PHASE2_WASM3.md` | wasm3 ソースコード調査結果・Swift 転用ポイント |
-| `docs/PHASE3_PARSER.md` | バイナリパーサーの実装計画 |
-| `docs/PHASE4_INTERPRETER.md` | インタプリタの実装計画 |
-| `docs/WASM_SPEC.md` | Wasm 仕様の参照まとめ |
-| `docs/OVERVIEW.md` | プロジェクト全体方針・インクリメンタル開発方針 |
+| `Documentations/PHASE2_WASM3.md` | wasm3 ソースコード調査結果・Swift 転用ポイント |
+| `Documentations/PHASE3_PARSER.md` | バイナリパーサーの実装計画 |
+| `Documentations/PHASE4_INTERPRETER.md` | インタプリタの実装計画 |
+| `Documentations/WASM_SPEC.md` | Wasm 仕様の参照まとめ |
+| `Documentations/OVERVIEW.md` | プロジェクト全体方針・インクリメンタル開発方針 |

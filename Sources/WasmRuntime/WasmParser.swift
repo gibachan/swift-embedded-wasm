@@ -175,7 +175,7 @@ struct WasmParser {
   /// Global section (id=6): mutable/immutable global variable definitions
   ///
   /// Format: [count] ([valtype][mutability][init_expr])*
-  /// init_expr is a constant expression: i32.const <val> end (only i32 supported for now)
+  /// init_expr is a constant expression followed by end (0x0B).
   private mutating func parseGlobalSection() throws(WasmError) -> [GlobalDef] {
     let count = try readU32()
     var globals: [GlobalDef] = []
@@ -185,12 +185,13 @@ struct WasmParser {
       guard let mut = GlobalMutability(rawValue: mutByte) else {
         throw .invalidMutability(mutByte)
       }
-      // Constant init expression: i32.const or f32.const followed by end
       let opcode = try readByte()
       let initValue: Value
       switch opcode {
       case 0x41: initValue = .i32(try readI32())
+      case 0x42: initValue = .i64(try readI64())
       case 0x43: initValue = .f32(try readF32())
+      case 0x44: initValue = .f64(try readF64())
       default: throw .invalidInstruction(opcode)
       }
       let endOp = try readByte()
@@ -203,24 +204,44 @@ struct WasmParser {
 
   /// Element section (id=9): active table initialization segments
   ///
-  /// Only MVP format (flags=0) is supported: active, table 0, i32.const offset, function indices.
+  /// Supported flags:
+  ///   0 — active, table 0, i32.const offset, function indices (MVP)
+  ///   2 — active, explicit table index, i32.const offset, elemkind(0x00), function indices
   private mutating func parseElementSection() throws(WasmError) -> [ElementSegment] {
     let count = try readU32()
     var segments: [ElementSegment] = []
     for _ in 0..<count {
       let flags = try readU32()
-      guard flags == 0 else { throw .unsupportedElementSegment }
-
-      let constOp = try readByte()
-      guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
-      let offset = try readI32()
-      let endOp = try readByte()
-      guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
-
-      let funcCount = try readU32()
-      var funcIndices: [UInt32] = []
-      for _ in 0..<funcCount { funcIndices.append(try readU32()) }
-      segments.append(ElementSegment(tableIndex: 0, offset: offset, functionIndices: funcIndices))
+      switch flags {
+      case 0:
+        // MVP: active, table 0, i32.const offset, funcidx list
+        let constOp = try readByte()
+        guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
+        let offset = try readI32()
+        let endOp = try readByte()
+        guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
+        let funcCount = try readU32()
+        var funcIndices: [UInt32] = []
+        for _ in 0..<funcCount { funcIndices.append(try readU32()) }
+        segments.append(
+          ElementSegment(tableIndex: 0, offset: offset, functionIndices: funcIndices))
+      case 2:
+        // Active with explicit table index: table_idx, i32.const offset, elemkind(0x00), funcidx list
+        let tableIndex = try readU32()
+        let constOp = try readByte()
+        guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
+        let offset = try readI32()
+        let endOp = try readByte()
+        guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
+        _ = try readByte()  // elemkind: 0x00 = funcref (validated by the module's table type)
+        let funcCount = try readU32()
+        var funcIndices: [UInt32] = []
+        for _ in 0..<funcCount { funcIndices.append(try readU32()) }
+        segments.append(
+          ElementSegment(tableIndex: tableIndex, offset: offset, functionIndices: funcIndices))
+      default:
+        throw .unsupportedElementSegment
+      }
     }
     return segments
   }
@@ -497,9 +518,8 @@ struct WasmParser {
       case 0x43:  // f32.const (4 bytes, little-endian IEEE 754)
         instructions.append(.f32Const(try readF32()))
 
-      case 0x44:  // f64.const (8 bytes, little-endian IEEE 754) — not yet implemented
-        for _ in 0..<8 { _ = try readByte() }
-        instructions.append(.unimplemented(0x44))
+      case 0x44:  // f64.const (8 bytes, little-endian IEEE 754)
+        instructions.append(.f64Const(try readF64()))
 
       // f32 comparisons (return i32)
       case 0x5B: instructions.append(.f32Eq)
@@ -692,6 +712,23 @@ struct WasmParser {
     let b3 = UInt32(try readByte())
     let bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
     return Float(bitPattern: bits)
+  }
+
+  // Reads an 8-byte little-endian IEEE 754 double (used by f64.const)
+  @inline(__always)
+  private mutating func readF64() throws(WasmError) -> Double {
+    let b0 = UInt64(try readByte())
+    let b1 = UInt64(try readByte())
+    let b2 = UInt64(try readByte())
+    let b3 = UInt64(try readByte())
+    let b4 = UInt64(try readByte())
+    let b5 = UInt64(try readByte())
+    let b6 = UInt64(try readByte())
+    let b7 = UInt64(try readByte())
+    let bits =
+      b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) | (b4 << 32) | (b5 << 40) | (b6 << 48)
+      | (b7 << 56)
+    return Double(bitPattern: bits)
   }
 
   private mutating func readValueType() throws(WasmError) -> ValueType {

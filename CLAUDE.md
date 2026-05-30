@@ -1,4 +1,4 @@
-Read docs/OVERVIEW.md
+Read Documentations/OVERVIEW.md
 
 # Claude へのルール
 
@@ -46,14 +46,14 @@ git commit は必ずユーザーの許可を得てから行う。作業完了後
 
 ## VM 実装における設計方針
 
-WASM VM を実装する際は **`docs/SWIFT_VM_DESIGN.md` の設計方針に従う**こと。
+WASM VM を実装する際は **`Documentations/SWIFT_VM_DESIGN.md` の設計方針に従う**こと。
 型設計・エラー設計・インタプリタループ・Generics 採用方針・WasmKit との比較など、
 実装上の判断基準がすべてこのドキュメントにまとめられている。
 
 ## VM 実装における Embedded Swift 対応方針
 
 WASM VM の実装は、macOS 上での開発段階においても **Embedded Swift 環境でのビルドを常に意識した設計**とする。
-詳細な制約・パターン・理由については `docs/EMBEDDED_SWIFT.md` を参照すること。
+詳細な制約・パターン・理由については `Documentations/EMBEDDED_SWIFT.md` を参照すること。
 
 ### 実装時の必須チェック事項
 
@@ -67,15 +67,17 @@ WASM VM の実装は、macOS 上での開発段階においても **Embedded Swi
 ### macOS フェーズで許容するもの（Embedded フェーズで要置換）
 
 - `Array<T>` の動的確保（パース結果・スタック・ローカル変数の格納）
-- `indirect case`（block/loop/if 命令の子命令格納）
 
 これらは macOS フェーズでは正確さ優先で使用してよいが、コメントや設計上の区別を意識しておく。
+
+なお、`block` / `loop` / `if` 命令の子命令格納に用いていた `indirect case` は、
+フラット bytecode（ジャンプオフセット付き命令列）への移行により除去済み（フェーズ 1.5 完了）。
 
 ---
 
 ## Wasm3 調査から得た設計指針（Embedded Swift 向け）
 
-`docs/PHASE2_WASM3.md` の調査結果のうち、Embedded Swift インタプリタ実装に有効な点を以下にまとめる。
+`Documentations/PHASE2_WASM3.md` の調査結果のうち、Embedded Swift インタプリタ実装に有効な点を以下にまとめる。
 
 ### 採用する設計
 
