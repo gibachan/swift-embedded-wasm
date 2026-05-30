@@ -118,14 +118,24 @@ This project uses four sub-agents defined in `.claude/agents/`. They follow a st
 | `embedded-wasm-runtime-implementer` | Implements WASM Runtime components with Embedded Swift constraints in mind |
 | `wasm-embedded-researcher` | Researches reference implementations (wasm3, WasmKit) and Embedded Swift constraints when needed during implementation |
 | `wasm-runtime-reviewer` | Reviews implemented code for correctness, Embedded Swift compatibility, and design consistency |
+| `wasm-runtime-tester` | Verifies implementation changes by running the three test perspectives: `swift test`, `make compile`, and BLE example build |
 | `docs-sync-agent` | Updates documentation to reflect implementation changes after a task is complete |
+
+### Test Perspectives
+
+`wasm-runtime-tester` は以下の3つの観点でテストを実施する:
+
+1. **`swift test`（macOS ユニットテスト）** — ロジックが仕様通りに動作するかを検証する
+2. **`make compile`（Embedded Swift コンパイル検証）** — Embedded Swift の制約を満たしてコンパイルできるかを検証する（`.o` 生成、Pico SDK 不要）
+3. **BLE例 `make build`（Embedded Swift リンク検証）** — コンパイルに加えてリンクまで通るかを検証する（`Examples/RaspberryPiPicoW-BLE/Embedded/`、Pico SDK 必要）
 
 ### Workflow
 
 1. **Implement** — Launch `embedded-wasm-runtime-implementer` for the implementation task. If technical research is needed mid-implementation, it delegates to `wasm-embedded-researcher`.
-2. **Review** — After implementation, launch `wasm-runtime-reviewer` to review the changes.
-3. **Revise** — If the review identifies valid issues, launch `embedded-wasm-runtime-implementer` to address them, then re-run `wasm-runtime-reviewer`. Repeat until no further changes are needed.
-4. **Sync docs** — Once implementation is stable, launch `docs-sync-agent` to update affected documentation as needed.
+2. **Test** — After implementation, launch `wasm-runtime-tester` to verify the changes pass all three test perspectives.
+3. **Review** — Launch `wasm-runtime-reviewer` to review the changes.
+4. **Revise** — If the review identifies valid issues, launch `embedded-wasm-runtime-implementer` to address them, then re-run `wasm-runtime-tester` and `wasm-runtime-reviewer`. Repeat until no further changes are needed.
+5. **Sync docs** — Once implementation is stable, launch `docs-sync-agent` to update affected documentation as needed.
 
 ---
 
