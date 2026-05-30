@@ -202,10 +202,11 @@ struct WasmParser {
     return globals
   }
 
-  /// Element section (id=9): active table initialization segments
+  /// Element section (id=9): table initialization segments
   ///
   /// Supported flags:
   ///   0 — active, table 0, i32.const offset, function indices (MVP)
+  ///   1 — passive, elemkind(0x00), function indices
   ///   2 — active, explicit table index, i32.const offset, elemkind(0x00), function indices
   private mutating func parseElementSection() throws(WasmError) -> [ElementSegment] {
     let count = try readU32()
@@ -224,7 +225,18 @@ struct WasmParser {
         var funcIndices: [UInt32] = []
         for _ in 0..<funcCount { funcIndices.append(try readU32()) }
         segments.append(
-          ElementSegment(tableIndex: 0, offset: offset, functionIndices: funcIndices))
+          ElementSegment(
+            isPassive: false, tableIndex: 0, offset: offset, functionIndices: funcIndices))
+      case 1:
+        // Passive segment: elemkind byte (0x00 = funcref), then function index list.
+        // Not applied at instantiation; used by table.init / elem.drop at runtime.
+        let elemkind1 = try readByte()
+        guard elemkind1 == 0x00 else { throw .invalidValueType(elemkind1) }
+        let funcCount = try readU32()
+        var funcIndices: [UInt32] = []
+        for _ in 0..<funcCount { funcIndices.append(try readU32()) }
+        segments.append(
+          ElementSegment(isPassive: true, tableIndex: 0, offset: 0, functionIndices: funcIndices))
       case 2:
         // Active with explicit table index: table_idx, i32.const offset, elemkind(0x00), funcidx list
         let tableIndex = try readU32()
@@ -233,12 +245,14 @@ struct WasmParser {
         let offset = try readI32()
         let endOp = try readByte()
         guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
-        _ = try readByte()  // elemkind: 0x00 = funcref (validated by the module's table type)
+        let elemkind2 = try readByte()
+        guard elemkind2 == 0x00 else { throw .invalidValueType(elemkind2) }
         let funcCount = try readU32()
         var funcIndices: [UInt32] = []
         for _ in 0..<funcCount { funcIndices.append(try readU32()) }
         segments.append(
-          ElementSegment(tableIndex: tableIndex, offset: offset, functionIndices: funcIndices))
+          ElementSegment(
+            isPassive: false, tableIndex: tableIndex, offset: offset, functionIndices: funcIndices))
       default:
         throw .unsupportedElementSegment
       }
@@ -612,23 +626,22 @@ struct WasmParser {
           _ = try readByte()  // src memory index (always 0x00 in MVP)
           instructions.append(.memoryCopy)
         case 0x0B:
-          // memory.fill mem_idx
-          _ = try readByte()  // memory index
-          instructions.append(.unimplemented(0xFC))
+          // memory.fill dst val n: [dst: i32, val: i32, n: i32] → []
+          _ = try readByte()  // memory index (always 0x00 in MVP)
+          instructions.append(.memoryFill)
         case 0x0C:
-          // table.init elem_idx table_idx
-          _ = try readU32()  // element segment index
-          _ = try readU32()  // table index
-          instructions.append(.unimplemented(0xFC))
+          // table.init elem_idx table_idx: [dst: i32, src: i32, n: i32] → []
+          let elemIdx = try readU32()
+          let tableIdx = try readU32()
+          instructions.append(.tableInit(elemIdx, tableIdx))
         case 0x0D:
-          // elem.drop elem_idx
-          _ = try readU32()  // element segment index
-          instructions.append(.unimplemented(0xFC))
+          // elem.drop elem_idx: [] → []
+          instructions.append(.elemDrop(try readU32()))
         case 0x0E:
-          // table.copy dst_table src_table
-          _ = try readU32()  // destination table index
-          _ = try readU32()  // source table index
-          instructions.append(.unimplemented(0xFC))
+          // table.copy dst_table src_table: [dst: i32, src: i32, n: i32] → []
+          let dstTable = try readU32()
+          let srcTable = try readU32()
+          instructions.append(.tableCopy(dstTable, srcTable))
         case 0x0F:
           // table.grow table_idx
           _ = try readU32()  // table index

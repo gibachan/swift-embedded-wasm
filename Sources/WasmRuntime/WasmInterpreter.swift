@@ -123,6 +123,8 @@ struct WasmInterpreter {
   private var tables: [[UInt32?]]  // function tables: tables[tableIdx][elemIdx], nil = uninitialized
   // TODO: Embedded — replace with fixed-size buffer
   private var droppedDataSegments: [Bool]  // true = segment has been dropped via data.drop
+  // TODO: Embedded — replace with fixed-size buffer
+  private var droppedElementSegments: [Bool]  // true = segment has been dropped via elem.drop
 
   // MARK: - Init
 
@@ -155,8 +157,11 @@ struct WasmInterpreter {
     self.globals = module.globals.map { $0.initValue }
 
     // Build per-table arrays from the Table section; one entry per declared table.
+    // Only active segments are applied at instantiation; passive segments are skipped
+    // and remain available for use by table.init / elem.drop at runtime.
     var tbls: [[UInt32?]] = module.tables.map { [UInt32?](repeating: nil, count: Int($0.min)) }
     for seg in module.elements {
+      guard !seg.isPassive else { continue }  // passive segments are not applied at instantiation
       let ti = Int(seg.tableIndex)
       guard ti < tbls.count else { throw .memoryAccessOutOfBounds }
       let start = Int(seg.offset)
@@ -201,6 +206,14 @@ struct WasmInterpreter {
     self.memory = mem
     // TODO: Embedded — replace with fixed-size buffer
     self.droppedDataSegments = [Bool](repeating: false, count: module.data.count)
+    // TODO: Embedded — replace with fixed-size buffer
+    // Active element segments are treated as dropped after instantiation per Wasm spec §4.5.4.
+    // Only passive segments remain available for table.init at runtime.
+    var droppedElems = [Bool](repeating: false, count: module.elements.count)
+    for (i, seg) in module.elements.enumerated() {
+      if !seg.isPassive { droppedElems[i] = true }
+    }
+    self.droppedElementSegments = droppedElems
 
     // Wasm spec: the start function is called automatically at instantiation
     if let startIdx = module.start {
@@ -1621,6 +1634,109 @@ struct WasmInterpreter {
             for i in stride(from: copyCount - 1, through: 0, by: -1) {
               memory[dstOff + i] = memory[srcOff + i]
             }
+          }
+        }
+
+      case .memoryFill:
+        // memory.fill: [dst: i32, val: i32, n: i32] → []
+        //
+        // Fills n bytes of linear memory starting at dst with the low 8 bits of val.
+        //
+        // Bounds check is applied unconditionally (even when n == 0):
+        //   - dst + n > memory.count → trap
+        // This mirrors the Wasm spec §3.4.10 semantics.
+        guard valueStack.count >= 3 else { throw .stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let val) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let dst) = valueStack.removeLast() else { throw .typeMismatch }
+        let fillCount = Int(UInt32(bitPattern: n))
+        let dstOff = Int(UInt32(bitPattern: dst))
+        // Bounds check: applies unconditionally (n=0 with out-of-range dst still traps).
+        guard dstOff + fillCount <= memory.count else { throw .memoryAccessOutOfBounds }
+        if fillCount > 0 {
+          let byte = UInt8(UInt32(bitPattern: val) & 0xFF)
+          for i in 0..<fillCount { memory[dstOff + i] = byte }
+        }
+
+      case .tableInit(let elemIdx, let tableIdx):
+        // table.init e t: [dst: i32, src: i32, n: i32] → []
+        //
+        // Copies n funcref entries from element segment e (starting at src within the segment)
+        // into table t (starting at dst). Passive segments must not have been dropped.
+        //
+        // Trap conditions (checked unconditionally regardless of n):
+        //   - element segment index out of bounds
+        //   - table index out of bounds
+        //   - dropped segment: effective length is 0
+        //   - src + n > |segment|
+        //   - dst + n > |table|
+        guard valueStack.count >= 3 else { throw .stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let src) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let dst) = valueStack.removeLast() else { throw .typeMismatch }
+        let ei = Int(elemIdx)
+        let ti = Int(tableIdx)
+        guard ei < module.elements.count else { throw .undefinedElement }
+        guard ti < tables.count else { throw .undefinedElement }
+        let copyCount = Int(UInt32(bitPattern: n))
+        // A dropped element segment has effective length 0.
+        let elemLen = droppedElementSegments[ei] ? 0 : module.elements[ei].functionIndices.count
+        let srcOff = Int(UInt32(bitPattern: src))
+        let dstOff = Int(UInt32(bitPattern: dst))
+        // Bounds check: applies unconditionally (n=0 with out-of-range src/dst still traps).
+        guard srcOff + copyCount <= elemLen else { throw .undefinedElement }
+        guard dstOff + copyCount <= tables[ti].count else { throw .undefinedElement }
+        if copyCount > 0 {
+          let elems = module.elements[ei].functionIndices
+          for i in 0..<copyCount { tables[ti][dstOff + i] = elems[srcOff + i] }
+        }
+
+      case .elemDrop(let elemIdx):
+        // elem.drop x: [] → []
+        //
+        // Marks element segment x as dropped. Subsequent table.init from this segment
+        // treats it as having length 0. Dropping an already-dropped segment is idempotent.
+        let ei = Int(elemIdx)
+        guard ei < droppedElementSegments.count else { throw .undefinedElement }
+        droppedElementSegments[ei] = true
+
+      case .tableCopy(let dstTableIdx, let srcTableIdx):
+        // table.copy d s: [dst: i32, src: i32, n: i32] → []
+        //
+        // Copies n entries from table s (starting at src) into table d (starting at dst).
+        // Overlapping regions within the same table are handled safely (memmove semantics).
+        //
+        // Bounds check is applied unconditionally (even when n == 0):
+        //   - src + n > |table_s| → trap
+        //   - dst + n > |table_d| → trap
+        guard valueStack.count >= 3 else { throw .stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let src) = valueStack.removeLast() else { throw .typeMismatch }
+        guard case .i32(let dst) = valueStack.removeLast() else { throw .typeMismatch }
+        let di = Int(dstTableIdx)
+        let si = Int(srcTableIdx)
+        guard di < tables.count && si < tables.count else { throw .undefinedElement }
+        let copyCount = Int(UInt32(bitPattern: n))
+        let srcOff = Int(UInt32(bitPattern: src))
+        let dstOff = Int(UInt32(bitPattern: dst))
+        // Bounds check: applies unconditionally.
+        guard srcOff + copyCount <= tables[si].count else { throw .undefinedElement }
+        guard dstOff + copyCount <= tables[di].count else { throw .undefinedElement }
+        if copyCount > 0 {
+          if di == si {
+            // Same table: overlap-safe copy (memmove semantics).
+            // Copy forward when dst <= src or regions do not overlap;
+            // backward when dst > src and regions overlap.
+            if dstOff <= srcOff || dstOff >= srcOff + copyCount {
+              for i in 0..<copyCount { tables[di][dstOff + i] = tables[si][srcOff + i] }
+            } else {
+              for i in stride(from: copyCount - 1, through: 0, by: -1) {
+                tables[di][dstOff + i] = tables[si][srcOff + i]
+              }
+            }
+          } else {
+            // Different tables: no aliasing possible; always copy forward.
+            for i in 0..<copyCount { tables[di][dstOff + i] = tables[si][srcOff + i] }
           }
         }
 

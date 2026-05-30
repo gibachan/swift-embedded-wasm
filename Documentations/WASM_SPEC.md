@@ -55,10 +55,15 @@
   - `memory.grow`（0x40）
 - Global 変数（`global.get` / `global.set`）。init 式で `i64.const` / `f64.const` をサポート済み
 - テーブル参照命令（`table.get`（0x25）/ `table.set`（0x26））。`funcref` 型テーブルへの読み書きをサポート
-- Bulk Memory 命令（0xFC プレフィックス）
+- Bulk Memory 命令（0xFC プレフィックス）— メモリ操作
   - `memory.init`（0xFC 0x08）: passive data segment の内容を線形メモリにコピー
   - `data.drop`（0xFC 0x09）: data segment を解放済みとしてマーク
   - `memory.copy`（0xFC 0x0A）: 線形メモリ内コピー（オーバーラップ対応）
+  - `memory.fill`（0xFC 0x0B）: n バイトをバイト値 val で埋める
+- Bulk Table 命令（0xFC プレフィックス）— テーブル操作
+  - `table.init`（0xFC 0x0C）: passive element segment の内容をテーブルにコピー
+  - `elem.drop`（0xFC 0x0D）: element segment を解放済みとしてマーク
+  - `table.copy`（0xFC 0x0E）: テーブル内コピー（オーバーラップ対応）
 
 ### 後回し（MVP に含まれるが急がない）
 

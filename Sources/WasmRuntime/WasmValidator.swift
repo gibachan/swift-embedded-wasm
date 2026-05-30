@@ -396,6 +396,32 @@
         try popExpecting(.i32)  // src
         try popExpecting(.i32)  // dst
 
+      case .memoryFill:
+        // memory.fill: [dst: i32, val: i32, n: i32] → []
+        try popExpecting(.i32)  // n
+        try popExpecting(.i32)  // val
+        try popExpecting(.i32)  // dst
+
+      case .tableInit(let elemIdx, let tableIdx):
+        // table.init e t: [dst: i32, src: i32, n: i32] → []
+        guard Int(elemIdx) < module.elements.count else { throw .typeMismatch }
+        guard Int(tableIdx) < module.tables.count else { throw .typeMismatch }
+        try popExpecting(.i32)  // n
+        try popExpecting(.i32)  // src
+        try popExpecting(.i32)  // dst
+
+      case .elemDrop(let elemIdx):
+        // elem.drop x: [] → []
+        guard Int(elemIdx) < module.elements.count else { throw .typeMismatch }
+
+      case .tableCopy(let dstTableIdx, let srcTableIdx):
+        // table.copy d s: [dst: i32, src: i32, n: i32] → []
+        guard Int(dstTableIdx) < module.tables.count else { throw .typeMismatch }
+        guard Int(srcTableIdx) < module.tables.count else { throw .typeMismatch }
+        try popExpecting(.i32)  // n
+        try popExpecting(.i32)  // src
+        try popExpecting(.i32)  // dst
+
       // MARK: Table operations: table.get, table.set
 
       case .tableGet(let tableIdx):

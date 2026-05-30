@@ -48,3 +48,15 @@ metadata:
 19. **memory.copy overlap detection correctness**: The condition `dstOff <= srcOff || dstOff >= srcOff + copyCount` correctly handles both the non-overlapping case and the dst-before-src case. The backward copy path handles dst > src with overlap. This mirrors memmove semantics and is spec-correct.
 
 20. **memory.init n=0 spec behavior**: When n=0, the spec requires `src <= len(seg)` AND `dst <= len(mem)` (i.e., equality is allowed). The check `srcOff + 0 <= segBytes.count` correctly allows src == len(seg) without trapping. The code comment previously described this as "unconditional success" but the code is correct — it does the proper bounds check.
+
+21. **memory.fill n=0 spec behavior**: Same as pattern #20 — bounds check applies unconditionally. `dstOff + 0 <= memory.count` correctly allows dst == memory.count without trapping. Interpreter correctly uses `Int(UInt32(bitPattern:))` for all three operands, consistent with memoryCopy/memoryInit pattern.
+
+22. **table.init active segment dropping**: Active element segments are marked as dropped (`droppedElementSegments[i] = true`) during `init()` after being applied to tables, per Wasm spec §4.5.4. Passive segments remain `false` (available for table.init). Dropped segment acts as length-0 segment — any `srcOff + copyCount > 0` traps.
+
+23. **table.copy overlap handling**: When dst table == src table (di == si), copy direction follows memmove semantics: `dstOff <= srcOff || dstOff >= srcOff + copyCount` → forward; otherwise backward. When different tables, no aliasing is possible, always forward. This is spec-correct.
+
+24. **table.init/tableCopy error types**: These table bulk operations use `.undefinedElement` for all out-of-bounds conditions (matching the existing convention for table traps vs `.memoryAccessOutOfBounds` for memory). The spectest runner accepts any WasmError as a valid trap signal, so this is fine functionally.
+
+25. **droppedElementSegments parallel to droppedDataSegments**: Same `[Bool]` pattern, initialized to `false` for passive segments and `true` for active segments (post-instantiation). Consistent with existing data segment pattern. Flagged `[macOS-phase-OK, Embedded-TODO]` for fixed-size buffer replacement.
+
+26. **Passive element segment (flags=1) parser**: `_ = try readByte()` for elemkind silently consumes any byte. Per spec, flags=1 elemkind=0x00 means funcref. No guard on the value, same as the existing flags=2 case. Acceptable but leaves a potential correctness gap if non-funcref elemkind bytes appear.

@@ -193,19 +193,33 @@ struct GPIOPin {
   - `Value` enum に `.funcref(UInt32?)` ケースを追加（`nil` = null reference、`UInt32` = 関数インデックス）
   - `funcref` ローカル変数のデフォルト初期値は `nil`（Wasm 仕様準拠）
   - バリデータ (`WasmValidator`) での境界チェック・型チェックを実装済み
-- [x] Bulk Memory 命令（0xFC プレフィックス）
+- [x] Bulk Memory 命令（0xFC プレフィックス）— メモリ操作
   - `memory.init`（0xFC 0x08）: passive data segment の内容を線形メモリにコピー
     - n=0 の場合も境界チェックを適用（Wasm 仕様準拠）
     - dropped segment は長さ 0 として扱う（境界チェックは通す）
   - `data.drop`（0xFC 0x09）: data segment を解放済みとしてマーク（冪等）
   - `memory.copy`（0xFC 0x0A）: 線形メモリ内コピー（オーバーラップ対応、memmove 相当）
     - n=0 の場合も境界チェックを適用（Wasm 仕様準拠）
+  - `memory.fill`（0xFC 0x0B）: n バイトをバイト値 val で埋める（dst + n でも境界チェック適用）
   - `DataSegment.offset` を `Int32?` に変更（`nil` = passive、非 `nil` = active のメモリ書き込みオフセット）
   - インタプリタ init 時: active segments のみメモリに書き込み、passive はスキップ
   - `WasmInterpreter` に `droppedDataSegments: [Bool]` を追加して `data.drop` 状態を追跡
   - パーサー: Data セクションで flags=0（active）/ flags=1（passive）/ flags=2（active + explicit mem index）に対応
-  - バリデータ: `memoryInit` / `dataDrop` / `memoryCopy` のセグメント境界チェック・型チェックを実装
+  - バリデータ: `memoryInit` / `dataDrop` / `memoryCopy` / `memoryFill` のセグメント境界チェック・型チェックを実装
   - spectest: `memory_init` 240 pass / 0 skip / 0 fail（完全合格）
+- [x] Bulk Table 命令（0xFC プレフィックス）— テーブル操作
+  - `table.init`（0xFC 0x0C）: passive element segment の内容をテーブルにコピー
+    - n=0 の場合も境界チェックを適用（Wasm 仕様準拠）
+    - dropped segment は長さ 0 として扱う（境界チェックは通す）
+  - `elem.drop`（0xFC 0x0D）: element segment を解放済みとしてマーク（冪等）
+  - `table.copy`（0xFC 0x0E）: テーブル内コピー（オーバーラップ対応）
+    - n=0 の場合も境界チェックを適用（Wasm 仕様準拠）
+  - `ElementSegment` に `isPassive: Bool` を追加（`true` = passive、`false` = active）
+  - インタプリタ init 時: active element segments のみテーブルに書き込み、passive はスキップ
+  - active segment はインスタンス化完了後に dropped として扱う（Wasm 仕様 §4.5.4 準拠）
+  - `WasmInterpreter` に `droppedElementSegments: [Bool]` を追加して `elem.drop` 状態を追跡
+  - パーサー: Element セクションで flags=1（passive）を追加。flags=1 / flags=2 の elemkind バイト検証を実装
+  - バリデータ: `tableInit` / `elemDrop` / `tableCopy` のセグメント境界チェック・型チェックを実装
 
 ### 既知の未対応・TODO（Embedded フェーズ向け）
 

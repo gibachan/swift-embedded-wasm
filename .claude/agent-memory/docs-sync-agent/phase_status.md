@@ -26,14 +26,23 @@ As of 2026-05-30, the project is in Phase 4 (macOS development phase).
   - `ValueType` enum has `.funcref = 0x70` case
   - funcref locals default-initialized to nil (Wasm spec compliant)
   - Validator: bounds + type checking for table.get/table.set
-- Bulk Memory instructions (0xFC prefix):
+- Bulk Memory instructions (0xFC prefix) — memory ops:
   - `memory.init` (0xFC 0x08): copies passive data segment into linear memory; n=0 still bounds-checks; dropped segment treated as length 0
   - `data.drop` (0xFC 0x09): idempotent flag set; tracked by `droppedDataSegments: [Bool]` in WasmInterpreter
   - `memory.copy` (0xFC 0x0A): overlap-safe (memmove equivalent); n=0 still bounds-checks
+  - `memory.fill` (0xFC 0x0B): fills n bytes with val; n=0 still bounds-checks
   - `DataSegment.offset` changed to `Int32?` (nil = passive, non-nil = active write offset)
   - Parser: Data section flags 0/1/2 supported
-  - Validator: segment bounds and type checking for all three instructions
+  - Validator: segment bounds and type checking for all four instructions
   - spectest memory_init: 240 pass / 0 skip / 0 fail
+- Bulk Table instructions (0xFC prefix) — table ops:
+  - `table.init` (0xFC 0x0C): copies passive element segment into table; n=0 still bounds-checks; dropped segment treated as length 0
+  - `elem.drop` (0xFC 0x0D): idempotent flag set; tracked by `droppedElementSegments: [Bool]` in WasmInterpreter
+  - `table.copy` (0xFC 0x0E): overlap-safe table copy; n=0 still bounds-checks
+  - `ElementSegment.isPassive: Bool` added (true = passive, false = active)
+  - active element segments marked dropped after instantiation (Wasm spec §4.5.4)
+  - Parser: Element section flags=1 (passive) added; elemkind byte validation for flags=1 and flags=2
+  - Validator: segment bounds and type checking for tableInit / elemDrop / tableCopy
 - Linear memory with data segment initialization (active segments only applied at init)
 - Host function import via `HostImport` enum (array-based, not `class HostFunctionTable`)
 - Type-checking validator (`WasmValidator`) — macOS only
@@ -50,7 +59,7 @@ As of 2026-05-30, the project is in Phase 4 (macOS development phase).
 
 **Why:** Incremental implementation strategy — each instruction group is added when needed for Spectest coverage.
 
-**How to apply:** When updating WASM_SPEC.md or PHASE4_INTERPRETER.md, reflect this boundary: f64 arithmetic and bulk memory instructions (memory.init / data.drop / memory.copy) are now implemented. The main remaining unimplemented group is type conversion instructions.
+**How to apply:** When updating WASM_SPEC.md or PHASE4_INTERPRETER.md, reflect this boundary: f64 arithmetic, bulk memory instructions (memory.init / data.drop / memory.copy / memory.fill), and bulk table instructions (table.init / elem.drop / table.copy) are now implemented. The main remaining unimplemented group is type conversion instructions.
 
 [[project-architecture]]
 [[doc-cross-references]]

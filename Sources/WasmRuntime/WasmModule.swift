@@ -71,10 +71,15 @@ struct GlobalDef: Sendable {
 
 // MARK: - Element Segments
 
-/// An active element segment (flags=0) that initializes table entries at instantiation.
+/// An element segment from the Element section.
+///
+/// Active segments (isPassive == false) are applied to a table at instantiation time.
+/// Passive segments (isPassive == true) are not applied at instantiation; they remain
+/// available for use by `table.init` and can be invalidated by `elem.drop`.
 struct ElementSegment: Sendable {
-  let tableIndex: UInt32
-  let offset: Int32
+  let isPassive: Bool  // true = passive (no table/offset); false = active
+  let tableIndex: UInt32  // valid only when isPassive == false
+  let offset: Int32  // valid only when isPassive == false
   let functionIndices: [UInt32]
 }
 
@@ -273,6 +278,10 @@ enum Instruction: Sendable {
   case memoryInit(UInt32)  // 0xFC 0x08: data segment index
   case dataDrop(UInt32)  // 0xFC 0x09: data segment index
   case memoryCopy  // 0xFC 0x0A: dst_mem=0, src_mem=0 (MVP always uses memory 0)
+  case memoryFill  // 0xFC 0x0B: fills n bytes starting at dst with the low 8 bits of val
+  case tableInit(UInt32, UInt32)  // 0xFC 0x0C: elem_idx, table_idx
+  case elemDrop(UInt32)  // 0xFC 0x0D: elem_idx — marks element segment as dropped
+  case tableCopy(UInt32, UInt32)  // 0xFC 0x0E: dst_table_idx, src_table_idx
   // Parsed but not yet implemented; throws invalidInstruction at runtime.
   case unimplemented(UInt8)
 }

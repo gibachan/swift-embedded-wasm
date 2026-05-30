@@ -19,3 +19,5 @@ All items below are [macOS-phase-OK, Embedded-TODO] and should be tracked for Ph
 10. `var droppedDataSegments: [Bool]` — dynamic Array of Bools; replace with fixed-size bitfield or static array in Embedded phase
 11. `droppedDataSegments[si] ? [] : module.data[si].bytes` — creates empty `[UInt8]()` heap allocation for dropped segments; replace with explicit boolean check in hot path
 12. `Int(UInt32(bitPattern: ...))` for bulk memory address/count arithmetic — safe on 64-bit macOS; on 32-bit Embedded would overflow for values > Int32.max. Fix: use `UInt32` arithmetic with `addingReportingOverflow` for Phase 5
+13. `var droppedElementSegments: [Bool]` — dynamic Array of Bools parallel to droppedDataSegments; replace with fixed-size bitfield or static array in Embedded phase
+14. `Int(UInt32(bitPattern: ...))` used in memoryFill, tableInit, tableCopy, tableCopy — same 32-bit overflow risk as item #12 above. Consistent with existing bulk-memory pattern.
