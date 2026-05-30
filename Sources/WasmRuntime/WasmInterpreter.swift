@@ -216,8 +216,9 @@ struct WasmInterpreter {
     self.droppedDataSegments = [Bool](repeating: false, count: module.data.count)
     // TODO: Embedded — replace with fixed-size buffer
     // Active element segments are treated as dropped after instantiation per Wasm spec §4.5.4.
-    // Declarative segments (flags=3, 5, 7) are also pre-dropped — they exist only to make
+    // Declarative segments (flags=3, 7) are also pre-dropped — they exist only to make
     // ref.func instructions valid, and must never be accessible via table.init.
+    // flags=5 is passive (not declarative) and remains available for table.init.
     // Only true passive segments (isPassive==true, isDeclarative==false) remain available
     // for table.init at runtime.
     var droppedElems = [Bool](repeating: false, count: module.elements.count)

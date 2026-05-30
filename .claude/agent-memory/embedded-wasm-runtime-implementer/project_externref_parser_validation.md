@@ -55,16 +55,30 @@ metadata:
 - `convertValue`: added `case "externref"` 
 - `valueMatches`: added `case "externref"`
 
-### Test results
+### Test results (externref + initial parser validation)
 - `utf8-custom-section-id`: 176 pass (was 0 before)
 - `table_fill`: 45 pass, 0 skip (was ~67 skipped)
 - `table_get`: 16 pass, 0 skip
 - `table_set`: 26 pass, 0 skip
 - `table_grow`: 47 pass, 11 skip (64-bit tables still skip)
 - `binary-leb128`: 58 pass, 33 skip
-- `binary`: 96 pass, 31 skip
+- `binary`: 96 pass, 31 skip (before binary validation fixes)
 - Embedded Swift compile: passes
 
-**Why:** LEB128 canonical check needed for binary-leb128 spec tests; UTF-8 validation needed for utf8-custom-section-id; externref + [[Value]] table for table_fill/get/set/grow externref tests.
+### Binary parser validation fixes (subsequent commit)
+- Section ID validation: id > 12 → `malformedSectionId`
+- Section size mismatch → `sectionSizeMismatch`
+- Duplicate section → `duplicateSection`
+- Section out of order → `sectionOutOfOrder`
+- Data Count mismatch → `dataCountMismatch`
+- Data Count required → `dataCountRequired`
+- flags=5 element segment: corrected `isDeclarative: false` (it is passive, not declarative)
+- Element reftype byte validation for flags=5/6/7
 
-**How to apply:** When implementing future table/ref operations, remember tables store `Value` not `UInt32?`. The `callIndirect` pattern-matches `.funcref(let idx)` from the table slot.
+### Test results after binary validation fixes
+- `binary`: 127 pass / 0 skip / 0 fail (was 96 pass / 31 skip)
+- Total spectest: 23,547 pass / 79 skip / 0 fail
+
+**Why:** LEB128 canonical check needed for binary-leb128 spec tests; UTF-8 validation needed for utf8-custom-section-id; externref + [[Value]] table for table_fill/get/set/grow externref tests. Binary validation gaps caused 31 binary spec tests to skip; fixing section-level checks resolved them all.
+
+**How to apply:** When implementing future table/ref operations, remember tables store `Value` not `UInt32?`. The `callIndirect` pattern-matches `.funcref(let idx)` from the table slot. flags=5 element segment is passive (isDeclarative: false) — only flags=3 and flags=7 are declarative.

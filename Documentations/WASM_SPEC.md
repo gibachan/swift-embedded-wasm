@@ -68,17 +68,19 @@
   - `table.size`（0xFC 0x10）: テーブルの現在の要素数を i32 でプッシュ
   - `table.fill`（0xFC 0x11）: テーブル範囲を参照値で埋める
 - Element セクション flags 0–7（Wasm 2.0 エンコーディング）を全対応:
-  - active（flags=0/2/4/6）、passive（flags=1）、declarative（flags=3/5/7）の 3 種類を正しく区別
+  - active（flags=0/2/4/6）、passive（flags=1/5）、declarative（flags=3/7）の 3 種類を正しく区別
   - `ElementSegment` に `isDeclarative: Bool` フィールドを追加。declarative segment はインスタンス化時に即 dropped
   - 表現式ベースセグメント（flags=3/4/5/6/7）は `ref.null` / `ref.func` init 式から要素を構築
   - `functionIndices: [UInt32?]` の `nil` エントリが null 参照（`ref.null` から生成）を表す
 - 型変換命令（通常変換 0xA7–0xBF、Saturating truncation 0xFC 0x00–0x07）
   - 通常変換（opcode 0xA7–0xBF）: `i32.wrap_i64`、`i32.trunc_f32_s/u`、`i32.trunc_f64_s/u`、`i64.extend_i32_u`、`i64.trunc_f32_s/u`、`i64.trunc_f64_s/u`、`f32.convert_i32_s/u`、`f32.convert_i64_s/u`、`f32.demote_f64`、`f64.convert_i32_s/u`、`f64.convert_i64_s/u`、`f64.promote_f32`、`i32.reinterpret_f32`、`i64.reinterpret_f64`、`f32.reinterpret_i32`、`f64.reinterpret_i64`
   - Saturating truncation（0xFC 0x00–0x07）: `i32.trunc_sat_f32_s/u`、`i32.trunc_sat_f64_s/u`、`i64.trunc_sat_f32_s/u`、`i64.trunc_sat_f64_s/u`
-- 参照型命令
-  - `ref.null`（0xD0）: null funcref をプッシュ
-  - `ref.is_null`（0xD1）: [funcref] → [i32]（null なら 1、非 null なら 0）
+- 参照型命令と externref サポート
+  - `ref.null`（0xD0）: reftype バイトを読み取り、funcref → `.funcref(nil)`、externref → `.externref(nil)` をプッシュ
+  - `ref.is_null`（0xD1）: funcref または externref の null チェック → [i32]（null なら 1、非 null なら 0）
   - `ref.func x`（0xD2）: 関数インデックス x の funcref をプッシュ
+  - `ValueType.externref`（0x6F）: テーブル宣言・`ref.null` の reftype として使用可能
+  - `Value.externref(UInt32?)`：runtime 値として funcref と対称に扱う
 
 ### 対象外
 
@@ -129,6 +131,7 @@ Wasm 仕様はセクションの出現順を保証している。
 
 | Section | ID | 内容 |
 |---------|-----|------|
+| Custom  | 0  | 任意の名前付き拡張データ（セクション順序チェック対象外）|
 | Type    | 1  | 関数シグネチャの定義 |
 | Import  | 2  | 外部からインポートする関数・メモリ等 |
 | Function | 3 | 各関数が参照するシグネチャのインデックス |
@@ -140,6 +143,10 @@ Wasm 仕様はセクションの出現順を保証している。
 | Element | 9  | テーブルの初期値 |
 | Code    | 10 | 関数本体のバイトコード |
 | Data    | 11 | メモリの初期値 |
+| Data Count | 12 | bulk memory 命令（`memory.init` / `data.drop`）のためのデータセグメント数の先行宣言 |
+
+セクションは ID の昇順で出現することが保証されている（カスタムセクション ID=0 を除く）。
+同一 ID のセクションは 1 つまで（重複不可）。セクションの宣言サイズと実際の消費バイト数は一致しなければならない。
 
 ---
 

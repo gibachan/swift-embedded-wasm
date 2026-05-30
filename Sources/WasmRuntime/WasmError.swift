@@ -14,6 +14,12 @@ enum WasmError: Error, Equatable, Sendable {
   case invalidInstruction(UInt8)  // unknown opcode
   case leb128Error(LEB128Error)  // LEB128 decode failure
   case malformedUTF8  // invalid UTF-8 sequence in a name field (e.g. custom section name)
+  case malformedSectionId  // section id > 12 (not a known or custom section)
+  case sectionSizeMismatch  // declared section size does not match consumed byte count
+  case duplicateSection  // a known section (id 1-12) appears more than once
+  case sectionOutOfOrder  // sections appear in non-ascending id order (custom sections excepted)
+  case dataCountMismatch  // data count section value does not match the number of data segments
+  case dataCountRequired  // memory.init or data.drop used without a data count section
 
   // --- Interpreter ---
   case functionNotFound  // no export with the given name exists

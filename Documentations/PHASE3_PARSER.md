@@ -179,6 +179,38 @@ enum Instruction {
 
 ---
 
+## バイナリ検証（Wasm 仕様 §6.5 準拠）
+
+macOS フェーズでは、パーサーに仕様準拠のバイナリ整合性チェックを追加している。
+これらはパース時に検出されたフォーマット違反として `WasmError` を throw する。
+
+### 実装済み検証チェック
+
+| チェック | エラー | 条件 |
+|---------|------|------|
+| Section ID 上限 | `malformedSectionId` | section id > 12 |
+| Section サイズ整合性 | `sectionSizeMismatch` | 宣言サイズと実際の消費バイト数が不一致 |
+| セクション重複 | `duplicateSection` | 同一 ID（1–11）のセクションが 2 回以上出現 |
+| セクション出現順序 | `sectionOutOfOrder` | ID が昇順でない（カスタムセクション id=0 を除く）|
+| Data Count 整合性 | `dataCountMismatch` | Data Count section の値と Data セクションのセグメント数が不一致 |
+| Data Count 必須 | `dataCountRequired` | `memory.init` / `data.drop` が使われているのに Data Count section がない |
+
+### その他のパーサー検証（実装済み）
+
+- **カスタムセクション名の UTF-8 検証**: オーバーロング・サロゲート・範囲外バイトを検出 → `malformedUTF8`
+- **バイナリ末尾の余分なバイト検出**: 最終セクション後に残バイトがある場合 → `unexpectedContent`
+- **LEB128 標準形式チェック**: 終端バイトが冗長にゼロパディングされている場合 → `integerRepresentationTooLong`
+- **Element segment reftype 検証**: flags=5/6/7 の reftype バイトが funcref(0x70) / externref(0x6F) 以外の場合はエラー
+
+### spectest `[binary]` テスト結果
+
+| 時点 | pass | skip | fail |
+|------|------|------|------|
+| externref 実装後 | 96 | 31 | 0 |
+| バイナリ検証追加後 | 127 | 0 | 0 |
+
+---
+
 ## 成功基準（macOS フェーズ）
 
 - [x] `\0asm` マジックナンバーを検証できる
@@ -186,6 +218,7 @@ enum Instruction {
 - [x] Type / Function / Export / Import / Table / Memory / Global / Element / Data Section をパースして構造体に格納できる
 - [x] Code Section を `FunctionBody`（`[Instruction]` の展開済み配列）として保持できる
 - [x] 簡単な Wasm バイナリ（add 関数など）を解析して内容を出力できる
+- [x] Section ID / サイズ / 重複 / 順序 / Data Count の整合性チェックが仕様準拠で動作する（spectest `[binary]` 127 pass / 0 skip / 0 fail）
 
 ## 今後の課題（Embedded フェーズ）
 

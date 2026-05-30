@@ -98,3 +98,13 @@ metadata:
 44. **tableInit copies funcref indices as .funcref(optIdx)**: Element segments store `[UInt32?]` (funcref indices), and `tableInit` converts each to `.funcref(elems[srcOff + i])`. This is correct for funcref tables. For externref tables (hypothetical), the copy would incorrectly store `.funcref` values. Not a current bug since externref element segments are not parsed.
 
 45. **externref test coverage gap**: The `isSupportedType` in SpectestTests includes "externref", and `convertValue` / `valueMatches` handle externref. But current element segment parsing only supports funcref indices — externref element segments are not parseable, so spectest externref tests involving non-null externref values in tables will fail or skip at module load time.
+
+46. **flags=5 element segment misclassified as declarative** [RESOLVED]: Fixed — WasmParser.swift case 5 now uses `isDeclarative: false`. WasmInterpreter.swift comment updated to list only flags=3 and flags=7 as declarative. flags=5 (passive + init_expr list) is now correctly available to table.init at runtime.
+
+47. **Section-size mismatch check correctly excludes custom sections (id=0)**: `parseCustomSection(size:)` handles its own exact byte accounting internally (reads exactly `size` bytes). The outer `if id != 0` guard is correct asymmetry. Custom section overread is caught by `guard remaining >= 0` inside `parseCustomSection`.
+
+48. **`dataCountRequired` check scans parsed instruction arrays (not raw bytes)**: The post-parse scan for `memoryInit`/`dataDrop` in code bodies is correct and Embedded-safe (uses explicit for-loops, not closures). The `outerLoop:` labeled break avoids redundant full scans.
+
+49. **`default:` branch in section switch is dead code but harmless**: After the `id > 12` guard, all ids 0–12 are handled by named cases. The `default:` branch (which skips `size` bytes) is unreachable. Annotated with a comment; no functional issue.
+
+50. **Section ordering: `lastNonCustomSectionId` correctly allows non-consecutive ids**: The check `id < lastNonCustomSectionId → outOfOrder` and `id == lastNonCustomSectionId → duplicate` correctly implements ascending-with-gaps requirement. Custom sections (id=0) bypass this entirely.

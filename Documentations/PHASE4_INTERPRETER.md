@@ -220,7 +220,7 @@ struct GPIOPin {
     - spectest: `table_copy` 1728 pass / 0 skip / 0 fail（element segment flags 3–7 対応後に完全合格）
   - `ElementSegment` の 3 分類と対応フィールド（Wasm 仕様 §4.5.4 準拠）:
     - `isPassive: Bool`（`true` = passive または declarative、`false` = active）
-    - `isDeclarative: Bool`（`true` = declarative segment（flags=3/5/7））を追加
+    - `isDeclarative: Bool`（`true` = declarative segment（flags=3/7））を追加
     - `functionIndices: [UInt32?]`（`nil` エントリは null 参照を表す。表現式ベースセグメントで `ref.null` から生成）
   - Element segment の 3 種類の扱い:
     - **Active**: インスタンス化時にテーブルへ書き込み、完了後に dropped として扱う
@@ -232,7 +232,7 @@ struct GPIOPin {
     - flags=2: active, explicit table index, i32.const offset, elemkind(0x00), function index list
     - flags=3: declarative, elemkind(0x00), init_expr* list（`ref.func` / `ref.null` per element）
     - flags=4: active, table 0, i32.const offset, init_expr* list
-    - flags=5: declarative, reftype byte, init_expr* list
+    - flags=5: passive, reftype byte, init_expr* list
     - flags=6: active, explicit table index, offset expr, reftype byte, init_expr* list
     - flags=7: declarative, reftype byte, init_expr* list
   - `readFuncrefInitExpr()` ヘルパーを追加: `ref.null reftype 0x0B` → `nil`（null 参照）、`ref.func funcidx 0x0B` → `UInt32`
@@ -260,7 +260,7 @@ struct GPIOPin {
     - `i64.trunc_sat_f32_s`（0xFC 0x04）、`i64.trunc_sat_f32_u`（0xFC 0x05）
     - `i64.trunc_sat_f64_s`（0xFC 0x06）、`i64.trunc_sat_f64_u`（0xFC 0x07）
   - spectest: `conversions` 619 pass / 0 skip / 0 fail（完全合格）
-  - 全 spectest: 3587 件すべてパス
+  - 全 spectest（型変換命令実装時点）: 3587 pass（その後の追加実装で 23,547 pass / 79 skip / 0 fail に拡大）
 - [x] メモリ管理命令
   - `memory.size`（0x3F）: 現在のメモリページ数を i32 でプッシュ（1 ページ = 65536 バイト）
     - spectest: `memory_size` 42 pass（完全合格）
@@ -277,10 +277,30 @@ struct GPIOPin {
     - spectest: `table_fill` 9 pass
   - バリデータ: `tableGrow` / `tableSize` / `tableFill` の型チェック・境界チェックを実装
 - [x] 参照型命令
-  - `ref.null`（0xD0）: null funcref をプッシュ（funcref / externref バイトを受け入れるがどちらも `.funcref(nil)` として扱う）
-  - `ref.is_null`（0xD1）: スタックの funcref が null なら 1、そうでなければ 0 を i32 でプッシュ
+  - `ref.null`（0xD0）: reftype バイトを読み取り、funcref なら `.funcref(nil)`、externref なら `.externref(nil)` をプッシュ
+  - `ref.is_null`（0xD1）: funcref または externref のどちらでも null チェック（switch で両ケースを処理）
   - `ref.func x`（0xD2）: 関数インデックス x の funcref をプッシュ（範囲外なら `functionNotFound` トラップ）
   - バリデータ: `refNull` / `refIsNull` / `refFunc` の型チェック・境界チェックを実装
+- [x] externref 型サポート
+  - `ValueType` enum に `.externref = 0x6F` を追加
+  - `Value` enum に `.externref(UInt32?)` ケースを追加
+  - テーブルの型を `[[UInt32?]]` から `[[Value]]` に変更（funcref / externref の両型に対応）
+  - externref テーブルのスロットは `.externref(nil)` で初期化（funcref テーブルは `.funcref(nil)`）
+  - `Instruction.refNull(RefType)` に reftype を付加（以前は型情報なし）
+  - バリデータ: `tableGrow` / `tableFill` / `tableGet` / `tableSet` の elem 型をテーブル宣言の refType から決定
+  - spectest: `table_fill` / `table_get` / `table_set` の externref ケースに対応（skip 0 を達成）
+- [x] バイナリパーサー検証（Wasm 仕様 §6.5 準拠）
+  - Section ID 検証: id > 12 → `malformedSectionId` エラー
+  - Section サイズ整合性チェック: 宣言サイズと実際の消費バイト数の不一致 → `sectionSizeMismatch` エラー
+  - 非カスタムセクションの重複検出: 同一 ID（1–11）の再出現 → `duplicateSection` エラー
+  - セクション出現順序チェック: ID が非降順でない場合（カスタムセクション id=0 を除く）→ `sectionOutOfOrder` エラー
+  - Data Count section（id=12）整合性チェック:
+    - Data Count の値と Data セクションのセグメント数が不一致 → `dataCountMismatch` エラー
+    - `memory.init` / `data.drop` 命令を含むのに Data Count section が存在しない → `dataCountRequired` エラー
+  - flags=5 element segment の誤分類修正: `isDeclarative: false`（passive であり declarative ではない）
+  - element section の reftype バイト検証（flags=5/6/7 のパース時に reftype が funcref/externref であることを確認）
+  - spectest: `[binary]` 127 pass / 0 skip / 0 fail（修正前: 96 pass / 31 skip）
+  - 全 spectest: 23,547 pass / 79 skip / 0 fail
 
 ### 既知の未対応・TODO（Embedded フェーズ向け）
 

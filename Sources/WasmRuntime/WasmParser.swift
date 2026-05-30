@@ -28,10 +28,42 @@ struct WasmParser {
     var start: UInt32? = nil
     var elements: [ElementSegment] = []
     var data: [DataSegment] = []
+    // dataCount is the value from the optional Data Count section (id=12).
+    // When present it must equal the number of data segments in the Data section.
+    // It is also required when any bulk-memory instruction (memory.init / data.drop)
+    // appears in the code section.
+    var dataCount: UInt32? = nil
+
+    // Section ordering / duplicate detection.
+    // The Wasm spec requires non-custom sections to appear in ascending id order,
+    // each at most once. We track the highest non-custom id seen so far.
+    var lastNonCustomSectionId: UInt8 = 0
 
     while !stream.isExhausted {
       let id = try readByte()
       let size = try readU32()
+
+      // Record the stream offset before parsing the section content so we can
+      // verify that the parser consumed exactly `size` bytes (§5.5.2).
+      let sectionStart = stream.offset
+
+      // Section id validation and ordering / duplicate checks.
+      // Custom sections (id=0) may appear anywhere in any quantity.
+      // Data Count section (id=12) is valid; ids > 12 are malformed.
+      if id > 12 {
+        throw .malformedSectionId
+      }
+      if id != 0 {
+        // Non-custom section: must appear in strictly ascending order and only once.
+        if id < lastNonCustomSectionId {
+          throw .sectionOutOfOrder
+        }
+        if id == lastNonCustomSectionId {
+          throw .duplicateSection
+        }
+        lastNonCustomSectionId = id
+      }
+
       switch id {
       case 0: try parseCustomSection(size: Int(size))  // custom section: validate name UTF-8
       case 1: types = try parseTypeSection()
@@ -45,14 +77,51 @@ struct WasmParser {
       case 9: elements = try parseElementSection()
       case 10: code = try parseCodeSection()
       case 11: data = try parseDataSection()
+      case 12:
+        // Data Count section (§5.5.15): a single u32 that must equal the number of
+        // data segments in the Data section. Required when bulk-memory instructions
+        // (memory.init / data.drop) reference data segments.
+        dataCount = try readU32()
       default:
-        // Unknown sections (id > 12) are skipped by size (required by the Wasm spec for extensibility)
+        // Unreachable: id > 12 is rejected above; all ids 0-12 are handled.
         for _ in 0..<Int(size) { _ = try readByte() }
+      }
+
+      // Verify that the section parser consumed exactly `size` bytes (§5.5.2).
+      // Custom sections (id=0) manage their own byte consumption internally.
+      if id != 0 {
+        let consumed = stream.offset - sectionStart
+        guard consumed == Int(size) else { throw .sectionSizeMismatch }
       }
     }
 
-    // After the while loop stream.isExhausted is always true here, so no guard is needed.
-    // (The loop exits only when isExhausted, and every section consumes exactly `size` bytes.)
+    // Cross-section consistency checks performed after all sections are parsed.
+
+    // Data Count section vs actual data segment count must match (§5.5.15).
+    if let declared = dataCount {
+      guard declared == UInt32(data.count) else { throw .dataCountMismatch }
+    }
+
+    // If any bulk-memory instruction (memory.init or data.drop) is present in the
+    // code section, the Data Count section is required (§5.5.15, §A.2).
+    // Use explicit loops instead of nested closures to avoid heap-capturing closures
+    // that are not supported in Embedded Swift.
+    var hasBulkMemoryInstruction = false
+    outerLoop: for body in code {
+      for instr in body.instructions {
+        if case .memoryInit(_) = instr {
+          hasBulkMemoryInstruction = true
+          break outerLoop
+        }
+        if case .dataDrop(_) = instr {
+          hasBulkMemoryInstruction = true
+          break outerLoop
+        }
+      }
+    }
+    if hasBulkMemoryInstruction && dataCount == nil {
+      throw .dataCountRequired
+    }
 
     let module = WasmModule(
       types: types, imports: imports, functions: functions,
@@ -389,16 +458,17 @@ struct WasmParser {
             isPassive: false, isDeclarative: false, tableIndex: 0, offset: offset4,
             functionIndices: funcIndices))
       case 5:
-        // Declarative, reftype byte, init_expr* list.
-        // Like flags=3 but uses a reftype byte instead of elemkind(0x00).
-        // Per Wasm spec §4.5.4 declarative segments are pre-dropped at instantiation.
-        _ = try readByte()  // reftype byte (0x70 = funcref, 0x6F = externref)
+        // Passive (not declarative), reftype byte, init_expr* list.
+        // Like flags=1 but uses a reftype byte and init_expr per element instead of elemkind.
+        // Available to table.init at runtime (isDeclarative: false).
+        let refTypeByte5 = try readByte()
+        guard RefType(rawValue: refTypeByte5) != nil else { throw .invalidRefType(refTypeByte5) }
         let elemCount5 = try readU32()
         var funcIndices: [UInt32?] = []
         for _ in 0..<elemCount5 { funcIndices.append(try readFuncrefInitExpr()) }
         segments.append(
           ElementSegment(
-            isPassive: true, isDeclarative: true, tableIndex: 0, offset: 0,
+            isPassive: true, isDeclarative: false, tableIndex: 0, offset: 0,
             functionIndices: funcIndices))
       case 6:
         // Active, explicit table index, offset expr, reftype byte, init_expr* list.
@@ -408,7 +478,8 @@ struct WasmParser {
         let offset6 = try readI32()
         let endOp6 = try readByte()
         guard endOp6 == 0x0B else { throw .invalidInstruction(endOp6) }
-        _ = try readByte()  // reftype byte
+        let refTypeByte6 = try readByte()
+        guard RefType(rawValue: refTypeByte6) != nil else { throw .invalidRefType(refTypeByte6) }
         let elemCount6 = try readU32()
         var funcIndices: [UInt32?] = []
         for _ in 0..<elemCount6 { funcIndices.append(try readFuncrefInitExpr()) }
@@ -420,7 +491,8 @@ struct WasmParser {
         // Declarative, reftype byte, init_expr* list.
         // Like flags=3 but uses a reftype byte instead of elemkind(0x00).
         // Per Wasm spec §4.5.4 declarative segments are pre-dropped at instantiation.
-        _ = try readByte()  // reftype byte
+        let refTypeByte7 = try readByte()
+        guard RefType(rawValue: refTypeByte7) != nil else { throw .invalidRefType(refTypeByte7) }
         let elemCount7 = try readU32()
         var funcIndices: [UInt32?] = []
         for _ in 0..<elemCount7 { funcIndices.append(try readFuncrefInitExpr()) }

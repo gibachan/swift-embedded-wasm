@@ -48,7 +48,7 @@ As of 2026-05-31, the project is in Phase 4 (macOS development phase).
     - Active (isPassive=false): applied at instantiation, then dropped
     - Passive (isPassive=true, isDeclarative=false): available to table.init at runtime
     - Declarative (isPassive=true, isDeclarative=true): pre-dropped at instantiation; ref.func validity only
-  - `ElementSegment.isDeclarative: Bool` added (true for flags=3/5/7)
+  - `ElementSegment.isDeclarative: Bool` added (true for flags=3/7; flags=5 is passive — CORRECTED)
   - `ElementSegment.functionIndices: [UInt32?]` — nil entries represent null references (from ref.null init_expr)
   - Parser: Element section flags 0–7 (Wasm 2.0 encoding) fully supported:
     - flags=0: active, table 0, i32.const offset, function index list (MVP)
@@ -56,16 +56,33 @@ As of 2026-05-31, the project is in Phase 4 (macOS development phase).
     - flags=2: active, explicit table index, i32.const offset, elemkind(0x00), function index list
     - flags=3: declarative, elemkind(0x00), init_expr* list
     - flags=4: active, table 0, i32.const offset, init_expr* list
-    - flags=5: passive, reftype byte, init_expr* list
+    - flags=5: passive, reftype byte, init_expr* list  ← (correction: NOT declarative)
     - flags=6: active, explicit table index, offset expr, reftype byte, init_expr* list
     - flags=7: declarative, reftype byte, init_expr* list
   - `readFuncrefInitExpr()` helper added: ref.null → nil, ref.func funcidx → UInt32
   - Validator: segment bounds and type checking for tableInit / elemDrop / tableCopy / tableGrow / tableSize / tableFill
 - Reference type instructions:
-  - `ref.null` (0xD0): pushes null funcref; accepts funcref (0x70) or externref (0x6F) byte but both produce `.funcref(nil)`
-  - `ref.is_null` (0xD1): [funcref] → [i32]; 1 if null, 0 if non-null
+  - `ref.null` (0xD0): reads reftype byte; pushes `.funcref(nil)` for funcref (0x70) or `.externref(nil)` for externref (0x6F)
+  - `ref.is_null` (0xD1): handles both `.funcref` and `.externref` via switch; [funcref|externref] → [i32]
   - `ref.func x` (0xD2): pushes funcref for function index x; bounds-checked against total function count
   - Validator: type checking for refNull / refIsNull / refFunc
+- externref type support:
+  - `ValueType.externref = 0x6F` added
+  - `Value.externref(UInt32?)` case added
+  - Tables changed from `[[UInt32?]]` to `[[Value]]` (supports both funcref and externref tables)
+  - `Instruction.refNull(RefType)` carries reftype (was untyped)
+  - spectest: table_fill / table_get / table_set externref cases now pass (0 skip)
+- Binary parser validation (Wasm spec §6.5):
+  - Section ID validation: id > 12 → `malformedSectionId`
+  - Section size integrity: declared size vs consumed bytes mismatch → `sectionSizeMismatch`
+  - Duplicate section detection (id 1–11) → `duplicateSection`
+  - Section order enforcement (non-ascending id, custom sections excepted) → `sectionOutOfOrder`
+  - Data Count section (id=12) consistency: value vs data segment count mismatch → `dataCountMismatch`
+  - Data Count required when memory.init / data.drop present → `dataCountRequired`
+  - flags=5 element segment: corrected to passive (isDeclarative: false), was incorrectly labeled declarative
+  - Element section reftype byte validation for flags=5/6/7
+  - spectest [binary]: 127 pass / 0 skip / 0 fail (was 96 pass / 31 skip)
+  - Total spectest: 23,547 pass / 79 skip / 0 fail
 - Spectest cross-module linking (register command):
   - `ConformanceRunner.registeredModules: [String: WasmInterpreter]` added
   - `handleRegister` stores current/named module under asName
@@ -80,7 +97,7 @@ As of 2026-05-31, the project is in Phase 4 (macOS development phase).
   - Regular: i32.wrap_i64, i32.trunc_f32_s/u, i32.trunc_f64_s/u, i64.extend_i32_u, i64.trunc_f32_s/u, i64.trunc_f64_s/u, f32.convert_i32_s/u, f32.convert_i64_s/u, f32.demote_f64, f64.convert_i32_s/u, f64.convert_i64_s/u, f64.promote_f32, i32.reinterpret_f32, i64.reinterpret_f64, f32.reinterpret_i32, f64.reinterpret_i64
   - Saturating: i32.trunc_sat_f32_s/u, i32.trunc_sat_f64_s/u, i64.trunc_sat_f32_s/u, i64.trunc_sat_f64_s/u
   - spectest conversions: 619 pass / 0 skip / 0 fail
-  - All spectest (as of conversion instructions commit): 3587 pass total
+  - All spectest (as of conversion instructions commit): 3587 pass total (total now 23,547 pass / 79 skip / 0 fail)
 
 **Known issues / Embedded-phase TODOs:**
 - 32-bit address calculation: `let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)` is unsafe on 32-bit targets where `Int` is 32 bits wide; needs `UInt64` intermediate on Embedded phase
@@ -90,7 +107,7 @@ As of 2026-05-31, the project is in Phase 4 (macOS development phase).
 
 **Why:** Incremental implementation strategy — each instruction group is added when needed for Spectest coverage.
 
-**How to apply:** When updating WASM_SPEC.md or PHASE4_INTERPRETER.md, reflect: element segment flags 0–7 are fully supported; declarative segments (isDeclarative=true) are pre-dropped per spec §4.5.4; funcref global init expressions (ref.null/ref.func) are supported; spectest register command is implemented in SpectestTests.swift for value-copy cross-module function imports. The main remaining work is the Embedded phase migration.
+**How to apply:** When updating WASM_SPEC.md or PHASE4_INTERPRETER.md, reflect: element segment flags 0–7 are fully supported; flags=5 is passive (isDeclarative: false), not declarative; declarative segments are flags=3/7 (elemkind) and flags=7 (reftype); externref is fully supported alongside funcref; tables store `Value` not `UInt32?`; binary parser validation (section ID/size/order/duplicate/dataCount) is fully implemented per spec §6.5; spectest [binary] achieves 127 pass / 0 skip. Total spectest: 23,547 pass / 79 skip / 0 fail. The main remaining work is the Embedded phase migration.
 
 [[project-architecture]]
 [[doc-cross-references]]

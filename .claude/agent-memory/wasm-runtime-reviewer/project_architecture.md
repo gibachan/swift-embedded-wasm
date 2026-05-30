@@ -17,3 +17,6 @@ metadata:
 - HostFunction type: `typealias HostFunction = ([Value], [UInt8]) -> [Value]` — [macOS-phase-OK, Embedded-TODO] heap closure
 - Value enum: now includes `.externref(UInt32?)` alongside `.funcref(UInt32?)`; both use nil=null encoding
 - WasmError: added `.malformedUTF8` and `.unexpectedContent`; `unexpectedContent` guard after parse() loop is dead code (loop exits only when stream is exhausted)
+- WasmError: added `.malformedSectionId`, `.sectionSizeMismatch`, `.duplicateSection`, `.sectionOutOfOrder`, `.dataCountMismatch`, `.dataCountRequired` (binary validation gaps patch)
+- Section validation: `lastNonCustomSectionId: UInt8` tracks ordering in parse() loop; custom sections (id=0) exempt; size check on all non-custom sections via `stream.offset - sectionStart`
+- ElementSegment.isDeclarative: flag distinguishes passive (table.init-accessible) from declarative (pre-dropped). Interpreter pre-drops on `!seg.isPassive || seg.isDeclarative`. flags=5 is passive (isDeclarative: false) — FIXED. Only flags=3 and flags=7 are declarative.
