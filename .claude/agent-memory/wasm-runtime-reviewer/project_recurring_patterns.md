@@ -24,3 +24,9 @@ metadata:
 7. **elementsEqual vs. String ==**: All export/import name matching uses `.elementsEqual(x.utf8)` — correct Embedded Swift pattern already in place.
 
 8. **Typed throws throughout**: All public functions use `throws(WasmError)` — consistent with Embedded Swift constraints.
+
+9. **Memory effective address (ea) computation**: Formula is `Int(UInt32(bitPattern: addr)) &+ Int(offset)` where both inputs are u32-ranged. On 64-bit hosts `ea` is always non-negative so `ea >= 0` is vacuously true. On 32-bit Embedded targets, `&+` wraps silently if addr+offset > 0xFFFF_FFFF; the `ea >= 0` guard does not catch this wraparound. The correct fix is to compute in u64 or compare unsigned: `let ea64 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset); guard ea64 + N <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }`.
+
+10. **Validator store pop order**: Validator pops value first then address (matching interpreter's removeLast() order for a stack). The Wasm spec push order is [addr, value] (addr pushed first, value on top), so removeLast() gives value first — this is correct and consistent between validator and interpreter.
+
+11. **wasmF64Min/Max NaN propagation**: The helpers check `a.isNaN || b.isNaN` and return `.nan`. Per Wasm spec, either operand being NaN causes the result to be a canonical NaN (not the arithmetic NaN). Swift's `.nan` is the canonical quiet NaN, so this is correct for spec purposes even though NaN payloads are not preserved by this path.

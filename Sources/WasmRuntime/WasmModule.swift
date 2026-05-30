@@ -178,6 +178,29 @@ enum Instruction: Sendable {
   case f32Min  // 0x96
   case f32Max  // 0x97
   case f32Copysign  // 0x98
+  // f64 comparisons (return i32)
+  case f64Eq  // 0x61
+  case f64Ne  // 0x62
+  case f64Lt  // 0x63
+  case f64Gt  // 0x64
+  case f64Le  // 0x65
+  case f64Ge  // 0x66
+  // f64 unary
+  case f64Abs  // 0x99
+  case f64Neg  // 0x9A
+  case f64Ceil  // 0x9B
+  case f64Floor  // 0x9C
+  case f64Trunc  // 0x9D
+  case f64Nearest  // 0x9E
+  case f64Sqrt  // 0x9F
+  // f64 binary arithmetic
+  case f64Add  // 0xA0
+  case f64Sub  // 0xA1
+  case f64Mul  // 0xA2
+  case f64Div  // 0xA3
+  case f64Min  // 0xA4
+  case f64Max  // 0xA5
+  case f64Copysign  // 0xA6
   // i64 unary
   case i64Eqz  // 0x50
   case i64Clz  // 0x79
@@ -216,9 +239,31 @@ enum Instruction: Sendable {
   case i64Rotr  // 0x8A
   // conversions
   case i64ExtendI32S  // 0xAC: sign-extend i32 to i64
-  // memory
+  // memory loads
   case i32Load(UInt32, UInt32)  // 0x28: align, offset
+  case i64Load(UInt32, UInt32)  // 0x29: align, offset
+  case f32Load(UInt32, UInt32)  // 0x2A: align, offset
+  case f64Load(UInt32, UInt32)  // 0x2B: align, offset
+  case i32Load8S(UInt32, UInt32)  // 0x2C: align, offset
+  case i32Load8U(UInt32, UInt32)  // 0x2D: align, offset
+  case i32Load16S(UInt32, UInt32)  // 0x2E: align, offset
+  case i32Load16U(UInt32, UInt32)  // 0x2F: align, offset
+  case i64Load8S(UInt32, UInt32)  // 0x30: align, offset
+  case i64Load8U(UInt32, UInt32)  // 0x31: align, offset
+  case i64Load16S(UInt32, UInt32)  // 0x32: align, offset
+  case i64Load16U(UInt32, UInt32)  // 0x33: align, offset
+  case i64Load32S(UInt32, UInt32)  // 0x34: align, offset
+  case i64Load32U(UInt32, UInt32)  // 0x35: align, offset
+  // memory stores
   case i32Store(UInt32, UInt32)  // 0x36: align, offset
+  case i64Store(UInt32, UInt32)  // 0x37: align, offset
+  case f32Store(UInt32, UInt32)  // 0x38: align, offset
+  case f64Store(UInt32, UInt32)  // 0x39: align, offset
+  case i32Store8(UInt32, UInt32)  // 0x3A: align, offset
+  case i32Store16(UInt32, UInt32)  // 0x3B: align, offset
+  case i64Store8(UInt32, UInt32)  // 0x3C: align, offset
+  case i64Store16(UInt32, UInt32)  // 0x3D: align, offset
+  case i64Store32(UInt32, UInt32)  // 0x3E: align, offset
   case memoryGrow  // 0x40
   // Parsed but not yet implemented; throws invalidInstruction at runtime.
   case unimplemented(UInt8)

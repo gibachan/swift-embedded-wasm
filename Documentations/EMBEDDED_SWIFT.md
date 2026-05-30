@@ -365,6 +365,26 @@ Embedded Swift では型のメモリレイアウトが固定されているこ�
 
 Pico のデフォルトスタックサイズは数 KB 程度。再帰呼び出しや大きなスタック変数は避ける。
 
+### メモリアクセスの実効アドレス計算（32 ビット環境向け TODO）
+
+Wasm の load/store 命令における実効アドレスは `addr + offset` で求まる（どちらも符号なし 32 ビット）。
+macOS（64 ビット）では `Int` が 64 ビット幅のため現在の実装で問題は生じないが、
+32 ビットターゲット（Pico / RP2350）では `Int` が 32 ビット幅になり、
+加算がオーバーフローして誤ったアドレスを参照する可能性がある。
+
+```swift
+// 現在の実装（macOS では動作するが 32 ビットターゲットでは危険）
+let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
+
+// Embedded フェーズで必要な修正（UInt64 中間計算でオーバーフローを防ぐ）
+let ea64 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+guard ea64 + UInt64(accessWidth) <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+let ea = Int(ea64)
+```
+
+この修正は Embedded フェーズ（Phase 5〜）で実施する。
+macOS フェーズでは既存の実装のまま動作する。
+
 ---
 
 ## 5. デバッグ

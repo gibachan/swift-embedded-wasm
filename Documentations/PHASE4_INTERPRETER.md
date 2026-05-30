@@ -171,9 +171,25 @@ struct GPIOPin {
 
 - [x] `i64` 全算術・比較・ビット演算命令（`i64.add` / `i64.sub` / `i64.mul` / `i64.div_s` / ... など）
 - [x] `f32` 算術・比較・単項演算命令（`f32.add` / `f32.sqrt` / `f32.le` など）
-- [x] `f64.const`（`Value.f64(Double)` として表現）
+- [x] `f64` 算術・比較・単項演算命令の全セット
+  - 比較 6 種（0x61–0x66）: `f64.eq` / `f64.ne` / `f64.lt` / `f64.gt` / `f64.le` / `f64.ge` → `i32`
+  - 単項 7 種（0x99–0x9F）: `f64.abs` / `f64.neg` / `f64.ceil` / `f64.floor` / `f64.trunc` / `f64.nearest` / `f64.sqrt` → `f64`
+  - 二項算術 7 種（0xA0–0xA6）: `f64.add` / `f64.sub` / `f64.mul` / `f64.div` / `f64.min` / `f64.max` / `f64.copysign` → `f64`
 - [x] `call_indirect`（複数テーブルサポート、result 型チェック含む）
 - [x] Global 変数（`global.get` / `global.set`）
 - [x] フラット bytecode への移行（`block` / `loop` / `if` が `indirect case` を使わずジャンプオフセットで管理）
-- [x] `memory.grow`
+- [x] メモリ命令（全 load/store 命令）
+  - `i32.load`（0x28）、`i64.load`（0x29）、`f32.load`（0x2A）、`f64.load`（0x2B）
+  - `i32.load8_s`（0x2C）、`i32.load8_u`（0x2D）、`i32.load16_s`（0x2E）、`i32.load16_u`（0x2F）
+  - `i64.load8_s`（0x30）、`i64.load8_u`（0x31）、`i64.load16_s`（0x32）、`i64.load16_u`（0x33）
+  - `i64.load32_s`（0x34）、`i64.load32_u`（0x35）
+  - `i32.store`（0x36）、`i64.store`（0x37）、`f32.store`（0x38）、`f64.store`（0x39）
+  - `i32.store8`（0x3A）、`i32.store16`（0x3B）
+  - `i64.store8`（0x3C）、`i64.store16`（0x3D）、`i64.store32`（0x3E）
+  - `memory.grow`（0x40）
 - [x] `i64.extend_i32_s`（型変換命令の一部）
+
+### 既知の未対応・TODO（Embedded フェーズ向け）
+
+- `memory.size`（0x3F）: パース時に `invalidInstruction` を送出する既知の問題あり（`unimplemented` に変更すべき）
+- 32 ビットターゲットでの実効アドレス計算: 現在 `let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)` と記述しているが、32 ビット環境では `Int` が 32 ビット幅のため、加算がオーバーフローする可能性がある。Embedded フェーズでは `UInt64` 中間計算に変更が必要（詳細は `Documentations/EMBEDDED_SWIFT.md` の「メモリアクセスの実効アドレス計算」を参照）

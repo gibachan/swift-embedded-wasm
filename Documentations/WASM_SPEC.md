@@ -39,16 +39,26 @@
 ### 実装済み（Phase 4 で追加）
 
 - `f32` — `f32.const` および算術・比較・単項演算命令（`add` / `sub` / `mul` / `div` / `min` / `max` / `sqrt` / `abs` / `neg` / `ceil` / `floor` / `trunc` / `nearest` / `copysign` / 比較 6 種）
-- `f64` — `f64.const` および値の表現（ランタイム上の `Value.f64(Double)`）。算術演算は未実装
+- `f64` — `f64.const` および算術・比較・単項演算命令の全セット
+  - 比較 6 種（0x61–0x66）: `f64.eq` / `f64.ne` / `f64.lt` / `f64.gt` / `f64.le` / `f64.ge` → `i32`
+  - 単項 7 種（0x99–0x9F）: `f64.abs` / `f64.neg` / `f64.ceil` / `f64.floor` / `f64.trunc` / `f64.nearest` / `f64.sqrt` → `f64`
+  - 二項算術 7 種（0xA0–0xA6）: `f64.add` / `f64.sub` / `f64.mul` / `f64.div` / `f64.min` / `f64.max` / `f64.copysign` → `f64`
 - `call_indirect` — 複数テーブルのサポートを含む。型チェック（result 型含む）を実装済み
-- `memory.grow`
+- メモリ命令（全 load/store 命令）
+  - `i32.load`（0x28）、`i64.load`（0x29）、`f32.load`（0x2A）、`f64.load`（0x2B）
+  - `i32.load8_s`（0x2C）、`i32.load8_u`（0x2D）、`i32.load16_s`（0x2E）、`i32.load16_u`（0x2F）
+  - `i64.load8_s`（0x30）、`i64.load8_u`（0x31）、`i64.load16_s`（0x32）、`i64.load16_u`（0x33）
+  - `i64.load32_s`（0x34）、`i64.load32_u`（0x35）
+  - `i32.store`（0x36）、`i64.store`（0x37）、`f32.store`（0x38）、`f64.store`（0x39）
+  - `i32.store8`（0x3A）、`i32.store16`（0x3B）
+  - `i64.store8`（0x3C）、`i64.store16`（0x3D）、`i64.store32`（0x3E）
+  - `memory.grow`（0x40）
 - Global 変数（`global.get` / `global.set`）。init 式で `i64.const` / `f64.const` をサポート済み
 
 ### 後回し（MVP に含まれるが急がない）
 
-- `f64` 算術命令（`f64.add` / `f64.sub` / `f64.mul` / `f64.div` など — `f64.const` は動作するが演算命令は未実装）
 - 型変換命令（`i32.trunc_f32_s`、`f64.promote_f32`、`i32.reinterpret_f32` など）
-- `memory.size`
+- `memory.size`（0x3F） — パース時に `invalidInstruction` を送出する既知の問題あり（`unimplemented` に変更すべき）
 
 ### 対象外
 

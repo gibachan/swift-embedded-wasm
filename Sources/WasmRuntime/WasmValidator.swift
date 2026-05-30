@@ -168,6 +168,19 @@
         try popExpecting(.f32)
         tryPush(.i32)
 
+      // MARK: f64 (tracked for stack correctness)
+      case .f64Abs, .f64Neg, .f64Ceil, .f64Floor, .f64Trunc, .f64Nearest, .f64Sqrt:
+        try popExpecting(.f64)
+        tryPush(.f64)
+      case .f64Add, .f64Sub, .f64Mul, .f64Div, .f64Min, .f64Max, .f64Copysign:
+        try popExpecting(.f64)
+        try popExpecting(.f64)
+        tryPush(.f64)
+      case .f64Eq, .f64Ne, .f64Lt, .f64Gt, .f64Le, .f64Ge:
+        try popExpecting(.f64)
+        try popExpecting(.f64)
+        tryPush(.i32)
+
       // MARK: Control flow
 
       case .unreachable:
@@ -324,12 +337,44 @@
 
       // MARK: Memory
 
-      case .i32Load:
+      // i32 loads: pop i32 address, push result type
+      case .i32Load, .i32Load8S, .i32Load8U, .i32Load16S, .i32Load16U:
         try popExpecting(.i32)
         tryPush(.i32)
 
-      case .i32Store:
+      // i64 loads: pop i32 address, push i64
+      case .i64Load, .i64Load8S, .i64Load8U, .i64Load16S, .i64Load16U, .i64Load32S, .i64Load32U:
         try popExpecting(.i32)
+        tryPush(.i64)
+
+      // f32 load: pop i32 address, push f32
+      case .f32Load:
+        try popExpecting(.i32)
+        tryPush(.f32)
+
+      // f64 load: pop i32 address, push f64
+      case .f64Load:
+        try popExpecting(.i32)
+        tryPush(.f64)
+
+      // i32 stores: pop i32 value, then pop i32 address
+      case .i32Store, .i32Store8, .i32Store16:
+        try popExpecting(.i32)
+        try popExpecting(.i32)
+
+      // i64 stores: pop i64 value, then pop i32 address
+      case .i64Store, .i64Store8, .i64Store16, .i64Store32:
+        try popExpecting(.i64)
+        try popExpecting(.i32)
+
+      // f32 store: pop f32 value, then pop i32 address
+      case .f32Store:
+        try popExpecting(.f32)
+        try popExpecting(.i32)
+
+      // f64 store: pop f64 value, then pop i32 address
+      case .f64Store:
+        try popExpecting(.f64)
         try popExpecting(.i32)
 
       case .memoryGrow:
