@@ -70,6 +70,76 @@ macOS フェーズのパーサーは完了済み。以下は Embedded Swift 環�
 
 ---
 
+## Phase 2.5 — macOS フェーズ中に対処すべき設計改善
+
+Embedded フェーズ移行前に修正しておくことで、移行コストを下げられる項目。
+いずれも macOS 上での動作には影響しないが、設計上の問題または Embedded リンクエラーの原因になりうる。
+
+- [ ] **`block`/`loop`/`if` の arity をパーサーで事前計算して命令に埋め込む**
+
+  現在の実装では、`block`/`loop`/`if` 命令の実行時に毎回 `blockArity()` / `loopBrArity()` を呼び出し、
+  `module.types` を参照して arity を計算している（`WasmInterpreter.swift:429-453`）。
+
+  パーサーはすでに `BlockType` と `module.types` を持っているため、この計算はパース時に一度だけ行える。
+  arity を命令自体に埋め込むことで、ホットパスから `module.types` 参照を完全に排除できる。
+
+  ```swift
+  // 現在: 実行時に毎回計算
+  case block(BlockType, Int)              // endPc のみ
+  case loop(BlockType, Int)              // startPc のみ
+  case ifElse(BlockType, Int, Int)       // elsePc, endPc のみ
+
+  // 改善案: パーサーが計算済みの値を埋め込む
+  case block(brArity: Int, paramCount: Int, endPc: Int)
+  case loop(brArity: Int, startPc: Int)
+  case ifElse(brArity: Int, paramCount: Int, elsePc: Int, endPc: Int)
+  ```
+
+  これにより `blockArity()` / `loopBrArity()` 関数と `module.types` へのホットパス参照が不要になる。
+  変更範囲は `WasmModule.swift`（Instruction enum）・`WasmParser.swift`・`WasmInterpreter.swift` の局所的な修正で完結する。
+
+- [ ] **`brTable` のターゲット配列をフラット命令列にインライン展開する**
+
+  現在の実装では `case brTable([UInt32], UInt32)` として `[UInt32]` を enum associated value に持つ。
+  `Array<T>` が enum の中に入る場合、Embedded Swift ではコンパイルは通るが **リンク時に `malloc` が要求される**。
+  現在 `make compile`（`.o` 生成）はエラーにならないが、`make build`（リンク）で問題になりうる。
+
+  flat bytecode の設計を活かして、ターゲット列を pseudo-instruction としてインライン展開することで
+  動的確保を完全に排除できる。
+
+  ```swift
+  // 改善案: brTable の直後に brTableEntry を count 個並べる
+  case brTable(count: UInt32, default_: UInt32)  // 直後に count 個の brTableEntry が続く
+  case brTableEntry(UInt32)                       // 各ターゲットの depth
+
+  // 実行時: labels[i] の代わりに instructions[ip + i] で参照できる
+  ```
+
+  変更範囲は `WasmModule.swift`（Instruction enum）・`WasmParser.swift`・`WasmInterpreter.swift` の
+  `brTable` 処理箇所のみ。
+
+- [ ] **`WasmInteger` protocol を実装して i32/i64 演算を Generic に統一する**
+
+  `SWIFT_VM_DESIGN.md` Section 9.6 に採用方針が記載されているが、現状は i32/i64 の
+  算術・比較・ビット演算がすべて個別にインライン実装されており、ほぼ同一コードが重複している。
+
+  WasmKit の `RawUnsignedInteger` protocol を参考に `WasmInteger` protocol を実装することで、
+  演算実装の重複を削減し、将来の命令追加時の漏れをコンパイラが検出できる設計になる。
+
+  ```swift
+  protocol WasmInteger: FixedWidthInteger & UnsignedInteger {
+      associatedtype Signed: FixedWidthInteger & SignedInteger
+      init(bitPattern: Signed)
+  }
+  extension UInt32: WasmInteger { typealias Signed = Int32 }
+  extension UInt64: WasmInteger { typealias Signed = Int64 }
+  ```
+
+  Embedded Swift でも Generics は静的ディスパッチ（モノモーフィズム）で動作するため対応可能。
+  ただし、モジュール外から呼び出す場合は `@inlinable` が必須（`EMBEDDED_SWIFT.md` Section 3 参照）。
+
+---
+
 ## Phase 3 — Wasm インタプリタ（Embedded フェーズ向け）
 
 macOS フェーズのインタプリタは完了済み（spectest 23,547 pass）。
@@ -115,6 +185,23 @@ macOS フェーズのインタプリタは完了済み（spectest 23,547 pass）
 
   macOS フェーズでは `Array` のまま動作確認を続け、
   Embedded フェーズへの移行時に段階的に置き換える。
+
+- [ ] **`call` / `callIndirect` での引数コピーを排除する**
+
+  現在の実装では関数呼び出しのたびに `Array(valueStack.suffix(argCount))` を生成している
+  （`WasmInterpreter.swift:518`, `1941`）。これは関数呼び出しごとのヒープ確保であり、
+  Embedded フェーズでは `Array` の動的確保が使えないため対処が必要。
+
+  ```swift
+  // 現在: 毎呼び出しでヒープ確保
+  let callArgs = Array(valueStack.suffix(argCount))
+  valueStack.removeLast(argCount)
+  try pushFrame(funcIdx: Int(funcIdx), callArgs: callArgs)
+  ```
+
+  `CallFrame.locals` を固定サイズバッファ（上の `Array<T>` 置き換え作業）に移行する際、
+  引数の受け渡しも `valueStack` 上のオフセット参照に変更することで確保をゼロにできる。
+  wasm3 はスタックポインタを直接フレームに渡してこの問題を回避している。
 
 ---
 

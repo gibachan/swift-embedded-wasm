@@ -73,6 +73,23 @@ Raspberry Pi Pico (RP2350) は 520 KB の SRAM を持つが、
 これが、`make compile`（`.o` 生成のみ）が `malloc` なしの環境でも成功する理由である。
 `Array<T>` が本当に使えるかどうかはリンクして初めてわかる。
 
+**`nm` で実際に確認する**
+
+コンパイル済みの `.o` ファイルに対して `nm` を実行すると、未解決の外部参照（`U` 行）としてヒープ確保関数が現れることを直接確認できる。
+
+```
+$ nm build/pico-wasm.o | grep " U "
+         U free
+         U posix_memalign   ← malloc 相当（Swift のアロケーターが使う関数）
+```
+
+`posix_memalign` は Swift ランタイムのアロケーターが `malloc` の代わりに使う関数。
+`U`（undefined）は「この `.o` が参照しているが実体を持たない」を意味し、
+リンク時に提供されなければエラーになる。
+
+`pico-ble` ターゲットでは `pico_stdlib` がこれらを提供するためリンクが通るが、
+純粋なベアメタル環境では `posix_memalign` / `free` が未定義のままエラーになる。
+
 #### `indirect case` による暗黙のヒープ確保
 
 Swift の `indirect case` は enum の再帰定義を可能にするが、
