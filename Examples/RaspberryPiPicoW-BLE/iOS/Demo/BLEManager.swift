@@ -26,7 +26,9 @@ final class BLEManager: NSObject {
   // MARK: - Write queue for chunked WASM transfer
 
   private var writeQueue: [Data] = []
-  private var totalPackets = 0
+  private var totalChunks = 0   // number of 0xF1 data packets
+  private var sentChunks = 0    // 0xF1 packets acknowledged so far
+  private var lastSentCmd: UInt8 = 0  // command byte of the in-flight packet
 
   private let targetName = "PicoLED"
 
@@ -79,7 +81,8 @@ final class BLEManager: NSObject {
     queue.append(Data([0xF2]))
 
     writeQueue = queue
-    totalPackets = queue.count
+    totalChunks = queue.filter { $0.first == 0xF1 }.count
+    sentChunks = 0
     isSending = true
     sendProgress = 0
     log.append("➡️ Sending WASM (\(data.count) bytes, \(queue.count) packets)")
@@ -92,6 +95,7 @@ final class BLEManager: NSObject {
       return
     }
     let packet = writeQueue.removeFirst()
+    lastSentCmd = packet.first ?? 0
     peripheral.writeValue(packet, for: characteristic, type: .withResponse)
   }
 
@@ -198,8 +202,13 @@ extension BLEManager: CBPeripheralDelegate {
       isSending = false
       return
     }
-    let sent = totalPackets - writeQueue.count
-    sendProgress = Double(sent) / Double(totalPackets)
+    // Progress tracks only data packets (0xF1). 0xF0 and 0xF2 are control packets.
+    // This ensures sendProgress reaches 1.0 exactly when the last chunk is acknowledged,
+    // which is the moment just before 0xF2 (execute) is dispatched to the Pico.
+    if lastSentCmd == 0xF1 {
+      sentChunks += 1
+      sendProgress = Double(sentChunks) / Double(totalChunks)
+    }
     processWriteQueue()
   }
 }

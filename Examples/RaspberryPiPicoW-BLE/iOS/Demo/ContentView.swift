@@ -47,13 +47,12 @@ struct ContentView: View {
         }
 
         Section("Log") {
-          ForEach(Array(ble.log.enumerated()), id: \.offset) { _, item in
-            Text(item)
-              .font(.system(size: 12))
+          NavigationLink("Show Log (\(ble.log.count))") {
+            LogView(log: ble.log)
           }
         }
       }
-      .navigationTitle("Pico WASM")
+      .navigationTitle("PicoW-BLE")
       .onChange(of: ble.isSending) { _, sending in
         if !sending { sendingEntry = nil }
       }
