@@ -5,35 +5,60 @@ struct ContentView: View {
   @State private var blinkCount: Double = 1
 
   var body: some View {
-    VStack(spacing: 16) {
-      // --- 状態表示 ---
-      Text(ble.isBluetoothOn ? "Bluetooth ON" : "Bluetooth OFF")
-      Text(ble.isConnected ? "Connected" : "Disconnected")
-      Text(ble.isReady ? "Ready" : "Not Ready")
+    NavigationStack {
+      List {
+        Section {
+          LabeledContent {
+            Text(ble.isBluetoothOn ? "ON" : "OFF")
+          } label: {
+            Text("Bluetooth")
+          }
+          LabeledContent {
+            Text(ble.isConnected ? "Connected" : "Disconnected")
+          } label: {
+            Text("Connection")
+          }
+          LabeledContent {
+            Text(ble.isReady ? "Ready" : "Not Ready")
+          } label: {
+            Text("Ready")
+          }
+        } header: {
+          Text("Status")
+        }
 
-      Divider()
+        Section {
+          LabeledContent {
+            VStack {
+              Slider(value: $blinkCount, in: 1...10, step: 1)
+                .padding(.horizontal)
+            }
+          } label: {
+            Text("Blink count: \(Int(blinkCount))")
+          }
 
-      // --- 点滅回数の選択 ---
-      Text("Blink count: \(Int(blinkCount))")
-        .font(.headline)
+          Button("Blink") {
+            ble.sendBlinkCount(Int(blinkCount))
+          }
+          .disabled(!ble.isReady)
+        } header: {
+          Text("Blinking")
+        }
 
-      Slider(value: $blinkCount, in: 1...10, step: 1)
-        .padding(.horizontal)
-
-      Button("Blink") {
-        ble.sendBlinkCount(Int(blinkCount))
+        Section {
+          ForEach(Array(ble.log.enumerated()), id: \.offset) { _, item in
+            Text(item)
+              .font(.system(size: 12))
+          }
+        } header: {
+          Text("Log")
+        }
       }
-      .buttonStyle(.borderedProminent)
-      .disabled(!ble.isReady)
-
-      Divider()
-
-      // --- 通信ログ ---
-      List(Array(ble.log.enumerated()), id: \.offset) { _, item in
-        Text(item)
-          .font(.system(size: 12))
-      }
+      .navigationTitle("Bluetooth")
     }
-    .padding()
   }
+}
+
+#Preview {
+  ContentView()
 }

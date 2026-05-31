@@ -1,54 +1,53 @@
-// BLEManager.swift
-// BLE（Bluetooth Low Energy）の中心的なロジックを担うクラス。
-// iPhoneが「セントラル（Central）」として動作し、周辺機器（ペリフェラル）を探して接続・通信する。
+// The central BLE (Bluetooth Low Energy) logic class.
+// The iPhone acts as a "Central" that scans for, connects to, and communicates with peripherals.
 
-import CoreBluetooth // Appleが提供するBLE通信フレームワーク
+import CoreBluetooth  // Apple's BLE communication framework
 import Observation
 
-// NSObject を継承しているのは、CoreBluetoothのデリゲート（後述）がNSObjectBaseのプロトコルを要求するため
+// NSObject is required because CoreBluetooth delegate protocols require NSObjectBase conformance.
 @Observable
 final class BLEManager: NSObject {
 
-  // MARK: - CoreBluetooth オブジェクト
+  // MARK: - CoreBluetooth Objects
 
-  // CBCentralManager: iPhoneをBLEのセントラル（親機・スキャン側）として機能させるクラス
-  // セントラルはペリフェラルをスキャン・接続・通信する役割を持つ
+  // CBCentralManager: makes the iPhone act as a BLE central (scanner/initiator).
+  // The central is responsible for scanning, connecting to, and communicating with peripherals.
   private var central: CBCentralManager!
 
-  // CBPeripheral: 接続対象のBLEデバイス（ペリフェラル）を表すオブジェクト
-  // 接続後はこのオブジェクトを通じてサービスやキャラクタリスティックを操作する
+  // CBPeripheral: represents the target BLE device to connect to.
+  // After connecting, services and characteristics are accessed through this object.
   private var peripheral: CBPeripheral?
 
-  // CBCharacteristic: ペリフェラルが持つ「キャラクタリスティック」を表すオブジェクト
-  // キャラクタリスティックはBLEにおけるデータの読み書き単位。USB でいうエンドポイントに相当する。
+  // CBCharacteristic: represents a "characteristic" on the peripheral.
+  // A characteristic is the unit of data read/write in BLE — analogous to an endpoint in USB.
   private var characteristic: CBCharacteristic?
 
-  // MARK: - 状態プロパティ（SwiftUIの画面表示に使われる）
+  // MARK: - State Properties (used for SwiftUI view updates)
 
-  var isBluetoothOn = false  // iPhoneのBluetoothが有効かどうか
-  var isConnected = false    // ペリフェラルに接続済みかどうか
-  var isReady = false        // データを送信できる状態かどうか（書き込み可能なキャラクタリスティックが見つかったか）
-  var log: [String] = []     // 通信ログ（画面に表示してBLEの動作を学習するため）
+  var isBluetoothOn = false  // whether Bluetooth is enabled on the iPhone
+  var isConnected = false    // whether a peripheral is currently connected
+  var isReady = false        // whether data can be sent (a writable characteristic was found)
+  var log: [String] = []     // communication log displayed on screen for learning BLE behavior
 
-  // 接続したいペリフェラルの名前。広告名またはデバイス名がこれに一致するものを探す。
+  // Name of the peripheral to connect to. Matches against the advertisement name or device name.
   private let targetName = "PicoLED"
 
-  // MARK: - 初期化
+  // MARK: - Initialization
 
   override init() {
     super.init()
-    // CBCentralManager を生成すると同時にBluetoothの状態監視が始まる。
-    // delegate: self → 状態変化やスキャン結果を自分自身（BLEManager）が受け取る
-    // queue: nil → コールバックをメインスレッドで受け取る（UIの更新に便利）
+    // Creating CBCentralManager immediately starts monitoring Bluetooth state.
+    // delegate: self → BLEManager receives all state changes and scan results
+    // queue: nil → callbacks are delivered on the main thread (convenient for UI updates)
     central = CBCentralManager(delegate: self, queue: nil)
   }
 
-  // MARK: - データ送信
+  // MARK: - Data Transmission
 
-  // LED を count 回点滅させる指示を Pico に送信する。
+  // Sends an instruction to the Pico to blink the LED `count` times.
   //
-  // Pico 側（attWriteCallback）は 4 バイト（Int32, little-endian）を受け取り、
-  // blink-loop.wasm でその回数だけ LED を点滅させる。
+  // The Pico side (attWriteCallback) receives 4 bytes (Int32, little-endian) and
+  // blinks the LED that many times via blink-loop.wasm.
   func sendBlinkCount(_ count: Int) {
     guard let peripheral, let characteristic else {
       log.append("❌ Not ready")
@@ -68,83 +67,86 @@ final class BLEManager: NSObject {
 }
 
 // MARK: - CBCentralManagerDelegate
-// CBCentralManager の各種イベント（状態変化・スキャン結果・接続結果）を受け取るデリゲート
+// Receives events from CBCentralManager: state changes, scan results, and connection results.
 extension BLEManager: CBCentralManagerDelegate {
-  // Bluetoothの状態が変わったときに呼ばれる（電源ON/OFF、権限変更など）
+  // Called when the Bluetooth state changes (power on/off, permission changes, etc.)
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
     log.append("state: \(central.state.rawValue)")
 
     if central.state == .poweredOn {
-      // BluetoothがONになったらスキャン開始
+      // Start scanning once Bluetooth is powered on.
       isBluetoothOn = true
       log.append("🔍 Start Scan")
 
       central.scanForPeripherals(
-        withServices: nil, // nil = すべてのサービスを持つデバイスをスキャン対象にする
-                           // 特定のサービスUUIDを指定すれば絞り込みが可能
+        withServices: nil,  // nil = scan for all devices regardless of advertised services
+                            // pass specific service UUIDs to narrow the scan
         options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
-        // AllowDuplicates: true にすると同じデバイスの広告パケットを繰り返し受信できる
-        // バックグラウンドでのスキャン時はfalseにしないとバッテリーを消費しやすい
+        // AllowDuplicates: true allows receiving repeated advertisement packets from the same device.
+        // Set to false during background scanning to reduce battery consumption.
       )
     } else {
       isBluetoothOn = false
     }
   }
 
-  // スキャン中にペリフェラルが見つかるたびに呼ばれる
+  // Called each time a peripheral is discovered during scanning.
   func centralManager(_ central: CBCentralManager,
                       didDiscover peripheral: CBPeripheral,
                       advertisementData: [String : Any],
                       rssi RSSI: NSNumber) {
 
-    // advertisementData: ペリフェラルが定期的に発信している広告パケットの中身
-    // CBAdvertisementDataLocalNameKey: 広告パケットに含まれるデバイス名（peripheral.name と異なる場合がある）
+    // advertisementData: contents of the advertisement packet broadcast by the peripheral.
+    // CBAdvertisementDataLocalNameKey: the device name included in the advertisement packet
+    //   (may differ from peripheral.name)
     let advName = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? ""
     let serviceUUID = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? String ?? "Unknown service UUID"
 
-    // advertisementDataには、Peripheralデバイスがあらかじめ公開している情報のみが含まれています。例えばサービスUUIDを公開している場合に限り、CBAdvertisementDataServiceUUIDsKeyを通じてそのUUIDと照合し、特定のサービスを持つデバイスのみを検出することが可能です。
-    // CBAdvertisementDataLocalNameKey：Peripheralデバイスのローカル名
-    // CBAdvertisementDataServiceUUIDsKey：アドバタイズされているサービスUUID
-    // CBAdvertisementDataManufacturerDataKey：メーカー固有のデータ
+    // advertisementData contains only the information the peripheral explicitly advertises.
+    // For example, if the peripheral advertises service UUIDs, you can match against
+    // CBAdvertisementDataServiceUUIDsKey to filter for devices with a specific service.
+    //   CBAdvertisementDataLocalNameKey: the peripheral's local name
+    //   CBAdvertisementDataServiceUUIDsKey: advertised service UUIDs
+    //   CBAdvertisementDataManufacturerDataKey: manufacturer-specific data
 
     let name = peripheral.name ?? "unknown"
 
     log.append("👀 Found: \(name) / adv: \(advName) / Service UUID: \(serviceUUID)")
 
-    // 広告名またはデバイス名が targetName と一致するデバイスを接続対象とする
+    // Connect to the device whose advertisement name or device name matches targetName.
     if advName == targetName || name.contains(targetName) {
       log.append("✅ Target found")
 
       self.peripheral = peripheral
-      // デリゲートを self にすることで、以降のサービス探索などのイベントをここで受け取れる
+      // Setting delegate to self allows this class to receive subsequent service discovery events.
       peripheral.delegate = self
 
-      // 目的のデバイスが見つかったのでスキャンを止める（バッテリー節約）
+      // Stop scanning once the target device is found (saves battery).
       central.stopScan()
-      // ペリフェラルへの接続を開始する（接続完了は didConnect で通知される）
+      // Begin connecting to the peripheral (completion is notified via didConnect).
       central.connect(peripheral)
     }
   }
 
-  // 接続に成功したときに呼ばれる
+  // Called when a connection is successfully established.
   func centralManager(_ central: CBCentralManager,
                       didConnect peripheral: CBPeripheral) {
     isConnected = true
     log.append("🔗 Connected")
 
-    // 接続しただけではデータを送れない。まずペリフェラルが持つ「サービス」を探索する必要がある。
-    // nil = すべてのサービスを探索（特定のUUIDに絞る場合は [CBUUID] を渡す）
+    // Connecting alone is not enough to send data. The peripheral's "services" must be discovered first.
+    // nil = discover all services (pass [CBUUID] to filter by specific UUIDs)
     peripheral.discoverServices(nil)
   }
 
-  // 接続に失敗したときに呼ばれる
+  // Called when a connection attempt fails.
   func centralManager(_ central: CBCentralManager,
                       didFailToConnect peripheral: CBPeripheral,
                       error: Error?) {
     log.append("❌ Connect failed: \(error?.localizedDescription ?? "")")
   }
 
-  // 接続が切れたときに呼ばれる（ペリフェラル側の電源断や距離超過など）
+  // Called when the connection is lost (peripheral power-off, out of range, etc.)
   func centralManager(_ central: CBCentralManager,
                       didDisconnectPeripheral peripheral: CBPeripheral,
                       error: Error?) {
@@ -152,17 +154,17 @@ extension BLEManager: CBCentralManagerDelegate {
     isReady = false
     log.append("🔌 Disconnected")
 
-    // 切断後に再スキャンを開始して、デバイスが戻ってきたら自動で再接続できるようにする
+    // Restart scanning after disconnection so the device is reconnected automatically when it returns.
     central.scanForPeripherals(withServices: nil)
   }
 }
 
 // MARK: - CBPeripheralDelegate
-// ペリフェラルのサービス・キャラクタリスティック探索結果を受け取るデリゲート
+// Receives results of service and characteristic discovery from the peripheral.
 extension BLEManager: CBPeripheralDelegate {
 
-  // サービスの探索が完了したときに呼ばれる
-  // BLEのデータ構造: ペリフェラル → サービス（機能グループ） → キャラクタリスティック（データ項目）
+  // Called when service discovery completes.
+  // BLE data hierarchy: peripheral → services (feature groups) → characteristics (data items)
   func peripheral(_ peripheral: CBPeripheral,
                   didDiscoverServices error: Error?) {
 
@@ -170,13 +172,13 @@ extension BLEManager: CBPeripheralDelegate {
 
     for service in services {
       log.append("📦 Service: \(service.uuid)")
-      // 各サービスの中にあるキャラクタリスティックをさらに探索する
-      // nil = すべてのキャラクタリスティックを対象にする
+      // Discover characteristics within each service.
+      // nil = discover all characteristics
       peripheral.discoverCharacteristics(nil, for: service)
     }
   }
 
-  // キャラクタリスティックの探索が完了したときに呼ばれる
+  // Called when characteristic discovery completes.
   func peripheral(_ peripheral: CBPeripheral,
                   didDiscoverCharacteristicsFor service: CBService,
                   error: Error?) {
@@ -186,12 +188,12 @@ extension BLEManager: CBPeripheralDelegate {
     for char in characteristics {
       log.append("🔧 Char: \(char.uuid)")
 
-      // キャラクタリスティックには「プロパティ（読み取り・書き込み・通知など）」が設定されている
-      // .write: 書き込み（応答あり）、.writeWithoutResponse: 書き込み（応答なし）
-      // データを送信するには書き込み可能なキャラクタリスティックを使う必要がある
+      // Each characteristic has "properties" (read, write, notify, etc.).
+      // .write: write with response; .writeWithoutResponse: write without response.
+      // A writable characteristic is required in order to send data.
       if char.properties.contains(.write) || char.properties.contains(.writeWithoutResponse) {
         self.characteristic = char
-        isReady = true // 書き込み先が確定したので送信可能になった
+        isReady = true  // write target confirmed, ready to send
         log.append("🎯 Writable characteristic found")
       }
     }

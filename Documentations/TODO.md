@@ -192,12 +192,6 @@ Embedded Swift ではクロージャのヒープアロケーションが使え�
 
 ### 実機動作確認
 
-- [ ] **Pico 上で Wasm モジュールをロードできることを確認する**
-
-  事前にビルドした `.wasm` バイナリを Pico のフラッシュに焼き込み（C 配列として埋め込む、
-  または LittleFS 等のファイルシステム経由で保持する）、
-  `WasmParser.parse()` が正常に完了して `WasmModule` を返すことを UART ログで確認する。
-
 - [ ] **Wasm から `i32.add` を実行し UART に結果を出力する**
 
   以下のような最小の Wasm 関数をターゲットにする。
@@ -212,29 +206,6 @@ Embedded Swift ではクロージャのヒープアロケーションが使え�
 
   `WasmInterpreter.callExport("add", args: [.i32(3), .i32(4)])` を呼び出し、
   戻り値 `7` が返ること・UART に `"result: 7\n"` が出力されることを確認する。
-
-- [ ] **Wasm の Host Function 経由で LED（GPIO）を制御できることを確認する**
-
-  以下のような Wasm バイナリを用意して実行する。
-
-  ```wat
-  (module
-    (import "env" "digitalWrite" (func $digitalWrite (param i32 i32)))
-    (import "env" "sleep"        (func $sleep        (param i32)))
-    (func (export "blink")
-      i32.const 25   ;; GPIO 25 = Pico のオンボード LED
-      i32.const 1
-      call $digitalWrite
-      i32.const 500
-      call $sleep
-      i32.const 25
-      i32.const 0
-      call $digitalWrite
-      i32.const 500
-      call $sleep))
-  ```
-
-  `blink` をループ呼び出しして LED が 0.5 秒周期で点滅すれば最低成功ライン達成。
 
 ### サイズ・RAM 最適化
 
