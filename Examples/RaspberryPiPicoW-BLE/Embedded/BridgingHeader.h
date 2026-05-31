@@ -6,5 +6,5 @@
 #include "btstack.h"
 #include "ble/att_db_util.h"
 
-const uint8_t *blink_loop_wasm_ptr(void);
-uint32_t blink_loop_wasm_len(void);
+uint8_t *wasm_recv_buf_ptr(void);
+uint32_t wasm_recv_buf_size(void);

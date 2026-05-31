@@ -14,77 +14,16 @@ enable_language(Swift)
 
 set(WASM_RUNTIME_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../Sources/WasmRuntime)
 
-# ── Wasm binary pipeline ────────────────────────────────────────────────────
-set(BLINK_LOOP_WASM_SRC
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../../Tests/WasmRuntimeTests/wasm/blink-loop.wasm)
-
-# [C] Build-time validation: fail the build if the wasm is malformed.
-find_program(WASM_VALIDATE wasm-validate)
-if(WASM_VALIDATE)
-    add_custom_command(
-        OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/blink-loop.wasm.validated
-        COMMAND ${WASM_VALIDATE} ${BLINK_LOOP_WASM_SRC}
-        COMMAND ${CMAKE_COMMAND} -E touch
-                ${CMAKE_CURRENT_BINARY_DIR}/blink-loop.wasm.validated
-        DEPENDS ${BLINK_LOOP_WASM_SRC}
-        COMMENT "Validating blink-loop.wasm"
-    )
-    add_custom_target(validate-wasm DEPENDS
-        ${CMAKE_CURRENT_BINARY_DIR}/blink-loop.wasm.validated)
-else()
-    message(WARNING "wasm-validate not found; skipping wasm validation")
-endif()
-
-# [B] Size optimization: run wasm-opt -Oz before embedding when available.
-find_program(WASM_OPT wasm-opt)
-if(WASM_OPT)
-    set(BLINK_LOOP_WASM_PATH ${CMAKE_CURRENT_BINARY_DIR}/blink-loop.opt.wasm)
-    add_custom_command(
-        OUTPUT  ${BLINK_LOOP_WASM_PATH}
-        COMMAND ${WASM_OPT} -Oz --strip-debug
-                ${BLINK_LOOP_WASM_SRC} -o ${BLINK_LOOP_WASM_PATH}
-        DEPENDS ${BLINK_LOOP_WASM_SRC}
-        COMMENT "Optimizing blink-loop.wasm with wasm-opt"
-    )
-else()
-    message(WARNING "wasm-opt not found; embedding unoptimized wasm")
-    set(BLINK_LOOP_WASM_PATH ${BLINK_LOOP_WASM_SRC})
-endif()
-
-# Embed blink-loop.wasm via .incbin: configure_file substitutes the absolute
-# path so the assembler can find the file regardless of build directory.
-configure_file(blink_loop_wasm.s.in
-               ${CMAKE_CURRENT_BINARY_DIR}/blink_loop_wasm.s
-               @ONLY)
-
-# [A] Dependency tracking: tell ninja that the object file also depends on
-# the wasm binary, so changing the wasm triggers reassembly without a full
-# clean rebuild.
-set_source_files_properties(
-    ${CMAKE_CURRENT_BINARY_DIR}/blink_loop_wasm.s
-    PROPERTIES OBJECT_DEPENDS ${BLINK_LOOP_WASM_PATH}
-)
-
 file(GLOB WASM_RUNTIME_SOURCES "${WASM_RUNTIME_DIR}/*.swift")
 
 add_executable(pico-ble
     Main.swift
-    ${CMAKE_CURRENT_BINARY_DIR}/blink_loop_wasm.s
-    wasm_symbols.c
+    wasm_recv_buf.c
     posix_memalign.c
     ${WASM_RUNTIME_SOURCES}
 )
 
 set_target_properties(pico-ble PROPERTIES LINKER_LANGUAGE CXX)
-
-# Ensure wasm pipeline steps complete before the assembler runs.
-if(WASM_VALIDATE)
-    add_dependencies(pico-ble validate-wasm)
-endif()
-if(WASM_OPT)
-    add_custom_target(optimize-wasm DEPENDS ${BLINK_LOOP_WASM_PATH})
-    add_dependencies(pico-ble optimize-wasm)
-endif()
 
 target_link_libraries(pico-ble
     pico_stdlib hardware_uart hardware_gpio

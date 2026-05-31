@@ -225,9 +225,12 @@ struct WasmInterpreterTests {
       ])
   }
 
-  @Test func blinkLoopCallsBlinkNTimes() throws {
-    var blinkCount = 0
+  // Self-contained WASM tests: mirror the executeReceivedWasm() pattern used on the Pico.
+  // Each module exports "run" (no args) and has the blink count hardcoded inside.
+  // call(functionIndex: importedFunctionCount, args: []) is the exact call path the Pico uses.
 
+  @Test func blinkLoopRuns3Times() throws {
+    var blinkCount = 0
     let module = try parseModule("blink-loop")
     let hostImports: [HostImport] = [
       .function(
@@ -237,10 +240,41 @@ struct WasmInterpreterTests {
           return []
         })
     ]
-
     var interp = try WasmInterpreter(module: module, hostImports: hostImports)
-    _ = try interp.callExport(nameBytes: Array("blink_loop".utf8), args: [.i32(5)])
+    _ = try interp.call(functionIndex: module.importedFunctionCount, args: [])
+    #expect(blinkCount == 3)
+  }
+
+  @Test func blinkLoop2Runs5Times() throws {
+    var blinkCount = 0
+    let module = try parseModule("blink-loop2")
+    let hostImports: [HostImport] = [
+      .function(
+        "env", "blink",
+        { _, _ in
+          blinkCount += 1
+          return []
+        })
+    ]
+    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    _ = try interp.call(functionIndex: module.importedFunctionCount, args: [])
     #expect(blinkCount == 5)
+  }
+
+  @Test func blinkLoop3Runs10Times() throws {
+    var blinkCount = 0
+    let module = try parseModule("blink-loop3")
+    let hostImports: [HostImport] = [
+      .function(
+        "env", "blink",
+        { _, _ in
+          blinkCount += 1
+          return []
+        })
+    ]
+    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    _ = try interp.call(functionIndex: module.importedFunctionCount, args: [])
+    #expect(blinkCount == 10)
   }
 
   @Test func tableGlobalIncrementDecrement() throws {
@@ -269,24 +303,6 @@ struct WasmInterpreterTests {
     // decrement: $i = 1 - 1 = 0, returns 0
     let r4 = try interp.callExport(nameBytes: Array("decrement".utf8), args: [])
     #expect(r4 == [.i32(0)])
-  }
-
-  @Test func blinkLoopWithZeroDoesNotBlink() throws {
-    var blinkCount = 0
-
-    let module = try parseModule("blink-loop")
-    let hostImports: [HostImport] = [
-      .function(
-        "env", "blink",
-        { _, _ in
-          blinkCount += 1
-          return []
-        })
-    ]
-
-    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
-    _ = try interp.callExport(nameBytes: Array("blink_loop".utf8), args: [.i32(0)])
-    #expect(blinkCount == 0)
   }
 
   @Test func forwardMutualRecursion() throws {

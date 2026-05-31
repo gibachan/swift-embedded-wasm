@@ -1,11 +1,11 @@
 ---
 name: phase-status
-description: Current implementation milestone status for Phase 4 (interpreter) — what is implemented, what is pending
+description: Current implementation milestone status for Phase 4 (interpreter) and Phase 5 (iOS BLE) — what is implemented, what is pending
 metadata:
   type: project
 ---
 
-As of 2026-05-31, the project is in Phase 4 (macOS development phase).
+As of 2026-05-31, the project has completed Phase 4 (macOS interpreter) and the core of Phase 5 (iOS BLE WASM transfer).
 
 **Completed (Phase 1-4):**
 - Flat bytecode migration (フェーズ 1.5): `block`/`loop`/`if` use jump offsets, no `indirect case`, no heap
@@ -102,12 +102,28 @@ As of 2026-05-31, the project is in Phase 4 (macOS development phase).
 **Known issues / Embedded-phase TODOs:**
 - 32-bit address calculation: `let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)` is unsafe on 32-bit targets where `Int` is 32 bits wide; needs `UInt64` intermediate on Embedded phase
 
-**Not yet implemented (main remaining items):**
+**Phase 5 — iOS BLE WASM transfer (completed items):**
+- Single-characteristic BLE protocol: 0xF0 (start) / 0xF1 (chunk) / 0xF2 (execute) command-byte state machine
+- `wasm_recv_buf.c`: 8KB static buffer in BSS; `wasm_recv_buf_ptr()` / `wasm_recv_buf_size()` accessors
+- `executeReceivedWasm()`: calls `call(functionIndex: module.importedFunctionCount, args: [])`
+- iOS app: `BLEManager.sendWasm(_:)` queues 0xF0 → 0xF1 chunks → 0xF2 with ordered `withResponse` writes
+- iOS app: `ContentView` shows `WasmEntry.all` list with progress view during transfer
+- iOS app: `WasmEntry` struct with `blink-loop.wasm` / `blink-loop2.wasm` / `blink-loop3.wasm` bundle presets
+- Tests: `blinkLoopRuns3Times` / `blinkLoop2Runs5Times` / `blinkLoop3Runs10Times` added; old tests removed
+
+**Phase 5 — iOS BLE (not yet implemented):**
+- Log Notification characteristic (UART → BLE → iOS)
+- Status Notification (transfer/execution state feedback)
+- CRC checksum for transfer integrity
+- iOS file picker (`UIDocumentPickerViewController`) for arbitrary .wasm selection
+- RESET command to reinitialize interpreter mid-session
+
+**Not yet implemented (Embedded phase):**
 - Pico (Embedded) phase: fixed-size buffers, zero-copy Code section parsing
 
 **Why:** Incremental implementation strategy — each instruction group is added when needed for Spectest coverage.
 
-**How to apply:** When updating WASM_SPEC.md or PHASE4_INTERPRETER.md, reflect: element segment flags 0–7 are fully supported; flags=5 is passive (isDeclarative: false), not declarative; declarative segments are flags=3/7 (elemkind) and flags=7 (reftype); externref is fully supported alongside funcref; tables store `Value` not `UInt32?`; binary parser validation (section ID/size/order/duplicate/dataCount) is fully implemented per spec §6.5; spectest [binary] achieves 127 pass / 0 skip. Total spectest: 23,547 pass / 79 skip / 0 fail. The main remaining work is the Embedded phase migration.
+**How to apply:** When updating WASM_SPEC.md or Phase documents, reflect: Phase 5 BLE transfer core is implemented. The static .incbin embed approach is replaced by dynamic BLE transfer. `wasm_symbols.c` and `blink_loop_wasm.s.in` remain in the repository but are excluded from the CMake build. The single writable characteristic replaces the original 2-characteristic (WasmBinary + Control) design. Total spectest: 23,547 pass / 79 skip / 0 fail.
 
 [[project-architecture]]
 [[doc-cross-references]]

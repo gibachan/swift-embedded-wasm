@@ -325,64 +325,76 @@ Embedded Swift ではクロージャのヒープアロケーションが使え�
 
 ## Phase 5 — iOS 連携
 
-未着手。Phase 4 の実機動作確認（少なくとも LED 点滅まで）が完了してから着手する。
-
+BLE 経由の WASM 転送・実行の基本機能が実装済み。
 BLE 通信には Pico W 内蔵の CYW43439（Wi-Fi / BLE コンボチップ）を使用する。
-iOS アプリは SwiftUI + CoreBluetooth で実装する。
+iOS アプリは SwiftUI + CoreBluetooth で実装した。
 
 ### BLE プロトコル設計
 
-- [ ] **Wasm バイナリ転送用の BLE GATT サービス・キャラクタリスティックを設計する**
+- [x] **Wasm バイナリ転送用の BLE GATT サービス・キャラクタリスティックを設計する**
 
-  Wasm バイナリは数 KB 程度を想定しており、BLE の MTU（最大 512 バイト）に合わせて
-  チャンク転送する仕組みが必要になる。
-  設計案:
+  単一の書き込み可能キャラクタリスティック（UUID: `...def1`）にコマンドバイトを付加したステートマシン方式を採用した。
+  設計当初の「2 キャラクタリスティック（WasmBinary + Control）」案とは異なり、1 つのキャラクタリスティックにすべてのプロトコルを集約している。
 
   ```
-  Service UUID: (プロジェクト固有の UUID)
-    Characteristic: WasmBinary (Write Without Response)
-      → バイナリデータをチャンク転送（先頭パケットに総サイズを含める）
-    Characteristic: Control (Write)
-      → コマンド送信（"RUN" / "RESET" など）
-    Characteristic: Log (Notify)
-      → Pico からの UART ログをリアルタイム通知
-    Characteristic: Status (Read / Notify)
-      → 転送進捗・実行状態（IDLE / RECEIVING / RUNNING / ERROR）
+  Service UUID: 12345678-1234-5678-1234-56789abcdef0
+    Characteristic UUID: 12345678-1234-5678-1234-56789abcdef1 (Write, Dynamic)
+      → コマンドバイト方式:
+          0xF0 [size_lo] [size_hi]              — 転送開始・バッファリセット
+          0xF1 [offset_lo] [offset_hi] [data…]  — チャンクデータ書き込み
+          0xF2                                   — 全受信確認後に実行
   ```
 
-- [ ] **ログ出力用の Notification キャラクタリスティックを設計する**
+  `withResponse` 書き込みを使用し、`didWriteValueFor` 完了通知を受け取ってから次パケットを送信（順序保証）。
+
+- [ ] **ログ出力用の Notification キャラクタリスティックを設計する**（未実装）
 
   Pico 側で UART に書き出すログを BLE Notification として iOS に転送する。
   UART → リングバッファ → BLE Notification という流れで実装する。
   MTU サイズ（20〜512 バイト）に合わせてログ行を分割・結合する。
 
-- [ ] **転送完了・実行開始のハンドシェイクプロトコルを設計する**
+- [ ] **転送完了・実行開始のハンドシェイクプロトコルを強化する**（未実装）
 
+  現在は受信バイト数の一致のみで完了を判定している。
   バイナリ転送中の破損・中断を検出するため、CRC チェックサムを最終パケットに含める。
-  Pico 側が転送完了を確認後、Control キャラクタリスティックへの "RUN" コマンドで実行開始する。
 
 ### 必須機能（iOS アプリ）
 
-- [ ] **iOS アプリから `.wasm` ファイルを選択して Pico へ BLE 送信できる**
+- [x] **iOS アプリから WASM ファイルを選択して Pico へ BLE 送信できる**
 
-  iOS のファイルアプリ連携（`UIDocumentPickerViewController`）で `.wasm` ファイルを選択し、
-  CoreBluetooth を使って Pico へ分割転送する。転送中はプログレスバーを表示する。
+  アプリバンドル内にプリセットされた `.wasm` ファイルリスト（`WasmEntry.all`）からタップで選択し、
+  CoreBluetooth で Pico へ 0xF0 → 0xF1 チャンク群 → 0xF2 の順に転送する。
+  転送中は `ProgressView` でプログレスを表示する。
+  （当初案の `UIDocumentPickerViewController` によるファイルアプリ連携は未実装）
 
-- [ ] **転送した Wasm が Pico 上で即時実行される**
+- [x] **転送した Wasm が Pico 上で即時実行される**
 
-  転送完了後に "RUN" コマンドを送り、Pico 側が `WasmInterpreter` でモジュールをロード・実行する。
-  実行開始の通知（Status Notification）を iOS アプリで受け取り、UI に反映する。
+  0xF2 コマンド受信後、Pico 側が `executeReceivedWasm()` を呼び出し、
+  `WasmInterpreter` でモジュールをロード・`call(functionIndex: module.importedFunctionCount, args: [])` で実行する。
+  実行開始の Status Notification は未実装。
 
-- [ ] **Pico の実行ログを iOS アプリでリアルタイム表示できる**
+- [ ] **Pico の実行ログを iOS アプリでリアルタイム表示できる**（未実装）
 
   Log Notification を受信するたびに SwiftUI の `ScrollView` にテキストを追加する。
   CoreBluetooth の `centralManager(_:didUpdateValueFor:)` デリゲートで受け取り、
   `@MainActor` でバインドされた ViewModel に渡す。
 
-- [ ] **異なる Wasm を再転送して Pico の動作が切り替わる**
+- [x] **異なる Wasm を再転送して Pico の動作が切り替わる**
 
-  "RESET" コマンドで実行中のインタプリタを停止し、新しい Wasm バイナリを受け付ける状態に戻す。
-  Pico 側で `WasmInterpreter` を再初期化し、新しいモジュールをロードして実行する。
+  0xF2 実行後に `wasmRecvLen` / `wasmRecvExpected` をゼロリセットするため、
+  次の 0xF0 を受け取ればすぐに次の WASM バイナリの受信を開始できる。
+  インタプリタの明示的な RESET コマンドは未実装。
+
+### プリセット WASM ファイル
+
+iOS アプリのバンドルには以下の 3 つの WASM ファイルが含まれている。
+いずれも引数なし・`(export "run")` のエントリポイントを持ち、`env::blink` をインポートする。
+
+| ファイル | 説明 |
+|---------|------|
+| `blink-loop.wasm` | LED を 3 回点滅 |
+| `blink-loop2.wasm` | LED を 5 回点滅 |
+| `blink-loop3.wasm` | LED を 10 回点滅（ループ） |
 
 ### 拡張機能（任意）
 
@@ -390,6 +402,10 @@ iOS アプリは SwiftUI + CoreBluetooth で実装する。
 
   SwiftData または FileManager を使い、転送済みバイナリをアプリのドキュメントフォルダに保存する。
   リスト表示・削除・再送信ができる管理画面を実装する。
+
+- [ ] **iOS のファイルアプリから任意の `.wasm` を選択して転送できる**
+
+  `UIDocumentPickerViewController` で `.wasm` ファイルを選択できるようにする。
 
 - [ ] **OLED 表示内容を iOS アプリでミラーリングできる**
 

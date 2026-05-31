@@ -108,3 +108,23 @@ metadata:
 49. **`default:` branch in section switch is dead code but harmless**: After the `id > 12` guard, all ids 0–12 are handled by named cases. The `default:` branch (which skips `size` bytes) is unreachable. Annotated with a comment; no functional issue.
 
 50. **Section ordering: `lastNonCustomSectionId` correctly allows non-consecutive ids**: The check `id < lastNonCustomSectionId → outOfOrder` and `id == lastNonCustomSectionId → duplicate` correctly implements ascending-with-gaps requirement. Custom sections (id=0) bypass this entirely.
+
+51. **BLE/Embedded: `wasm_recv_buf_ptr()` never returns nil (C static buffer)**: The C implementation uses a `static uint8_t buf[]` — the address of a static array is never null. However, the Swift call site correctly nil-checks the `UnsafeMutablePointer<UInt8>?` return since the bridging type is always optional. The guard is harmless and correct.
+
+52. **BLE/Embedded: non-contiguous chunk protocol needs a `wasmRecvExpected` guard on 0xF1**: When chunks arrive out of order, `wasmRecvLen` tracks the highest byte written. However, there is no check that `writeOffset + dataLen <= wasmRecvExpected`. A malformed host could write beyond the declared expected size as long as it stays within `bufCapacity` (8 KB). This is a minor protocol integrity issue, not a buffer overrun.
+
+53. **BLE/Embedded: heap closure in `HostImport.function` is used in Embedded context**: `executeReceivedWasm()` creates a `HostImport.function("env", "blink", { ... })` closure with captured `ledPin`. This uses the `[macOS-phase-OK, Embedded-TODO]` heap closure pattern. In Embedded Swift, closures that capture variables are typically rejected; this requires `@convention(c)` with a global/static `ledPin`.
+
+54. **BLE/iOS: `peripheral` and `characteristic` are not nilled on disconnect**: `didDisconnectPeripheral` sets `isConnected/isReady/isSending = false` and clears `writeQueue`, but does NOT nil out `self.peripheral` or `self.characteristic`. Since `isSending = false` and the queue is cleared, no actual write is attempted. The guard in `processWriteQueue` will call `finishSend()` (no-op) if the queue is empty. Functionally harmless with the current flow but stale references remain.
+
+55. **BLE/iOS: `sendProgress` not reset on disconnect**: `didDisconnectPeripheral` does not reset `sendProgress` to 0. After reconnect, the progress bar shows the previous transfer's value until the next send starts. Minor UI inconsistency.
+
+56. **BLE/iOS: characteristic selected by first match wins; multiple services/characteristics**: `didDiscoverCharacteristicsFor` iterates ALL services × ALL characteristics, and the last writable characteristic discovered wins (loop overwrites). On the Pico side there is only one writable characteristic, so this is harmless, but the pattern would be fragile if more characteristics were added.
+
+57. **BLE/iOS: `UInt16(data.count)` silently truncates for WASM > 65535 bytes**: `let size = UInt16(data.count)` truncates if data.count > 65535. The static buffer on the Pico is 8 KB, so current WASM binaries are well within range. A guard `guard data.count <= 65535 else { ... }` would make the constraint explicit.
+
+58. **BLE/iOS: `totalPackets` includes F0 and F2 packets in progress denominator**: `sendProgress = Double(sent) / Double(totalPackets)` where totalPackets = chunkCount + 2 (start + execute). This is correct and shows smooth progress including the overhead packets.
+
+59. **Tests: `call(functionIndex: module.importedFunctionCount, args: [])` mirrors Pico execution path**: The new blink-loop tests deliberately mirror `executeReceivedWasm()` on the Pico — they call by numeric index not by export name. This means the tests verify the exact call path used at runtime, not just the exported interface.
+
+60. **Embedded: `executeReceivedWasm()` resets transfer state AFTER try block, not in defer**: If the code path is reached (wasmRecvLen > 0 and ptr != nil), `wasmRecvLen` and `wasmRecvExpected` are reset at the end whether or not execution throws. This is correct — a new `0xF0` can start a fresh transfer after any outcome. Using `defer` would be cleaner but the current placement is functionally equivalent.

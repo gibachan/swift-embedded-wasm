@@ -3,6 +3,10 @@ var hciEventCallbackRegistration = btstack_packet_callback_registration_t()
 var ledCharHandle: UInt16 = 0
 let ledPin = UInt32(CYW43_WL_GPIO_LED_PIN)
 
+// WASM receive state
+var wasmRecvLen: UInt32 = 0       // bytes written into the receive buffer so far
+var wasmRecvExpected: UInt32 = 0  // total byte count declared by 0xF0 command
+
 // Advertising payload: Flags (3 bytes) + Complete Local Name "PicoLED" (9 bytes)
 //   [2, 0x01, 0x06]                    — AD type 0x01 Flags: LE General Discoverable, BR/EDR not supported
 //   [8, 0x09, 'P','i','c','o','L','E','D'] — AD type 0x09 Complete Local Name (length byte = name + 1)
@@ -32,35 +36,76 @@ func packetHandler(
     startAdvertising()
 }
 
-// ATT write handler: receives 4 bytes (Int32, little-endian) from the central
-// and blinks the LED that many times via blink-loop.wasm
+// ATT write handler: command-byte state machine for WASM transfer and execution.
+//
+// Protocol:
+//   0xF0  — WASM transfer start: bytes[1..2] = total size (UInt16 little-endian)
+//   0xF1  — WASM chunk:          bytes[1..2] = write offset (UInt16 little-endian),
+//                                bytes[3..]  = data
+//   0xF2  — Execute received WASM (no payload)
 @_cdecl("attWriteCallback")
 func attWriteCallback(
     _ conHandle: UInt16, _ attHandle: UInt16, _ transactionMode: UInt16,
     _ offset: UInt16, _ buffer: UnsafeMutablePointer<UInt8>?, _ bufferSize: UInt16
 ) -> Int32 {
-    guard attHandle == ledCharHandle, let buffer, bufferSize >= 4 else { return 0 }
+    guard attHandle == ledCharHandle, let buffer, bufferSize >= 1 else { return 0 }
 
-    // Decode one Int32 (little-endian): the blink count
-    let count = Int32(bitPattern: UInt32(buffer[0])
-                                | UInt32(buffer[1]) << 8
-                                | UInt32(buffer[2]) << 16
-                                | UInt32(buffer[3]) << 24)
-    blinkLoop(count: count)
+    let cmd = buffer[0]
+    switch cmd {
+    case 0xF0:
+        // Transfer start — read expected total size from bytes[1..2]
+        guard bufferSize >= 3 else { return 0 }
+        let totalSize = UInt32(buffer[1]) | UInt32(buffer[2]) << 8
+        wasmRecvExpected = totalSize
+        wasmRecvLen = 0
+
+    case 0xF1:
+        // Chunk — bytes[1..2] = write offset, bytes[3..] = data
+        guard bufferSize >= 4 else { return 0 }
+        let writeOffset = UInt32(buffer[1]) | UInt32(buffer[2]) << 8
+        let dataLen = UInt32(bufferSize) - 3
+        guard let destBase = wasm_recv_buf_ptr() else { return 0 }
+        let bufCapacity = wasm_recv_buf_size()
+        // Bounds check: reject writes that fall outside either the declared size or the static buffer
+        guard wasmRecvExpected > 0,
+              writeOffset + dataLen <= wasmRecvExpected,
+              writeOffset + dataLen <= bufCapacity else { return 0 }
+        let dest = destBase.advanced(by: Int(writeOffset))
+        let src = buffer.advanced(by: 3)
+        for i in 0..<Int(dataLen) {
+            dest[i] = src[i]
+        }
+        // Update received length to the highest byte written
+        let newEnd = writeOffset + dataLen
+        if newEnd > wasmRecvLen {
+            wasmRecvLen = newEnd
+        }
+
+    case 0xF2:
+        // Execute only when all expected bytes have been received
+        guard wasmRecvExpected > 0, wasmRecvLen == wasmRecvExpected else { return 0 }
+        executeReceivedWasm()
+
+    default:
+        break
+    }
+
     return 0
 }
 
-// Run blink-loop.wasm: blinks the LED count times (300 ms on / 300 ms off each).
-// The loop logic lives in WASM; Swift provides the low-level blink primitive as
-// a host import.
-func blinkLoop(count: Int32) {
-    let buf = UnsafeBufferPointer<UInt8>(
-        start: blink_loop_wasm_ptr(),
-        count: Int(blink_loop_wasm_len())
-    )
-    var parser = WasmParser(buf)
+// Execute the WASM binary that has been written into the static receive buffer.
+// The WASM module is expected to export a single entry-point function with no
+// parameters, located at the first local function index (after all imports).
+// Host import: env::blink — toggles the LED on for 300 ms then off for 300 ms.
+func executeReceivedWasm() {
+    guard wasmRecvLen > 0, let ptr = wasm_recv_buf_ptr() else { return }
+    let wasmBuf = UnsafeBufferPointer<UInt8>(start: ptr, count: Int(wasmRecvLen))
+    var parser = WasmParser(wasmBuf)
     do throws(WasmError) {
         let module = try parser.parse()
+        // [Embedded-TODO]: HostFunction is a heap-allocated closure type.
+        // When migrating to fully constrained Embedded, replace with a
+        // @convention(c) function pointer and read ledPin from the global directly.
         let hostImports: [HostImport] = [
             .function("env", "blink", { _, _ in
                 cyw43_arch_gpio_put(ledPin, true)
@@ -70,13 +115,16 @@ func blinkLoop(count: Int32) {
                 return []
             }),
         ]
-        // callExport(nameBytes:) requires String comparison; avoid it in Embedded.
-        // Function index space: 0 = imported blink, 1 = local blink_loop.
+        // importedFunctionCount: number of imported functions.
+        // The first local function begins immediately after that index.
         var interp = try WasmInterpreter(module: module, hostImports: hostImports)
-        _ = try interp.call(functionIndex: 1, args: [.i32(count)])
+        _ = try interp.call(functionIndex: module.importedFunctionCount, args: [])
     } catch {
-        // On Wasm error, leave the LED unchanged
+        // On WASM error, leave the LED unchanged
     }
+    // Reset transfer state so the next 0xF0 starts fresh
+    wasmRecvLen = 0
+    wasmRecvExpected = 0
 }
 
 @main

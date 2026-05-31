@@ -1,0 +1,26 @@
+import Foundation
+
+struct WasmEntry: Identifiable {
+  let id = UUID()
+  let displayName: String
+  let resourceName: String
+  let description: String
+
+  static let all: [WasmEntry] = [
+    WasmEntry(
+      displayName: "blink-loop.wasm",
+      resourceName: "blink-loop",
+      description: "Blinks 3 times"
+    ),
+    WasmEntry(
+      displayName: "blink-loop2.wasm",
+      resourceName: "blink-loop2",
+      description: "Blinks 5 times"
+    ),
+    WasmEntry(
+      displayName: "blink-loop3.wasm",
+      resourceName: "blink-loop3",
+      description: "Blinks 10 times"
+    ),
+  ]
+}
