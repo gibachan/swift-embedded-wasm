@@ -1,8 +1,10 @@
-// Embedded Swift の swift_allocObject は posix_memalign を使ってヒープを確保する。
-// Pico SDK の newlib 構成にはこの関数が含まれていないため、malloc でラップして提供する。
+// Embedded Swift's swift_allocObject uses posix_memalign to allocate heap memory.
+// The Pico SDK's newlib configuration does not include this function, so we provide
+// a wrapper around malloc.
 //
-// Pico の malloc は 8 バイトアライメントを保証しており、Cortex-M0+ 上の Swift が
-// 要求するアライメント（最大 8 バイト）を満たすため、alignment 引数は無視してよい。
+// Pico's malloc guarantees 8-byte alignment, which satisfies the alignment
+// requirement of Swift on Cortex-M0+ (max 8 bytes), so the alignment argument
+// can be safely ignored.
 
 #include <stddef.h>
 #include <stdlib.h>

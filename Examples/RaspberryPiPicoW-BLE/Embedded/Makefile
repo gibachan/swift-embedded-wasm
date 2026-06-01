@@ -1,23 +1,23 @@
 # =============================================================================
-# Makefile — pico-ble（Raspberry Pi Pico W BLE ペリフェラル、CMake ビルド）
+# Makefile — pico-ble (Raspberry Pi Pico W BLE peripheral, CMake build)
 # =============================================================================
 #
-# 使い方:
-#   make              build と同じ
-#   make build        CMake 設定（初回のみ）+ ビルド → .uf2 生成
-#   make reconfigure  CMake を強制再設定してからビルド
-#   make flash        .uf2 を Pico にコピー（BOOTSEL マウント後に実行）
-#   make clean        ビルド成果物を削除
-#   make help         このヘルプを表示
+# Usage:
+#   make              same as build
+#   make build        CMake configure (first time only) + build → generate .uf2
+#   make reconfigure  force CMake reconfigure, then build
+#   make flash        copy .uf2 to Pico (run after BOOTSEL mount)
+#   make clean        delete build artifacts
+#   make help         show this help
 #
-# 環境変数（上書き可能）:
-#   PICO_BOARD          ボード種別              (デフォルト: pico_w)
-#   PICO_SDK_PATH       Pico SDK のパス         (デフォルト: ~/pico/pico-sdk)
-#   PICO_TOOLCHAIN_PATH Arm ツールチェーンのパス (デフォルト: /opt/homebrew)
-#   SWIFT_TOOLCHAIN     Swift ツールチェーンのパス
-#   PICO_MOUNT          Pico のマウントパス      (デフォルト: /Volumes/RPI-RP2)
+# Environment variables (overridable):
+#   PICO_BOARD          board type                   (default: pico_w)
+#   PICO_SDK_PATH       path to Pico SDK             (default: ~/pico/pico-sdk)
+#   PICO_TOOLCHAIN_PATH path to Arm toolchain        (default: /opt/homebrew)
+#   SWIFT_TOOLCHAIN     path to Swift toolchain
+#   PICO_MOUNT          Pico mount path              (default: /Volumes/RPI-RP2)
 #
-# 例:
+# Examples:
 #   make
 #   make PICO_BOARD=pico2_w
 #   make flash PICO_MOUNT=/Volumes/RP2350
@@ -37,7 +37,7 @@ PICO_MOUNT          ?= /Volumes/RPI-RP2
 all: build
 
 # ---------------------------------------------------------------------------
-# build — CMake 設定（build/ がなければ初回のみ）+ ビルド
+# build — CMake configure (first time only, when build/ does not exist) + build
 # ---------------------------------------------------------------------------
 build: check-sdk
 	@if [ ! -d "$(BUILD_DIR)" ]; then \
@@ -50,16 +50,16 @@ build: check-sdk
 	fi
 	@cmake --build $(BUILD_DIR)
 	@echo ""
-	@echo "✓ ビルド完了"
+	@echo "✓ Build complete"
 	@echo "  UF2: $(BUILD_DIR)/$(PROJECT).uf2"
 	@echo "  ELF: $(BUILD_DIR)/$(PROJECT).elf"
 	@echo ""
-	@echo "次のステップ: make flash"
+	@echo "Next step: make flash"
 
 # ---------------------------------------------------------------------------
-# reconfigure — CMake キャッシュを削除して再設定 + ビルド
+# reconfigure — delete CMake cache, reconfigure, then build
 #
-# CMakeLists.txt を変更した場合や PICO_BOARD を切り替えた場合に使う。
+# Use this when CMakeLists.txt has changed or when switching PICO_BOARD.
 # ---------------------------------------------------------------------------
 reconfigure: check-sdk
 	rm -rf $(BUILD_DIR)
@@ -71,44 +71,44 @@ reconfigure: check-sdk
 	   -DCMAKE_Swift_COMPILER="$(SWIFT_TOOLCHAIN)/bin/swiftc"
 	@cmake --build $(BUILD_DIR)
 	@echo ""
-	@echo "✓ ビルド完了"
+	@echo "✓ Build complete"
 	@echo "  UF2: $(BUILD_DIR)/$(PROJECT).uf2"
 
 # ---------------------------------------------------------------------------
-# flash — Pico に書き込む
+# flash — write firmware to Pico
 #
-# Pico W を BOOTSEL ボタンを押しながら USB 接続すると
-# ストレージデバイスとしてマウントされる。
-# .uf2 ファイルをコピーするだけで書き込み完了し、自動的に再起動する。
+# Hold the BOOTSEL button while connecting Pico W via USB; it will mount
+# as a storage device. Copying the .uf2 file completes the flash and the
+# device reboots automatically.
 # ---------------------------------------------------------------------------
 flash: $(BUILD_DIR)/$(PROJECT).uf2
 	@if [ ! -d "$(PICO_MOUNT)" ]; then \
 	  echo ""; \
-	  echo "エラー: Pico がマウントされていません"; \
-	  echo "  手順: BOOTSEL ボタンを押しながら USB 接続 → $(PICO_MOUNT) に現れたら再実行"; \
+	  echo "Error: Pico is not mounted"; \
+	  echo "  Steps: hold BOOTSEL and connect via USB → wait for $(PICO_MOUNT) to appear → re-run"; \
 	  echo ""; \
 	  exit 1; \
 	fi
 	cp $(BUILD_DIR)/$(PROJECT).uf2 $(PICO_MOUNT)/
-	@echo "✓ Pico への書き込み完了 ($(PROJECT).uf2 → $(PICO_MOUNT)/)"
+	@echo "✓ Flash complete ($(PROJECT).uf2 → $(PICO_MOUNT)/)"
 
 # ---------------------------------------------------------------------------
-# clean — ビルド成果物を削除
+# clean — delete build artifacts
 # ---------------------------------------------------------------------------
 clean:
 	rm -rf $(BUILD_DIR)
-	@echo "✓ $(BUILD_DIR)/ を削除しました"
+	@echo "✓ Deleted $(BUILD_DIR)/"
 
 # ---------------------------------------------------------------------------
-# ユーティリティ
+# Utilities
 # ---------------------------------------------------------------------------
 check-sdk:
 	@if [ ! -d "$(PICO_SDK_PATH)" ]; then \
 	  echo ""; \
-	  echo "エラー: Pico SDK が見つかりません"; \
+	  echo "Error: Pico SDK not found"; \
 	  echo "  PICO_SDK_PATH = $(PICO_SDK_PATH)"; \
 	  echo ""; \
-	  echo "  セットアップ手順:"; \
+	  echo "  Setup steps:"; \
 	  echo "    git clone https://github.com/raspberrypi/pico-sdk ~/pico/pico-sdk"; \
 	  echo "    cd ~/pico/pico-sdk && git submodule update --init"; \
 	  echo "    export PICO_SDK_PATH=~/pico/pico-sdk"; \
@@ -119,15 +119,15 @@ check-sdk:
 
 help:
 	@echo ""
-	@echo "=== pico-ble — Raspberry Pi Pico W BLE ペリフェラル ==="
+	@echo "=== pico-ble — Raspberry Pi Pico W BLE peripheral ==="
 	@echo ""
-	@echo "ターゲット:"
-	@echo "  build        CMake 設定 + ビルド → .uf2 生成 [デフォルト]"
-	@echo "  reconfigure  CMake を強制再設定してからビルド（CMakeLists.txt 変更時）"
-	@echo "  flash        .uf2 を BOOTSEL マウント済みの Pico にコピー"
-	@echo "  clean        $(BUILD_DIR)/ を削除"
+	@echo "Targets:"
+	@echo "  build        CMake configure + build → generate .uf2 [default]"
+	@echo "  reconfigure  force CMake reconfigure then build (use after CMakeLists.txt changes)"
+	@echo "  flash        copy .uf2 to BOOTSEL-mounted Pico"
+	@echo "  clean        delete $(BUILD_DIR)/"
 	@echo ""
-	@echo "設定変数（現在値）:"
+	@echo "Configuration variables (current values):"
 	@echo "  PICO_BOARD          = $(PICO_BOARD)"
 	@echo "  PICO_SDK_PATH       = $(PICO_SDK_PATH)"
 	@echo "  PICO_TOOLCHAIN_PATH = $(PICO_TOOLCHAIN_PATH)"

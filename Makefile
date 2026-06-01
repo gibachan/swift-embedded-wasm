@@ -2,43 +2,43 @@
 # Makefile — swift-embedded-wasm
 # =============================================================================
 #
-# 使い方:
-#   make              test と同じ（両方のチェックを実行）
-#   make test         swift test (macOS) + Embedded Swift ビルド検証
-#   make compile      Swift → .o のみ（Embedded Swift 検証、Pico SDK 不要）
-#   make format       Sources/ と Tests/ を swift-format でフォーマット（上書き）
-#   make format-check フォーマットのチェックのみ（変更があれば非ゼロ終了）
-#   make spectest-gen 公式 WebAssembly testsuite の .wast → JSON + .wasm に変換
-#   make setup-hooks  Git pre-commit フックをインストール（初回のみ）
-#   make clean        ビルド成果物を削除
-#   make help         このヘルプを表示
+# Usage:
+#   make              same as test (runs both checks)
+#   make test         swift test (macOS) + Embedded Swift build verification
+#   make compile      Swift → .o only (Embedded Swift verification, no Pico SDK required)
+#   make format       format Sources/ and Tests/ with swift-format (in-place)
+#   make format-check check formatting only (exits non-zero if changes found)
+#   make spectest-gen convert official WebAssembly testsuite .wast → JSON + .wasm
+#   make setup-hooks  install Git pre-commit hook (first time only)
+#   make clean        delete build artifacts
+#   make help         show this help
 #
 # =============================================================================
 
-# --- プロジェクト設定 ---------------------------------------------------------
+# --- Project settings ---------------------------------------------------------
 PROJECT     := pico-wasm
 MODULE_NAME := Main
 
 BUILD_DIR := build
 
-# ビルド対象の Swift ソース（macOS / Pico 共有ロジック層）
+# Swift sources to build (shared logic layer for macOS / Pico)
 SWIFT_SRCS := $(wildcard Sources/WasmRuntime/*.swift)
 
-# --- ターゲット設定 -----------------------------------------------------------
+# --- Target settings ----------------------------------------------------------
 #
-# ARMv8-M (Cortex-M33) は ARMv7-M 上位互換なので armv7em でコンパイルした
-# コードは RP2350 上でそのまま動く。
+# ARMv8-M (Cortex-M33) is upward-compatible with ARMv7-M, so code compiled
+# for armv7em runs on RP2350 without modification.
 #
 TARGET := armv7em-none-none-eabi
 
-# --- ツール -------------------------------------------------------------------
+# --- Tools --------------------------------------------------------------------
 SWIFTC        := $(HOME)/.swiftly/bin/swiftc
 SWIFT_FORMAT  := $(HOME)/.swiftly/bin/swift-format
 
-# --- SDK パス（macOS ホスト用）------------------------------------------------
+# --- SDK path (macOS host) ----------------------------------------------------
 SWIFT_SDK := $(shell xcrun --show-sdk-path 2>/dev/null)
 
-# --- Swift コンパイルフラグ ---------------------------------------------------
+# --- Swift compilation flags --------------------------------------------------
 SWIFTFLAGS := \
   -target $(TARGET) \
   -enable-experimental-feature Embedded \
@@ -49,33 +49,33 @@ SWIFTFLAGS := \
   -module-name $(MODULE_NAME) \
   -sdk $(SWIFT_SDK)
 
-# --- spectest パス -----------------------------------------------------------
+# --- spectest paths -----------------------------------------------------------
 SPECTEST_SRC := ThirdParty/testsuite
 SPECTEST_OUT := Tests/WasmRuntimeTests/spectest
 
 # =============================================================================
-# ターゲット定義
+# Target definitions
 # =============================================================================
 
 .PHONY: all test swift-test compile format format-check clean setup-hooks spectest-gen spectest-clean check-tools check-toolchain help
 
-# デフォルトは test — 素の `make` で両環境のチェックを行う
+# Default is test — bare `make` runs both environment checks
 all: test
 
 # ---------------------------------------------------------------------------
-# test — ロジック検証（macOS）+ Embedded Swift ビルド検証
+# test — logic verification (macOS) + Embedded Swift build verification
 #
-# 2 段階で検証する:
-#   1. swift test  : macOS 上でユニットテストを実行（高速、Pico 実機不要）
-#   2. make compile: 同じソースが Embedded Swift でもコンパイルできることを確認
+# Two-stage verification:
+#   1. swift test  : run unit tests on macOS (fast, no physical Pico required)
+#   2. make compile: confirm the same sources compile under Embedded Swift
 #
-# swift test が失敗した時点で compile は実行されない。
+# If swift test fails, compile is not executed.
 # ---------------------------------------------------------------------------
 test: swift-test compile
 	@echo ""
-	@echo "✓ すべてのチェックが通りました"
-	@echo "  [1/2] swift test : macOS ロジック検証"
-	@echo "  [2/2] compile    : Embedded Swift ビルド検証"
+	@echo "✓ All checks passed"
+	@echo "  [1/2] swift test : macOS logic verification"
+	@echo "  [2/2] compile    : Embedded Swift build verification"
 
 swift-test:
 	@echo "--- [1/2] swift test (macOS) ---"
@@ -83,32 +83,32 @@ swift-test:
 	@echo ""
 
 # ---------------------------------------------------------------------------
-# compile — Swift → .o のみ（Embedded Swift 検証）
+# compile — Swift → .o only (Embedded Swift verification)
 #
-# Pico SDK は不要。swiftc が Embedded Swift に対応していれば動作する。
-# pre-commit フックからも呼ばれる。
+# Pico SDK is not required; works as long as swiftc supports Embedded Swift.
+# Also called by the pre-commit hook.
 # ---------------------------------------------------------------------------
 compile: check-tools $(BUILD_DIR)/$(PROJECT).o
 	@echo ""
-	@echo "✓ Embedded Swift コンパイル成功"
-	@echo "  出力:     $(BUILD_DIR)/$(PROJECT).o"
-	@echo "  ターゲット: $(TARGET)"
+	@echo "✓ Embedded Swift compilation succeeded"
+	@echo "  Output: $(BUILD_DIR)/$(PROJECT).o"
+	@echo "  Target: $(TARGET)"
 
 $(BUILD_DIR)/$(PROJECT).o: $(SWIFT_SRCS)
 	@mkdir -p $(BUILD_DIR)
 	$(SWIFTC) $(SWIFTFLAGS) -c $^ -o $@
 
 # ---------------------------------------------------------------------------
-# ユーティリティ
+# Utilities
 # ---------------------------------------------------------------------------
 check-tools:
 	@if [ ! -f "$(SWIFTC)" ]; then \
 	  echo ""; \
-	  echo "エラー: swiftc が見つかりません: $(SWIFTC)"; \
+	  echo "Error: swiftc not found: $(SWIFTC)"; \
 	  echo ""; \
-	  echo "  swiftly がインストールされていることを確認してください:"; \
+	  echo "  Make sure swiftly is installed:"; \
 	  echo "    https://github.com/swiftlang/swiftly"; \
-	  echo "  インストール後、Swift 6.x を追加:"; \
+	  echo "  Then add Swift 6.x:"; \
 	  echo "    swiftly install latest"; \
 	  echo ""; \
 	  exit 1; \
@@ -118,44 +118,44 @@ check-tools:
 	 EMBEDDED_DIR="$$TOOLCHAIN_DIR/lib/swift/embedded"; \
 	 if [ ! -d "$$EMBEDDED_DIR" ]; then \
 	   echo ""; \
-	   echo "警告: embedded stdlib が見つかりません: $$EMBEDDED_DIR"; \
-	   echo "  swiftly で snapshot ツールチェーンを試してください:"; \
+	   echo "Warning: embedded stdlib not found: $$EMBEDDED_DIR"; \
+	   echo "  Try a snapshot toolchain via swiftly:"; \
 	   echo "    swiftly install main-snapshot"; \
-	   echo "    swiftly use main-snapshot-<日付>"; \
+	   echo "    swiftly use main-snapshot-<date>"; \
 	   echo ""; \
 	 fi
 	@echo "| swiftc: $$($(SWIFTC) --version 2>&1 | head -1)"
 
 check-toolchain:
-	@echo "=== ツールチェーン診断 ==="
-	@echo "swiftc    : $$(which swiftc)"
-	@echo "バージョン  : $$(swiftc --version 2>&1 | head -1)"
-	@echo "SDK       : $(SWIFT_SDK)"
-	@echo "ターゲット  : $(TARGET)"
+	@echo "=== Toolchain diagnostics ==="
+	@echo "swiftc  : $$(which swiftc)"
+	@echo "version : $$(swiftc --version 2>&1 | head -1)"
+	@echo "SDK     : $(SWIFT_SDK)"
+	@echo "target  : $(TARGET)"
 	@echo ""
-	@echo "--- embedded stdlib の確認 ---"
+	@echo "--- Checking embedded stdlib ---"
 	@SWIFTC_DIR=$$(dirname $$(which swiftc)); \
 	 EMBEDDED_DIR="$$SWIFTC_DIR/../lib/swift/embedded"; \
 	 if [ -d "$$EMBEDDED_DIR" ]; then \
-	   echo "✓ embedded stdlib あり: $$EMBEDDED_DIR"; \
+	   echo "✓ embedded stdlib found: $$EMBEDDED_DIR"; \
 	   ls "$$EMBEDDED_DIR" | head -5; \
 	 else \
-	   echo "✗ embedded stdlib なし: $$EMBEDDED_DIR"; \
+	   echo "✗ embedded stdlib not found: $$EMBEDDED_DIR"; \
 	   echo ""; \
-	   echo "  → swift.org から Swift 6.x ツールチェーンをインストールしてください:"; \
+	   echo "  → Install a Swift 6.x toolchain from swift.org:"; \
 	   echo "    https://www.swift.org/download/"; \
-	   echo "    インストール後: export TOOLCHAINS=<bundle-id>"; \
+	   echo "    After installing: export TOOLCHAINS=<bundle-id>"; \
 	 fi
 
 # ---------------------------------------------------------------------------
-# format / format-check — swift-format によるコードフォーマット
+# format / format-check — code formatting via swift-format
 #
-# format       : Sources/ と Tests/ を再帰的にフォーマットし上書きする
-# format-check : 差分があれば非ゼロ終了（CI での lint チェックに使用）
+# format       : recursively format Sources/ and Tests/ in-place
+# format-check : exit non-zero if formatting diff exists (used for CI lint)
 # ---------------------------------------------------------------------------
 format:
 	$(SWIFT_FORMAT) format --in-place --recursive Sources/ Tests/
-	@echo "✓ フォーマット完了"
+	@echo "✓ Formatting complete"
 
 format-check:
 	$(SWIFT_FORMAT) lint --recursive Sources/ Tests/
@@ -164,36 +164,36 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 # ---------------------------------------------------------------------------
-# setup-hooks — Git pre-commit フックをインストールする
+# setup-hooks — install Git pre-commit hook
 #
-# Scripts/pre-commit を .git/hooks/pre-commit にコピーし実行権限を付与する。
-# 一度だけ実行すれば、以後はコミット時に自動で Embedded ビルドが検証される。
+# Copies Scripts/pre-commit to .git/hooks/pre-commit and makes it executable.
+# Run once; subsequent commits will automatically verify the Embedded build.
 # ---------------------------------------------------------------------------
 setup-hooks:
 	@cp Scripts/pre-commit .git/hooks/pre-commit
 	@chmod +x .git/hooks/pre-commit
-	@echo "✓ pre-commit フックをインストールしました"
-	@echo "  Sources/WasmRuntime/ を変更してコミットすると自動で Embedded ビルドを検証します"
+	@echo "✓ pre-commit hook installed"
+	@echo "  Committing changes to Sources/WasmRuntime/ will automatically verify the Embedded build"
 
 # ---------------------------------------------------------------------------
-# spectest-gen — 公式 WebAssembly testsuite の .wast → JSON + .wasm に変換
+# spectest-gen — convert official WebAssembly testsuite .wast → JSON + .wasm
 #
-# wast2json (wabt) が必要: brew install wabt
+# Requires wast2json (wabt): brew install wabt
 #
-# 変換結果は Tests/WasmRuntimeTests/spectest/ に出力される (.gitignore 対象)。
-# swift test を実行すると SpectestTests がこれらを自動検出して実行する。
+# Output is written to Tests/WasmRuntimeTests/spectest/ (.gitignore target).
+# Running swift test causes SpectestTests to auto-discover and run them.
 #
-# 初回または testsuite を更新した際に実行する:
+# Run on first use or after updating the testsuite:
 #   make spectest-gen
 # ---------------------------------------------------------------------------
 spectest-gen:
 	@if ! command -v wast2json > /dev/null 2>&1; then \
-	  echo "エラー: wast2json が見つかりません"; \
+	  echo "Error: wast2json not found"; \
 	  echo "  brew install wabt"; \
 	  exit 1; \
 	fi
 	@mkdir -p $(SPECTEST_OUT)
-	@echo "--- spec testsuite を変換中 (wast2json) ---"
+	@echo "--- Converting spec testsuite (wast2json) ---"
 	@count=0; skip=0; \
 	for wast in $(SPECTEST_SRC)/*.wast; do \
 	  name=$$(basename "$$wast" .wast); \
@@ -203,28 +203,28 @@ spectest-gen:
 	    skip=$$((skip + 1)); \
 	  fi; \
 	done; \
-	echo "✓ $$count ファイル変換完了 → $(SPECTEST_OUT)/  ($$skip スキップ)"
+	echo "✓ $$count files converted → $(SPECTEST_OUT)/  ($$skip skipped)"
 
 spectest-clean:
 	rm -rf $(SPECTEST_OUT)
-	@echo "✓ $(SPECTEST_OUT)/ を削除しました"
+	@echo "✓ Deleted $(SPECTEST_OUT)/"
 
 help:
 	@echo ""
 	@echo "=== swift-embedded-wasm ==="
 	@echo ""
-	@echo "ターゲット:"
-	@echo "  spectest-gen     公式 testsuite (.wast) を JSON + .wasm に変換（初回・更新時）"
-	@echo "  spectest-clean   変換済みファイルを削除"
-	@echo "  test             swift test (macOS) + compile (Embedded) の両方を検証 [デフォルト]"
-	@echo "  compile          Swift → .o のみ（ツールチェーン確認、Pico SDK 不要）"
-	@echo "  format           Sources/ と Tests/ を swift-format でフォーマット（上書き）"
-	@echo "  format-check     フォーマットのチェックのみ（差分があれば非ゼロ終了）"
-	@echo "  setup-hooks      Git pre-commit フックをインストール（初回のみ）"
-	@echo "  clean            $(BUILD_DIR)/ を削除"
-	@echo "  check-toolchain  ツールチェーンの設定を診断"
+	@echo "Targets:"
+	@echo "  spectest-gen     convert official testsuite (.wast) to JSON + .wasm (first run / update)"
+	@echo "  spectest-clean   delete converted files"
+	@echo "  test             verify with swift test (macOS) + compile (Embedded) [default]"
+	@echo "  compile          Swift → .o only (toolchain check, no Pico SDK required)"
+	@echo "  format           format Sources/ and Tests/ with swift-format (in-place)"
+	@echo "  format-check     check formatting only (exits non-zero if diff found)"
+	@echo "  setup-hooks      install Git pre-commit hook (first time only)"
+	@echo "  clean            delete $(BUILD_DIR)/"
+	@echo "  check-toolchain  diagnose toolchain configuration"
 	@echo ""
-	@echo "設定変数（現在値）:"
+	@echo "Configuration variables (current values):"
 	@echo "  TARGET    = $(TARGET)"
 	@echo "  SWIFT_SDK = $(SWIFT_SDK)"
 	@echo ""

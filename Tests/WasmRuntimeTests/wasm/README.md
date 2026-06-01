@@ -1,39 +1,39 @@
 # wasm/
 
-このディレクトリには、Runtime の動作検証・テスト用の WebAssembly テキストフォーマット（`.wat`）ファイルを置く。
+This directory contains WebAssembly text format (`.wat`) files used for verifying and testing the Runtime.
 
-## ファイル構成
+## File Structure
 
-| ファイル | 内容 |
+| File | Description |
 |---|---|
-| `*.wat` | WebAssembly テキスト形式のソース |
-| `*.wasm` | `wat2wasm` で変換したバイナリ（生成物、git 管理外） |
+| `*.wat` | WebAssembly text format source files |
+| `*.wasm` | Binaries converted from `.wat` via `wat2wasm` (generated, not tracked by git) |
 
-## 前提ツール
+## Prerequisites
 
-[wabt](https://github.com/WebAssembly/wabt) に含まれる `wat2wasm` コマンドが必要。
+Requires the `wat2wasm` command from [wabt](https://github.com/WebAssembly/wabt).
 
 ```sh
 brew install wabt
 ```
 
-## 使い方
+## Usage
 
 ```sh
-# wasm/ ディレクトリに移動
+# Move to the wasm/ directory
 cd wasm
 
-# すべての .wat を .wasm に変換
+# Convert all .wat files to .wasm
 make
 
-# 特定のファイルだけ変換
+# Convert a specific file
 make i32-add.wasm
 
-# 生成した .wasm を削除
+# Delete generated .wasm files
 make clean
 ```
 
-## .wat の追加方法
+## Adding .wat Files
 
-1. このディレクトリに `<name>.wat` を作成する
-2. `make` を実行すると `<name>.wasm` が生成される
+1. Create a `<name>.wat` file in this directory
+2. Run `make` to generate `<name>.wasm`

@@ -4,27 +4,12 @@
       "Bash(swift test *)",
       "Bash(make compile *)",
       "Bash(make test *)",
-      "Bash(make setup-hooks *)",
-      "Bash(git add *)",
-      "Bash(git commit *)",
-      "Bash(gh repo *)",
-      "Bash(gh api *)",
-      "Bash(xxd *)",
-      "Bash(git mv *)",
       "Bash(swift build *)",
       "Bash(make format *)",
-      "Bash(git stash *)",
       "Bash(make build *)",
       "Bash(make clean *)",
-      "Bash(python3 *)",
       "Bash(wasm-objdump *)",
-      "Bash(tee /tmp/swift_test_output.log)",
-      "Bash(tee /tmp/make_compile_output.log)",
-      "Bash(tee /tmp/make_build_output.log)",
-      "Bash(rm -rf build)",
-      "Bash(PICO_SDK_PATH=/Users/tatsuyuki/pico/pico-sdk cmake -B build -G Ninja . -DCMAKE_EXPORT_COMPILE_COMMANDS=On -DCMAKE_Swift_COMPILER=\"/Users/tatsuyuki/.swiftly/bin/swiftc\")",
-      "Bash(git *)",
-      "Bash(PICO_SDK_PATH=\"/Users/tatsuyuki/pico/pico-sdk\" make build)"
+      "Bash(rm -rf build)"
     ]
   }
 }

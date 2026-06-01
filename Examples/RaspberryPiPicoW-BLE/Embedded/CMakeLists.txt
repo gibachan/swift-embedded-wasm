@@ -2,10 +2,10 @@ cmake_minimum_required(VERSION 3.29)
 
 include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 
-# Embedded Swift では wholemodule が必須（未使用コードの完全除去のため）
+# wholemodule is required for Embedded Swift (ensures complete elimination of unused code)
 set(CMAKE_Swift_COMPILATION_MODE wholemodule)
 
-# ベアメタルターゲット向けコンパイラ検証をスキップ
+# Skip compiler verification for bare-metal targets
 set(CMAKE_Swift_COMPILER_WORKS YES)
 
 project(pico-ble)
@@ -34,12 +34,13 @@ target_link_libraries(pico-ble
 
 target_include_directories(pico-ble PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 
-# pico_standard_link が持つ C 専用フラグを Swift コンパイラに渡さないようにする
+# Prevent C-only flags from pico_standard_link from being passed to the Swift compiler
 set_target_properties(pico_standard_link PROPERTIES INTERFACE_COMPILE_OPTIONS "")
 target_compile_options(pico_standard_link INTERFACE "$<$<COMPILE_LANGUAGE:C>:SHELL: -ffunction-sections -fdata-sections>")
 
-# Pico SDK の依存ライブラリから C プリプロセッサ定義を再帰収集して Swift に渡す
-# （CMake は C 定義を自動的に swiftc に渡さないため手動で収集が必要）
+# Recursively collect C preprocessor definitions from Pico SDK dependencies and pass them to Swift
+# (CMake does not automatically forward C definitions to swiftc, so manual collection is required)
+
 set_property(GLOBAL PROPERTY visited_targets "")
 set_property(GLOBAL PROPERTY compilerdefs_list "")
 

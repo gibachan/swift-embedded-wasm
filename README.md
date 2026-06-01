@@ -138,8 +138,4 @@ make flash PICO_MOUNT=/Volumes/RPI-RP2
 
 A complete end-to-end demo: transfer a Wasm binary from an iPhone to a Pico W over BLE and execute it.
 
-```
-Examples/RaspberryPiPicoW-BLE/
-├── Embedded/   # Pico W firmware (Embedded Swift + BTstack)
-└── iOS/        # iOS controller app (SwiftUI + CoreBluetooth)
-```
+See: [Examples/RaspberryPiPicoW-BLE/README.md](Examples/RaspberryPiPicoW-BLE/README.md)

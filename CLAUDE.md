@@ -1,89 +1,85 @@
 Read Documentations/OVERVIEW.md
 
-# ⚠️ 最重要注意点
+# ⚠️ Critical Rules
 
-## コミット禁止（許可なし）
+## No Commits Without Permission
 
-**git commit は絶対にユーザーの事前許可なしに実行してはいけない。**
+**Never run `git commit` without explicit prior approval from the user.**
 
-- 作業完了後に自動でコミットしてはいけない
--「コミットして」と明示的に指示された場合のみ実行する
-- サブエージェント（embedded-wasm-runtime-implementer 等）もコミットしてはいけない
-- ワークフロー完了時も同様。必ず「コミットしますか？」と確認してから待つ
+- Do not auto-commit after completing a task
+- Only commit when explicitly instructed with "commit this"
+- Sub-agents (e.g., `embedded-wasm-runtime-implementer`) must not commit either
+- At workflow completion, always ask "Shall I commit?" and wait for confirmation
 
-# Claude へのルール
+# Rules for Claude
 
-## フォーマット
-ソースコード（`Sources/`・`Tests/` 以下の Swift ファイル）に変更を加えた後は、必ず `make format` を実行してフォーマットを整えること。
+## Formatting
+After modifying any Swift source files under `Sources/` or `Tests/`, always run `make format` to apply code formatting.
 
-# プロジェクトについて
+# About the Project
 
-## 概要
+## Overview
 
-本プロジェクトでは、Embedded Swift を利用して Raspberry Pi Pico 上で動作する WebAssembly Runtime (Interpreter) を段階的に実装する。
+This project incrementally implements a WebAssembly Runtime (Interpreter) for Raspberry Pi Pico using Embedded Swift.
 
-本プロジェクトの目的は以下である。
+Goals:
 
-- Embedded Swift の理解を深める
-- WebAssembly Runtime の内部構造を理解する
-- Interpreter 実装技術を学ぶ
-- Swift の型安全性を活かした Runtime 設計を研究する
-- Actor を活用した安全な組み込み設計を実践する
-- iOS アプリと連携した Scriptable Device を構築する
+- Deepen understanding of Embedded Swift
+- Understand the internals of a WebAssembly Runtime
+- Learn interpreter implementation techniques
+- Research Runtime design leveraging Swift's type safety
+- Practice safe embedded design using actors
+- Build a scriptable device that integrates with an iOS app
 
-本プロジェクトでは「完成」を急がず、
+The project intentionally avoids rushing to "completion" and instead emphasizes:
 
-> Runtime の仕組みを理解しながら少しずつ実装する
+> Implementing gradually while understanding how the Runtime works
 
-ことを重視する。
+## Target Audience Profile
 
-## 対象者プロフィール
+- Proficient in Swift
+- Beginner in embedded environments (Raspberry Pi Pico / RP2350, cross-compilation, memory constraints, etc.)
+- Beginner in WebAssembly (binary format, stack machine, runtime structure, etc.)
 
-- Swift 言語には習熟している
-- Embedded 環境（Raspberry Pi Pico / RP2350、クロスコンパイル、メモリ制約など）は初心者
-- WebAssembly（バイナリフォーマット、Stack machine、Runtime 構造など）は初心者
+## Support Policy
 
-## サポート方針
-
-- Embedded / Wasm に関するトピックは、実装支援と並行して適宜解説を加える
-- Swift の知識を前提として説明してよい（基本的な Swift 構文・型システムの説明は不要）
-- 「なぜそうするのか」の背景・理由も説明に含める
-- 学ぶことも目的の一つであるため、理解を深める観点を優先する
+- For Embedded / Wasm topics, include explanations alongside implementation guidance
+- Swift knowledge may be assumed (no need to explain basic Swift syntax or the type system)
+- Include the background and reasoning behind decisions
+- Learning is one of the goals, so prioritize building understanding
 
 ---
 
-## VM 実装における設計方針
+## VM Design Policy
 
-WASM VM を実装する際は **`Documentations/SWIFT_VM_DESIGN.md` の設計方針に従う**こと。
-型設計・エラー設計・インタプリタループ・Generics 採用方針・WasmKit との比較など、
-実装上の判断基準がすべてこのドキュメントにまとめられている。
+When implementing the WASM VM, follow the design guidelines in **`Documentations/SWIFT_VM_DESIGN.md`**.
+That document contains all implementation decision criteria: type design, error design, interpreter loop, generics policy, and comparisons with WasmKit.
 
-## VM 実装における Embedded Swift 対応方針
+## Embedded Swift Compliance Policy
 
-WASM VM の実装は、macOS 上での開発段階においても **Embedded Swift 環境でのビルドを常に意識した設計**とする。
-詳細な制約・パターン・理由については `Documentations/SWIFT_VM_DESIGN.md` の Section 8〜10 を参照すること。
+The WASM VM implementation must be designed with **Embedded Swift build constraints in mind from the start**, even during the macOS development phase.
+For detailed constraints, patterns, and rationale, see Sections 8–10 of `Documentations/SWIFT_VM_DESIGN.md`.
 
-### 実装時の必須チェック事項
+### Required Checks at Implementation Time
 
-| チェック項目 | NG 例 | OK 例 |
+| Check | Not Allowed | Allowed |
 |---|---|---|
-| 参照型の使用禁止 | `class GlobalStore { ... }` | `private var globals: [Value]` + `mutating` メソッド |
-| Existential 型の禁止 | `any Protocol` | ジェネリック制約 `<T: Protocol>` |
-| `String ==` による比較禁止 | `name == "increment"` | `nameBytes.elementsEqual("increment".utf8)` |
-| 型なし `throws` の禁止 | `func f() throws` | `func f() throws(WasmError)` |
+| No reference types | `class GlobalStore { ... }` | `private var globals: [Value]` + `mutating` methods |
+| No existentials | `any Protocol` | Generic constraints `<T: Protocol>` |
+| No `String ==` comparisons | `name == "increment"` | `nameBytes.elementsEqual("increment".utf8)` |
+| No untyped `throws` | `func f() throws` | `func f() throws(WasmError)` |
 
-なお、`block` / `loop` / `if` 命令の子命令格納に用いていた `indirect case` は、
-フラット bytecode（ジャンプオフセット付き命令列）への移行により除去済み（フェーズ 1.5 完了）。
+Note: `indirect case` previously used to store child instructions for `block` / `loop` / `if` instructions has been removed as part of the migration to flat bytecode (jump-offset instruction sequences) completed in Phase 1.5.
 
-### 実装フェーズを通じた共通方針
+### Common Policy Across Implementation Phases
 
-macOS フェーズであっても Embedded Swift の制約に最初から合わせて実装する。
+Even in the macOS phase, implement to match Embedded Swift constraints from the start.
 
-- ホットパスでの `Array(xxx.suffix(n))` などの中間コピーは作らない
-- `String ==` による比較は使わない（`[UInt8]` バイト比較で代替）
-- `throws(WasmError)` の typed throws を常に使う
-- `Array<T>` の動的確保が構造上避けられない箇所（フレームの `locals` 等）は `// TODO: Embedded Phase 5` コメントで明示する
-- バリデーションは Embedded ビルドでは省略し、非 Embedded（macOS）でのみ実装する（`#if !hasFeature(Embedded)`）
+- Do not create intermediate copies in hot paths (e.g., `Array(xxx.suffix(n))`)
+- Do not use `String ==` comparisons (use `[UInt8]` byte comparisons instead)
+- Always use typed throws: `throws(WasmError)`
+- Mark locations where dynamic `Array<T>` allocation is structurally unavoidable (e.g., frame `locals`) with `// TODO: Embedded Phase 5`
+- Validation should be omitted in Embedded builds and implemented only for non-Embedded (macOS) via `#if !hasFeature(Embedded)`
 
 ---
 
@@ -103,11 +99,11 @@ This project uses four sub-agents defined in `.claude/agents/`. They follow a st
 
 ### Test Perspectives
 
-`wasm-runtime-tester` は以下の3つの観点でテストを実施する:
+`wasm-runtime-tester` performs testing from the following three perspectives:
 
-1. **`swift test`（macOS ユニットテスト）** — ロジックが仕様通りに動作するかを検証する
-2. **`make compile`（Embedded Swift コンパイル検証）** — Embedded Swift の制約を満たしてコンパイルできるかを検証する（`.o` 生成、Pico SDK 不要）
-3. **BLE例 `make build`（Embedded Swift リンク検証）** — コンパイルに加えてリンクまで通るかを検証する（`Examples/RaspberryPiPicoW-BLE/Embedded/`、Pico SDK 必要）
+1. **`swift test` (macOS unit tests)** — Verifies that logic behaves as specified
+2. **`make compile` (Embedded Swift compilation check)** — Verifies that the code compiles under Embedded Swift constraints (generates `.o` files; Pico SDK not required)
+3. **BLE example `make build` (Embedded Swift link check)** — Verifies that compilation and linking both succeed (`Examples/RaspberryPiPicoW-BLE/Embedded/`; Pico SDK required)
 
 ### Workflow
 
@@ -119,19 +115,19 @@ This project uses four sub-agents defined in `.claude/agents/`. They follow a st
 
 ---
 
-## 参照リソース
+## Reference Resources
 
-### wasm3（ローカル）
+### wasm3 (local)
 
-wasm3 のソースコードを `ThirdParty/wasm3/` に Git Submodule として配置している。
-WebAssembly Runtime の実装を参照する際は、ネットワーク通信なしにこのローカルコピーを使用すること。
+The wasm3 source code is available as a Git Submodule at `ThirdParty/wasm3/`.
+When referencing the WebAssembly Runtime implementation, use this local copy without network access.
 
-主要ファイル:
+Key files:
 
-| ファイル | 内容 |
+| File | Contents |
 |---|---|
-| `ThirdParty/wasm3/source/m3_core.h` | 型定義・主要データ構造 |
-| `ThirdParty/wasm3/source/m3_env.h` | VM 環境・モジュール構造 |
-| `ThirdParty/wasm3/source/m3_exec.c` | インタープリタのメインループ |
-| `ThirdParty/wasm3/source/m3_parse.c` | バイナリパーサー |
-| `ThirdParty/wasm3/source/m3_compile.c` | コンパイル・中間表現 |
+| `ThirdParty/wasm3/source/m3_core.h` | Type definitions and core data structures |
+| `ThirdParty/wasm3/source/m3_env.h` | VM environment and module structure |
+| `ThirdParty/wasm3/source/m3_exec.c` | Interpreter main loop |
+| `ThirdParty/wasm3/source/m3_parse.c` | Binary parser |
+| `ThirdParty/wasm3/source/m3_compile.c` | Compilation and intermediate representation |

@@ -58,7 +58,7 @@ When invoked, follow this structured process:
 - Preserve the existing structure, tone, and formatting conventions of each document.
 - For `docs/` files: maintain the technical depth appropriate for a developer learning Embedded Swift and WebAssembly.
 - For `README.md`: maintain clarity appropriate for an external reader discovering the project.
-- For `CLAUDE.md`: update the "現在の状況" (Current Status) section and related tables to reflect the latest project state.
+- For `CLAUDE.md`: update the current status section and related tables to reflect the latest project state.
 - Ensure all status tables (e.g., the document status table in CLAUDE.md) reflect the actual current state.
 
 ### Step 5: Verify Cross-Document Consistency
@@ -121,7 +121,7 @@ Examples of what to record:
 
 # Persistent Agent Memory
 
-You have a persistent, file-based memory system at `/Users/tatsuyuki/src/swift/swift-embedded-wasm/.claude/agent-memory/docs-sync-agent/`. This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).
+You have a persistent, file-based memory system at `.claude/agent-memory/docs-sync-agent/`. This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).
 
 You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.
 
