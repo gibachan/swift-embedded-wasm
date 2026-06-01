@@ -281,10 +281,19 @@ struct WasmInterpreter {
     var fuel = fuelLimit
 
     // Push a Wasm function frame. Host functions are executed inline (no frame push).
+    // argCount arguments are consumed directly from the top of valueStack, avoiding
+    // an intermediate Array copy — this is the Embedded-Swift-friendly path.
+    // Host function interface still receives [Value] (copied once here); that boundary
+    // is acceptable because host calls are rare and the host API cannot change.
     @inline(__always)
-    func pushFrame(funcIdx: Int, callArgs: [Value]) throws(WasmError) {
+    func pushFrame(funcIdx: Int, argCount: Int) throws(WasmError) {
+      guard valueStack.count >= argCount else { throw .stackUnderflow }
       let importedCount = module.importedFunctionCount
       if funcIdx < importedCount {
+        // Build the argument slice for the host function boundary (one copy, unavoidable).
+        let argsStart = valueStack.count - argCount
+        let callArgs = Array(valueStack[argsStart...])
+        valueStack.removeLast(argCount)
         let result = hostFunctions[funcIdx](callArgs, memory)
         valueStack.append(contentsOf: result)
         return
@@ -293,8 +302,15 @@ struct WasmInterpreter {
       let typeIdx = Int(module.functions[localIdx])
       let funcType = module.types[typeIdx]
       let body = module.code[localIdx]
-      guard callArgs.count == funcType.params.count else { throw .argumentCountMismatch }
-      var locals = callArgs
+      guard argCount == funcType.params.count else { throw .argumentCountMismatch }
+      // Build locals by reading arguments directly from the value stack top, then
+      // appending zero-initialised slots for declared local variables.
+      // No intermediate callArgs array — arguments stay on the stack until consumed here.
+      let argsStart = valueStack.count - argCount
+      // TODO: Embedded Phase 5 — this Array() heap-allocates on every Wasm function call.
+      // Replace with a fixed-capacity Value buffer (e.g. static array or UnsafeMutableBufferPointer).
+      var locals: [Value] = Array(valueStack[argsStart...])
+      valueStack.removeLast(argCount)
       for vt in body.locals {
         switch vt {
         case .i32: locals.append(.i32(0))
@@ -305,6 +321,7 @@ struct WasmInterpreter {
         case .externref: locals.append(.externref(nil))  // nil = null reference per Wasm spec default
         }
       }
+      // stackBase is set after removeLast so it points to the post-args stack top.
       frames.append(
         Frame(
           instructions: body.instructions,
@@ -362,7 +379,10 @@ struct WasmInterpreter {
       }
     }
 
-    try pushFrame(funcIdx: functionIndex, callArgs: args)
+    // Seed the value stack with the entry-point arguments so pushFrame can consume
+    // them directly from the stack, consistent with how call/callIndirect work.
+    valueStack.append(contentsOf: args)
+    try pushFrame(funcIdx: functionIndex, argCount: args.count)
 
     while !frames.isEmpty {
       let fi = frames.count - 1
@@ -515,9 +535,7 @@ struct WasmInterpreter {
         let funcType = module.functionType(at: Int(funcIdx))
         let argCount = funcType.params.count
         guard valueStack.count >= argCount else { throw .stackUnderflow }
-        let callArgs = Array(valueStack.suffix(argCount))
-        valueStack.removeLast(argCount)
-        try pushFrame(funcIdx: Int(funcIdx), callArgs: callArgs)
+        try pushFrame(funcIdx: Int(funcIdx), argCount: argCount)
 
       // MARK: i32 Unary
 
@@ -1938,9 +1956,7 @@ struct WasmInterpreter {
         }
         let argCount = expectedType.params.count
         guard valueStack.count >= argCount else { throw .stackUnderflow }
-        let callArgs = Array(valueStack.suffix(argCount))
-        valueStack.removeLast(argCount)
-        try pushFrame(funcIdx: Int(funcIdx), callArgs: callArgs)
+        try pushFrame(funcIdx: Int(funcIdx), argCount: argCount)
 
       // MARK: Bulk Memory
 

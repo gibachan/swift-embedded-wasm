@@ -72,12 +72,6 @@ WASM VM の実装は、macOS 上での開発段階においても **Embedded Swi
 | `String ==` による比較禁止 | `name == "increment"` | `nameBytes.elementsEqual("increment".utf8)` |
 | 型なし `throws` の禁止 | `func f() throws` | `func f() throws(WasmError)` |
 
-### macOS フェーズで許容するもの（Embedded フェーズで要置換）
-
-- `Array<T>` の動的確保（パース結果・スタック・ローカル変数の格納）
-
-これらは macOS フェーズでは正確さ優先で使用してよいが、コメントや設計上の区別を意識しておく。
-
 なお、`block` / `loop` / `if` 命令の子命令格納に用いていた `indirect case` は、
 フラット bytecode（ジャンプオフセット付き命令列）への移行により除去済み（フェーズ 1.5 完了）。
 
@@ -104,14 +98,18 @@ WASM VM の実装は、macOS 上での開発段階においても **Embedded Swi
 |---|---|---|
 | `actor` | Embedded Swift は Swift Concurrency ランタイム非対応 | シングルスレッド前提の `struct` で設計 |
 | ヒープ確保クロージャ | Embedded Swift でクロージャはスタック上に収まるもののみ使用可能 | Host Function は `@convention(c)` 関数ポインタ + 静的テーブルで登録 |
-| `Array<T>`（動的確保） | `malloc` が使えない環境では動的配列不可 | 固定サイズバッファ / `UnsafeBufferPointer` で代替。macOS フェーズは `Array` で先行実装してよい |
-| `String` | Embedded Swift では `String` が使えない | エクスポート名の比較はバイト列のまま行う（macOS フェーズは `String` で先行実装してよい） |
+| `Array<T>`（動的確保） | `malloc` が使えない環境では動的配列不可 | 固定サイズバッファ / `UnsafeBufferPointer` で代替 |
+| `String` | Embedded Swift では `String` が使えない | エクスポート名の比較はバイト列のまま行う |
 
-### macOS フェーズと Embedded フェーズの切り替え方針
+### 実装フェーズを通じた共通方針
 
-- macOS フェーズ（現在）: `Array` / `String` / `throws` を自由に使い、正確さを優先する
-- Embedded フェーズ（Phase 5〜）: 動的確保箇所を固定サイズバッファに置き換えていく
-- バリデーションは macOS フェーズでのみ実装し、Embedded フェーズでは実装しない。
+macOS フェーズであっても Embedded Swift の制約に最初から合わせて実装する。
+
+- ホットパスでの `Array(xxx.suffix(n))` などの中間コピーは作らない
+- `String ==` による比較は使わない（`[UInt8]` バイト比較で代替）
+- `throws(WasmError)` の typed throws を常に使う
+- `Array<T>` の動的確保が構造上避けられない箇所（フレームの `locals` 等）は `// TODO: Embedded Phase 5` コメントで明示する
+- バリデーションは macOS フェーズでのみ実装し、Embedded フェーズでは実装しない
 
 ---
 

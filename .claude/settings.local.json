@@ -23,7 +23,8 @@
       "Bash(tee /tmp/make_build_output.log)",
       "Bash(rm -rf build)",
       "Bash(PICO_SDK_PATH=/Users/tatsuyuki/pico/pico-sdk cmake -B build -G Ninja . -DCMAKE_EXPORT_COMPILE_COMMANDS=On -DCMAKE_Swift_COMPILER=\"/Users/tatsuyuki/.swiftly/bin/swiftc\")",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(PICO_SDK_PATH=\"/Users/tatsuyuki/pico/pico-sdk\" make build)"
     ]
   }
 }
