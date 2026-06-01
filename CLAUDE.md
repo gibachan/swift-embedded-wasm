@@ -61,7 +61,7 @@ WASM VM を実装する際は **`Documentations/SWIFT_VM_DESIGN.md` の設計方
 ## VM 実装における Embedded Swift 対応方針
 
 WASM VM の実装は、macOS 上での開発段階においても **Embedded Swift 環境でのビルドを常に意識した設計**とする。
-詳細な制約・パターン・理由については `Documentations/EMBEDDED_SWIFT.md` を参照すること。
+詳細な制約・パターン・理由については `Documentations/SWIFT_VM_DESIGN.md` の Section 8〜10 を参照すること。
 
 ### 実装時の必須チェック事項
 
@@ -75,32 +75,6 @@ WASM VM の実装は、macOS 上での開発段階においても **Embedded Swi
 なお、`block` / `loop` / `if` 命令の子命令格納に用いていた `indirect case` は、
 フラット bytecode（ジャンプオフセット付き命令列）への移行により除去済み（フェーズ 1.5 完了）。
 
----
-
-## Wasm3 調査から得た設計指針（Embedded Swift 向け）
-
-`Documentations/PHASE2_WASM3.md` の調査結果のうち、Embedded Swift インタプリタ実装に有効な点を以下にまとめる。
-
-### 採用する設計
-
-| 項目 | 方針 | 根拠（PHASE2 Section） |
-|---|---|---|
-| **インタプリタループ** | `switch` ベースのシンプルな実装 | Threaded Code（関数ポインタ配列 + tail call）は Embedded Swift で動作が保証されない（F） |
-| **値の型表現** | `enum WasmValue { case i32(Int32); case i64(Int64); ... }` | C の union + type フラグより型安全。Embedded Swift でも enum は使用可能（C） |
-| **エラー処理** | typed throws + `enum WasmError` | `M3Result = const char*` より型安全。Embedded Swift でも throws は使用可能（B） |
-| **メモリアクセス** | `UnsafeBufferPointer` / `UnsafeMutableRawBufferPointer` | ヒープアロケーション不要。Linear Memory の境界チェックも明示的に書ける（E） |
-| **データ構造** | `struct` 中心の値型設計 | ヒープ確保を避けるため class より struct を優先（A） |
-| **パーサー** | Code section はバイト範囲のみ記録し、実行時に逐次デコード | Wasm3 と同じ遅延評価方式。メモリ使用量を最小化（PHASE2 Section 6） |
-
-### Embedded Swift では使えない／注意が必要な設計
-
-| 項目 | 理由 | 代替案 |
-|---|---|---|
-| `actor` | Embedded Swift は Swift Concurrency ランタイム非対応 | シングルスレッド前提の `struct` で設計 |
-| ヒープ確保クロージャ | Embedded Swift でクロージャはスタック上に収まるもののみ使用可能 | Host Function は `@convention(c)` 関数ポインタ + 静的テーブルで登録 |
-| `Array<T>`（動的確保） | `malloc` が使えない環境では動的配列不可 | 固定サイズバッファ / `UnsafeBufferPointer` で代替 |
-| `String` | Embedded Swift では `String` が使えない | エクスポート名の比較はバイト列のまま行う |
-
 ### 実装フェーズを通じた共通方針
 
 macOS フェーズであっても Embedded Swift の制約に最初から合わせて実装する。
@@ -109,7 +83,7 @@ macOS フェーズであっても Embedded Swift の制約に最初から合わ�
 - `String ==` による比較は使わない（`[UInt8]` バイト比較で代替）
 - `throws(WasmError)` の typed throws を常に使う
 - `Array<T>` の動的確保が構造上避けられない箇所（フレームの `locals` 等）は `// TODO: Embedded Phase 5` コメントで明示する
-- バリデーションは macOS フェーズでのみ実装し、Embedded フェーズでは実装しない
+- バリデーションは Embedded ビルドでは省略し、非 Embedded（macOS）でのみ実装する（`#if !hasFeature(Embedded)`）
 
 ---
 
