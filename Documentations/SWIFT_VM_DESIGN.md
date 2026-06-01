@@ -1,39 +1,39 @@
-# Swift Wasm VM 設計方針
+# Swift Wasm VM Design
 
-Swift で Wasm VM を実装するにあたっての設計方針と、Embedded Swift 環境での制約・対応パターンをまとめる。
-wasm3 の調査結果（`Documentations/PHASE2_WASM3.md`）を踏まえ、Swift の言語機能を活かしながら
-組み込み制約にも対応できる設計を定義する。
-
----
-
-## 1. 設計の基本原則
-
-### 原則 1: 理解のための設計
-最初から高速・完全を目指さない。各コンポーネントの役割と責任が明確に読み取れる
-コードを優先する。最適化は、仕組みを理解したあとに行う。
-
-### 原則 2: Swift の型安全性を最大限活かす
-wasm3 が C の制約上やむなく型なし（`union` / `void*` / `const char*`）で扱っている
-部分を、Swift の enum・generics・protocol で型安全に再設計する。
-
-### 原則 3: 最初から Embedded Swift 制約に合わせる
-macOS ビルド（開発・デバッグ用）と Pico ビルド（組み込み用）で共通のソースを維持し、
-最初から Embedded Swift の制約に合わせて実装する。
-
-- ホットパスの中間配列コピー（`Array(xxx.suffix(n))`）は作らない
-- `String ==` 比較は使わない（`[UInt8]` バイト列比較で代替）
-- `throws(ErrorType)` の typed throws を常に使う
-- 構造上避けられない動的確保は `// TODO: Embedded Phase 5` で明示する
-
-バリデーター（`WasmValidator`）のみ `#if !hasFeature(Embedded)` で分岐する。
-Embedded ビルドでは信頼された入力（開発者が制御するバイナリ）を前提として型チェックを省略する。
-
-### 原則 4: Incremental に動くものを作る
-1 命令ずつ確認できる粒度で実装を進める（`Documentations/OVERVIEW.md` の方針に従う）。
+This document defines the design policy for implementing a Wasm VM in Swift,
+along with constraints and patterns specific to the Embedded Swift environment.
+It is informed by the wasm3 investigation (`Documentations/PHASE2_WASM3.md`) and aims for
+a design that leverages Swift's language features while remaining compatible with Embedded constraints.
 
 ---
 
-## 2. コンポーネント構成
+## 1. Core Design Principles
+
+### Principle 1: Design for Understanding
+Do not aim for speed or completeness from the start. Prioritize code where the role and
+responsibility of each component is clearly legible. Optimize only after understanding the mechanics.
+
+### Principle 2: Maximize Swift Type Safety
+Redesign parts that wasm3 handles without types (due to C constraints) — `union` / `void*` / `const char*` —
+using Swift's enum, generics, and protocols in a type-safe way.
+
+### Principle 3: Align with Embedded Swift Constraints from the Start
+Maintain a common source from macOS to Pico, and implement to Embedded Swift constraints from day one.
+
+- No intermediate array copies in hot paths (`Array(xxx.suffix(n))`)
+- No `String ==` comparisons (use `[UInt8]` byte comparison instead)
+- Always use typed throws (`throws(ErrorType)`)
+- Mark unavoidable dynamic allocations with `// TODO: Embedded Phase 5`
+
+Only the validator (`WasmValidator`) is conditionally compiled with `#if !hasFeature(Embedded)`.
+Embedded builds assume trusted input (developer-controlled binaries) and skip type checking.
+
+### Principle 4: Build Incrementally
+Implement one instruction at a time with verifiable granularity (following the `Documentations/OVERVIEW.md` policy).
+
+---
+
+## 2. Component Architecture
 
 ```text
 ┌─────────────────────────────────────────────────┐
@@ -52,28 +52,28 @@ Embedded ビルドでは信頼された入力（開発者が制御するバイ�
 └─────────────────────────────────────────────────┘
 ```
 
-| コンポーネント | 役割 |
-|---|---|
-| `WasmParser` | Wasm バイナリを `WasmModule` に変換する |
-| `WasmValidator` | Module の型整合性を検証する（`#if !hasFeature(Embedded)` でのみ有効） |
-| `WasmInterpreter` | Module を実行する（Stack Machine）。`droppedDataSegments: [Bool]` で `data.drop` 状態を追跡 |
-| `WasmModule` | パース済みの Wasm モジュール（関数・メモリ・グローバル変数）。`DataSegment.offset: Int32?`（nil = passive、非 nil = active のメモリ書き込みオフセット） |
-| Linear Memory | `var memory: [UInt8]`（インタプリタが保持）。境界チェックを担う |
-| Host Function Table | `[HostFunction]` 配列（import 宣言順でインデックス管理） |
+| Component | Role |
+|-----------|------|
+| `WasmParser` | Converts Wasm binary to `WasmModule` |
+| `WasmValidator` | Validates module type consistency (enabled only via `#if !hasFeature(Embedded)`) |
+| `WasmInterpreter` | Executes the module (Stack Machine). Tracks `data.drop` state via `droppedDataSegments: [Bool]` |
+| `WasmModule` | Parsed Wasm module (functions, memory, globals). `DataSegment.offset: Int32?` (nil = passive, non-nil = active write offset) |
+| Linear Memory | `var memory: [UInt8]` (held by the interpreter). Responsible for bounds checking |
+| Host Function Table | `[HostFunction]` array (indexed in import declaration order) |
 
 ---
 
-## 3. 型設計
+## 3. Type Design
 
-### 3.1 Wasm 値型
+### 3.1 Wasm Value Type
 
-wasm3 は `union { i32; i64; f32; f64 } + u8 type` で値を保持し、型の不一致はランタイムエラー。
-Swift では associated value 付き enum で型安全に表現する。
+wasm3 holds values as `union { i32; i64; f32; f64 } + u8 type`, with type mismatches caught at runtime.
+Swift expresses this type-safely using an enum with associated values.
 
-実装では `Value`（ランタイム値）と `ValueType`（型コード）に分けている。
+The implementation separates `Value` (runtime value) from `ValueType` (type code).
 
 ```swift
-// ランタイム上の値 (WasmModule.swift: enum Value)
+// Runtime value (WasmModule.swift: enum Value)
 enum Value: Sendable, Equatable {
     case i32(Int32)
     case i64(Int64)
@@ -84,10 +84,10 @@ enum Value: Sendable, Equatable {
 }
 ```
 
-### 3.2 Wasm 型コード
+### 3.2 Wasm Type Codes
 
 ```swift
-// 型コード (WasmModule.swift: enum ValueType)
+// Type code (WasmModule.swift: enum ValueType)
 enum ValueType: UInt8 {
     case i32      = 0x7F
     case i64      = 0x7E
@@ -98,7 +98,7 @@ enum ValueType: UInt8 {
 }
 ```
 
-### 3.3 関数シグネチャ
+### 3.3 Function Signature
 
 ```swift
 // WasmModule.swift: struct FunctionType
@@ -108,10 +108,10 @@ struct FunctionType: Sendable {
 }
 ```
 
-### 3.4 エラー型
+### 3.4 Error Type
 
-wasm3 は `M3Result = const char*`（NULL が成功、非 NULL がエラーメッセージ）という設計。
-Swift では型安全な `Error` enum に分類し、パース時エラーと実行時トラップを統合している。
+wasm3 uses `M3Result = const char*` (NULL = success, non-NULL = error message).
+Swift unifies parse-time errors and runtime traps in a type-safe `Error` enum.
 
 ```swift
 // WasmError.swift: enum WasmError
@@ -121,36 +121,35 @@ enum WasmError: Error, Equatable, Sendable {
     case unexpectedEnd
     case invalidInstruction(UInt8)
     case leb128Error(LEB128Error)
-    // ... その他パースエラー
+    // ... other parse errors
 
-    // --- Interpreter（トラップ相当）---
+    // --- Interpreter (trap equivalents) ---
     case stackUnderflow
     case typeMismatch
     case memoryAccessOutOfBounds
     case divisionByZero
     case unreachableReached
     case indirectCallTypeMismatch
-    // ... その他実行時エラー
+    // ... other runtime errors
 }
 ```
 
-typed throws（`throws(WasmError)`）を常に使い、`any Error` existential を回避する。
-これは Embedded Swift 制約（existential 禁止）への適合でもある。
+Typed throws (`throws(WasmError)`) are used throughout to avoid `any Error` existentials.
+This also satisfies the Embedded Swift constraint against existential types.
 
 ---
 
-## 4. バリデーション方針
+## 4. Validation Policy
 
-wasm3 はバリデーションフェーズを持たず、型チェックは未実装。
-本プロジェクトでは `#if !hasFeature(Embedded)` で切り替える。
+wasm3 has no validation phase; type checking is unimplemented. This project uses `#if !hasFeature(Embedded)`.
 
-### 非 Embedded ビルド（macOS 開発・デバッグ用）
+### Non-Embedded Build (macOS development / debug)
 
-**フルバリデーションあり。**
+**Full validation enabled.**
 
-- 関数シグネチャの型整合性チェック
-- 命令ごとのスタック型チェック（型スタックを追跡）
-- 不正な Wasm は実行前に `WasmError` として検出
+- Function signature type consistency checking
+- Per-instruction stack type checking (type stack tracking)
+- Invalid Wasm detected as `WasmError` before execution
 
 ```swift
 // WasmParser.swift
@@ -168,26 +167,26 @@ struct WasmValidator {
 #endif
 ```
 
-目的: 開発中に誤った Wasm バイナリや実装バグを早期に発見する。
+Goal: catch bad Wasm binaries and implementation bugs early during development.
 
-### Embedded ビルド（Pico 組み込み用）
+### Embedded Build (Pico)
 
-**バリデーション省略。**
+**Validation skipped.**
 
-- マジックナンバー・バージョン確認（パーサー内で常に実施）
-- 型スタックの追跡はしない（RAM 節約・ロード時間短縮）
-- 信頼された入力（開発者が制御するバイナリ）を前提とする
+- Magic number / version check (always performed in the parser)
+- No type stack tracking (saves RAM and load time)
+- Assumes trusted input (developer-controlled binaries)
 
 ---
 
-## 5. インタプリタループ方針
+## 5. Interpreter Loop
 
-wasm3 は **Threaded Code**（関数ポインタ配列 + tail call）でディスパッチするが、
-Embedded Swift では tail call 最適化が保証されない。
+wasm3 dispatches via **Threaded Code** (function pointer array + tail calls), but tail-call
+optimization is not guaranteed in Embedded Swift.
 
-本プロジェクトでは `switch` ベースで実装する。
+This project uses a `switch`-based implementation.
 
-### フェーズ 1: switch ベース（実装済み）
+### Phase 1: Switch-Based (implemented)
 
 ```swift
 switch instruction {
@@ -202,68 +201,68 @@ case .call(let funcIdx):
 }
 ```
 
-可読性が高く、デバッグしやすく、Embedded Swift との互換性が確実。
-`switch` の網羅性チェックにより、命令追加時の漏れをコンパイラが検出する。
+High readability, easy to debug, and guaranteed Embedded Swift compatibility.
+The `switch` exhaustiveness check means the compiler catches missing cases when new instructions are added.
 
-### フェーズ 1.5: Flat Bytecode への移行（完了）
+### Phase 1.5: Migration to Flat Bytecode (complete)
 
-以前の実装では `block` / `loop` / `if` 命令が子命令を入れ子の配列として保持していた。
+The previous implementation stored `block` / `loop` / `if` instructions with nested arrays of child instructions.
 
 ```swift
-// 旧実装（indirect case = malloc が必要）
+// Old implementation (indirect case = malloc required)
 indirect case block(BlockType, [Instruction])
 indirect case ifElse(BlockType, thenBody: [Instruction], elseBody: [Instruction])
 ```
 
-`indirect case` は Embedded Swift でもコンパイルは通るが、リンク時に `malloc` が要求される。
+`indirect case` compiles in Embedded Swift but requires `malloc` at link time.
 
-**採用した解決策: Flat Bytecode + ジャンプオフセット（実装済み）**
+**Adopted solution: Flat Bytecode + jump offsets (implemented)**
 
 ```swift
-// 現在の実装（malloc 不要）
-case block(BlockType, Int)       // endPc: block 出口の命令インデックス
-case loop(BlockType, Int)        // startPc: br 0 で戻る先（loop の先頭）
+// Current implementation (no malloc required)
+case block(BlockType, Int)       // endPc: index of instruction after blockEnd
+case loop(BlockType, Int)        // startPc: first body instruction (br returns here)
 case ifElse(BlockType, Int, Int) // elsePc, endPc
-case blockEnd                    // block/loop/if 本体の終端マーカー
-case jump(Int)                   // else 本体をスキップする無条件ジャンプ
+case blockEnd                    // end-of-body marker for block/loop/if
+case jump(Int)                   // unconditional jump to PC (skips else body)
 ```
 
-全命令をフラットな配列に並べ、block/loop/if にはジャンプ先 PC を直接持たせる。
-パーサーがオフセットを計算して埋め込む。
-CPython bytecode や JavaScriptCore が実際に採用している方式で、学習価値も高い。
+All instructions are laid out in a flat array; block/loop/if carry their jump target PC directly.
+The parser computes and embeds offsets at parse time.
+The same approach is used by CPython bytecode and JavaScriptCore, making it educationally valuable.
 
-### フェーズ 2: さらなる最適化（必要になった時点で）
+### Phase 2: Further Optimization (future, when needed)
 
-Pico 上での実測でボトルネックが判明した場合にのみ検討する。現時点では設計に含めない。
+Consider only after profiling identifies a bottleneck on real Pico hardware. Not included in current design.
 
 ---
 
-## 6. Linear Memory 方針
+## 6. Linear Memory
 
-### 現在の実装
+### Current Implementation
 
 ```swift
 // WasmInterpreter.swift
 var memory: [UInt8]
 ```
 
-`[UInt8]` で動的確保する。`pico_stdlib` が `posix_memalign`/`free` を提供するため、
-`pico-ble` ターゲットではリンクが通る。境界チェックは明示的に実施する。
+Dynamically allocated `[UInt8]`. `pico_stdlib` provides `posix_memalign`/`free`,
+so this links correctly on the `pico-ble` target. Bounds checking is explicit.
 
 ```swift
-// 境界チェックの例
+// Example bounds check
 let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
 guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
 ```
 
-### Phase 5 以降の課題
+### Phase 5+ Issues
 
-- `memory.grow` の動的 realloc は RAM が限られる Pico では慎重に扱う
-- 純粋ベアメタル環境（`pico_stdlib` なし）では固定サイズバッファへの置き換えが必要
-- 32 ビットターゲット（Pico / RP2350）では `Int` が 32 ビット幅になるため、実効アドレス計算で `UInt64` 中間演算が必要
+- `memory.grow`'s dynamic `realloc` requires care on RAM-constrained Pico
+- Pure bare-metal (without `pico_stdlib`) requires replacement with a fixed-size buffer
+- On 32-bit targets (Pico / RP2350), `Int` is 32-bit wide, requiring `UInt64` intermediate arithmetic for effective address calculation
 
 ```swift
-// TODO: Embedded Phase 5 — 32ビットターゲット向けオーバーフロー対策
+// TODO: Embedded Phase 5 — 32-bit target overflow protection
 let ea64 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
 guard ea64 + UInt64(accessWidth) <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
 let ea = Int(ea64)
@@ -271,10 +270,10 @@ let ea = Int(ea64)
 
 ---
 
-## 7. Host Function 設計
+## 7. Host Function Design
 
-wasm3 はシグネチャ文字列 `"v(ii)"` でランタイム型チェック。
-本プロジェクトではクロージャで登録し、import 宣言順の配列で管理する。
+wasm3 uses signature strings like `"v(ii)"` for runtime type checking.
+This project registers host functions as closures and manages them in an array indexed by import order.
 
 ```swift
 // WasmInterpreter.swift
@@ -286,19 +285,19 @@ enum HostImport {
 }
 ```
 
-`WasmInterpreter.init()` で `hostImports` を import 宣言順にマッチングし、
-`[HostFunction]` 配列として保持する。インデックスで O(1) アクセス。
+`WasmInterpreter.init()` matches `hostImports` against import declarations in order
+and stores them as a `[HostFunction]` array for O(1) index access.
 
-この設計の利点:
-- `class` を使わないため Embedded Swift 準拠
-- `Dictionary`（`[String: ...]`）の代わりに配列を使うことで動的ハッシュ計算を回避
-- モジュール名・関数名の比較は `elementsEqual` によるバイト列比較（`String ==` を回避）
+Benefits:
+- No `class` — Embedded Swift compatible
+- Array instead of `Dictionary` (`[String: ...]`) avoids dynamic hash computation
+- Module/function name comparison uses `elementsEqual` byte comparison (avoids `String ==`)
 
 ```swift
-// 使用例
+// Usage
 let hostImports: [HostImport] = [
     .function("env", "gpio_put") { args, _ in
-        // GPIO 操作
+        // GPIO operation
         return []
     }
 ]
@@ -307,95 +306,95 @@ let interpreter = try WasmInterpreter(module: module, hostImports: hostImports)
 
 ---
 
-## 8. Embedded Swift 制約と対応パターン
+## 8. Embedded Swift Constraints and Patterns
 
-Embedded Swift は通常の Swift（macOS/iOS 向け）と比べて利用できる機能が大幅に制限される。
+Embedded Swift has significantly fewer available features than regular Swift (macOS/iOS).
 
-### 8.1 使用できない機能
+### 8.1 Unavailable Features
 
-#### Existential 型（`any Protocol`）
+#### Existential Types (`any Protocol`)
 
-プロトコル型を値として扱う existential は使用できない。
+Existentials — treating a protocol type as a value — are unavailable.
 
 ```swift
-// NG: Embedded Swift では使用不可
+// NG: not available in Embedded Swift
 func process(_ stream: any ByteStream) { ... }
 
-// OK: ジェネリック制約で代替する
+// OK: use generic constraints instead
 func process<S: ByteStream>(_ stream: inout S) { ... }
 ```
 
-**理由**: Existential はランタイムにプロトコルウィットネステーブルを保持するが、
-Embedded Swift ではそのランタイム機構が存在しない。
+**Reason**: Existentials require protocol witness tables at runtime, which Embedded Swift lacks.
 
-#### リフレクション
+#### Reflection
 
-`Mirror` や `type(of:)` によるランタイム型情報の取得は使用できない。型の判別は enum の associated value やジェネリックで静的に行う。
+Runtime type information via `Mirror` or `type(of:)` is unavailable.
+Use enum associated values or generics for static type discrimination.
 
-#### Foundation フレームワーク
+#### Foundation Framework
 
-`import Foundation` は使用できない。
+`import Foundation` is unavailable.
 
-| 使用不可 | 代替 |
-|---|---|
+| Unavailable | Alternative |
+|-------------|-------------|
 | `Data` | `[UInt8]` / `UnsafeBufferPointer<UInt8>` |
-| `String`（動的生成） | `StaticString` / バイト列 |
-| `URL` | 文字列リテラル / 静的定数 |
-| `Date` | `UInt64`（tick カウント等） |
+| `String` (dynamic) | `StaticString` / byte arrays |
+| `URL` | string literals / static constants |
+| `Date` | `UInt64` (tick count etc.) |
 
-#### 動的メモリ割り当て
+#### Dynamic Memory Allocation
 
-`Array<T>` の `append` などの動的操作はコンパイルは通るが、リンク時に `malloc` が要求される。
-`pico_stdlib` リンクあり環境では動作するが、純粋ベアメタル（stdlib なし）ではリンクエラーになる。
+Dynamic operations on `Array<T>` such as `append` compile fine but require `malloc` at link time.
+Environments with `pico_stdlib` work; pure bare-metal (no stdlib) results in a link error.
 
 ```
-[コンパイル] .swift → .o  ← Array.append があってもエラーにならない
-[リンク]     .o → .elf   ← malloc が未定義なら "undefined reference to '_malloc'" でエラー
+[Compile] .swift → .o  ← Array.append compiles (just embeds the malloc reference)
+[Link]    .o → .elf   ← "undefined reference to '_malloc'" if malloc is not provided
 ```
 
-同様に `indirect case` もコンパイルは通るがリンク時に `malloc` を要求する。
+Similarly, `indirect case` compiles but requires `malloc` at link time.
 
-#### `String ==` による比較
+#### `String ==` Comparison
 
-`String` の等値比較は Unicode 正規化を伴い、Embedded Swift にはその正規化テーブルが含まれない。
-コンパイルは通るがリンクエラーになる。
+`String` equality involves Unicode normalization, whose tables are absent from Embedded Swift.
+Compiles fine but causes a link error.
 
 ```swift
-// NG: リンクエラーになる
+// NG: link error
 module.exports.first { $0.name == "increment" }
 
-// OK: バイト列どうしで比較する
+// OK: byte-level comparison
 module.exports.first { $0.nameBytes.elementsEqual("increment".utf8) }
 ```
 
-#### Untyped Error（`any Error`）
+#### Untyped Error (`any Error`)
 
-`func f() throws` のような型なし throws は existential `any Error` を使うため使用禁止。
+`func f() throws` (untyped) uses `any Error` existential — avoid it.
 
-### 8.2 使用すべきパターン
+### 8.2 Recommended Patterns
 
-#### ジェネリックによる抽象化
+#### Generic Abstraction
 
 ```swift
 protocol ByteStream {
     mutating func consume() throws(LEB128Error) -> UInt8
 }
 
-// コンパイル時に S の実体が決定 → 静的ディスパッチ
+// S's concrete type is resolved at compile time → static dispatch
 func decode<S: ByteStream>(from stream: inout S) throws(LEB128Error) -> UInt32 { ... }
 ```
 
-#### 型付き `throws`（Swift 6）
+#### Typed `throws` (Swift 6)
 
 ```swift
-// OK: 具体的なエラー型を指定
+// OK: specify concrete error type
 func consume() throws(LEB128Error) -> UInt8
 
-// NG: any Error を内部で使用する
+// NG: uses any Error internally
 func consume() throws -> UInt8
 ```
 
-#### `UnsafeBufferPointer` によるゼロコピー読み出し
+#### Zero-Copy Reads with `UnsafeBufferPointer`
 
 ```swift
 struct BufferStream: ByteStream {
@@ -410,26 +409,26 @@ struct BufferStream: ByteStream {
 }
 ```
 
-#### 値型（struct / enum）の優先
+#### Prefer Value Types (struct / enum)
 
-クラス（参照型）はヒープ割り当てが発生する。スタックに収まる値型を基本とする。
+Classes (reference types) cause heap allocation. Use value types that fit on the stack.
 
 ```swift
-// NG: ヒープ割り当て発生
+// NG: heap allocation
 class WasmModule { ... }
 
-// OK: スタック割り当て
+// OK: stack allocation
 struct WasmModule { ... }
 ```
 
 ---
 
-## 9. パフォーマンス最適化
+## 9. Performance Optimization
 
-### `@inlinable`：ジェネリック関数への必須指定
+### `@inlinable`: Required for Generic Functions
 
-Embedded Swift ではプロトコルウィットネステーブルの動的解決が利用できない。
-ジェネリック関数はコンパイル時に特殊化されなければならず、モジュール境界を越える場合は `@inlinable` が必須。
+Embedded Swift cannot dynamically resolve protocol witness tables.
+Generic functions must be specialised at compile time; `@inlinable` is required for calls across module boundaries.
 
 ```swift
 @inlinable
@@ -440,143 +439,145 @@ public func decodeULEB128<T: FixedWidthInteger & UnsignedInteger, S: ByteStream>
 
 | | `@inlinable` | `@inline(__always)` |
 |---|---|---|
-| 目的 | モジュール外への実装公開・特殊化許可 | 呼び出し元での強制展開 |
-| コンパイラの裁量 | コンパイラが判断して展開 | 無条件に展開 |
-| 主な用途 | ジェネリック関数・モジュール境界 | ループ内の極小関数 |
+| Purpose | Expose implementation across module boundary / allow specialisation | Force expansion at call site |
+| Compiler discretion | Compiler decides whether to inline | Always inlined, no exceptions |
+| Primary use | Generic functions / module boundaries | Very small functions in tight loops |
 
-### ホットパスでの一時配列確保を避ける
+### Avoid Temporary Array Allocation in Hot Paths
 
-インタプリタループのように毎命令呼ばれるコードパスでは、中間配列の確保がヒープ圧力になる。
+In code called on every instruction (like the interpreter loop), intermediate array allocations accumulate heap pressure.
 
 ```swift
-// NG: br/return のたびにヒープ確保が発生する
+// NG: heap allocation on every br/return
 let results = Array(valueStack.suffix(arity))
 valueStack.removeSubrange(base...)
 valueStack.append(contentsOf: results)
 
-// OK: in-place スライドで同じ意味を実現（確保ゼロ）
+// OK: in-place slide, zero allocation
 let src = valueStack.count - arity
 for i in 0..<arity { valueStack[base + i] = valueStack[src + i] }
 valueStack.removeSubrange((base + arity)...)
 ```
 
-`pushFrame` でも `Array(valueStack.suffix(argCount))` の中間コピーを排除し、
-`valueStack` から直接引数を読む設計に移行済み。
+`pushFrame` has also been migrated to read arguments directly from `valueStack`
+using `argCount: Int`, eliminating the `Array(valueStack.suffix(argCount))` intermediate copy.
 
-### ホットパスで参照する computed property はキャッシュする
+### Cache Computed Properties Referenced in Hot Paths
 
 ```swift
-// NG: 毎回 imports を全走査する
+// NG: scans imports on every call
 var importedFunctionCount: Int {
     imports.reduce(0) { n, imp in if case .function = imp { return n + 1 }; return n }
 }
 
-// OK: init 時に一度だけ計算し stored property に保持
+// OK: computed once at init, stored as a let property
 let importedFunctionCount: Int
 ```
 
-`WasmModule` では `importedFunctionCount` を `init` 時に計算して `let` として保持済み。
+`WasmModule` already computes `importedFunctionCount` at `init` time and stores it as `let`.
 
-### `&<<`（オーバーフローシフト）の使用
+### Use `&<<` (Overflow Shift)
 
-符号付き整数の通常の左シフト（`<<`）はオーバーフロー時にランタイムトラップが発生する。
-意図的なビット操作には `&<<` を使う。
+Regular left shift (`<<`) on signed integers traps on overflow.
+Use `&<<` for intentional bit manipulation.
 
 ```swift
-// NG: オーバーフロートラップが発生する可能性
+// NG: may trap on overflow
 result |= T(byte & 0x7F) << shift
 
-// OK: ビットパターンをそのまま扱う
+// OK: treats the bit pattern as-is
 result |= T(byte & 0x7F) &<< shift
 ```
 
 ---
 
-## 10. メモリレイアウトとデバッグ
+## 10. Memory Layout and Debugging
 
-### `@frozen` enum と struct
+### `@frozen` Enums and Structs
 
-Embedded Swift では型のメモリレイアウトが固定されていることが前提になる場合がある。
-公開する型には `@frozen` を検討する。
+Embedded Swift may require types to have a fixed memory layout.
+Consider `@frozen` for publicly exposed types.
 
-### スタックサイズ
+### Stack Size
 
-Pico のデフォルトスタックサイズは数 KB 程度。再帰呼び出しや大きなスタック変数は避ける。
+The Pico's default stack size is a few KB. Avoid deep recursion and large stack variables.
 
-### デバッグ
+### Debugging
 
-Embedded 環境では `print` が使えない（または UART 等に繋がっている）。
+`print` is unavailable (or routes to UART) in Embedded environments.
 
-- デバッグ出力が必要な場合は、ターゲット固有の出力関数（UART 書き込み等）を使う
-- インライン化された関数はスタックトレースに現れないことを念頭に置く
-- `assert` / `precondition` の挙動はターゲットのトラップ実装に依存する
-
----
-
-## 11. wasm3 との対比まとめ
-
-| 項目 | wasm3 (C) | 本プロジェクト (Swift) |
-|---|---|---|
-| エラー型 | `const char*`（NULL = 成功） | `enum WasmError: Error`（パーサー・インタプリタ統合） |
-| 値の保持 | `union + u8 type` | `enum Value` with associated value |
-| バリデーション | なし（スタブ） | `#if !hasFeature(Embedded)`: フル（`WasmValidator`） / Embedded: 省略 |
-| Host Function 登録 | 文字列シグネチャ `"v(ii)"` | `HostFunction` クロージャ配列（import 順で管理） |
-| Opcode ディスパッチ | Threaded Code（関数ポインタ + tail call） | `switch` on `Instruction` enum |
-| 制御フロー表現 | ネストした関数呼び出し | フラット bytecode + ジャンプオフセット（フェーズ 1.5 完了） |
-| メモリ管理 | 手動（`malloc` / `realloc`） | `[UInt8]`（動的。Phase 5 で固定バッファへ移行予定） |
-| スレッド安全性 | なし | シングルスレッド前提の `struct`（`actor` は Embedded 非対応） |
-| 所有権 | `IM3Runtime*` などポインタで疑似管理 | `struct` + value semantics |
+- Use target-specific output functions (UART writes etc.) for debug output
+- Inlined functions do not appear in stack traces
+- `assert` / `precondition` behaviour depends on the target's trap implementation
 
 ---
 
-## 12. Swift の強みを活かした設計ポイント
+## 11. Comparison with wasm3
 
-### 12.1 enum の網羅性チェックによる仕様との 1:1 対応
+| Aspect | wasm3 (C) | This project (Swift) |
+|--------|-----------|----------------------|
+| Error type | `const char*` (NULL = success) | `enum WasmError: Error` (parser + interpreter unified) |
+| Value storage | `union + u8 type` | `enum Value` with associated values |
+| Validation | None (stub) | `#if !hasFeature(Embedded)`: full (`WasmValidator`) / Embedded: skipped |
+| Host function registration | String signature `"v(ii)"` | `HostFunction` closure array (managed by import order) |
+| Opcode dispatch | Threaded Code (function pointer + tail call) | `switch` on `Instruction` enum |
+| Control flow representation | Nested function calls | Flat bytecode + jump offsets (Phase 1.5 complete) |
+| Memory management | Manual (`malloc` / `realloc`) | `[UInt8]` (dynamic; fixed buffer planned for Phase 5) |
+| Thread safety | None | Single-threaded `struct` (`actor` not supported in Embedded) |
+| Ownership | Pointer-based pseudo-management (`IM3Runtime*`) | `struct` + value semantics |
 
-Swift の `enum` は Wasm の値型・命令セット・エラー種別を仕様と 1:1 で表現できる。
-`switch` の網羅性チェックにより、命令セットを追加した際の未処理ケースをコンパイラが検出する。
+---
+
+## 12. Leveraging Swift's Strengths
+
+### 12.1 Enum Exhaustiveness for 1:1 Spec Mapping
+
+Swift `enum` can represent Wasm value types, instruction sets, and error kinds in a 1:1 correspondence with the spec.
+`switch` exhaustiveness ensures the compiler catches unhandled cases when new instructions are added.
 
 ```swift
-// 命令追加時の漏れをコンパイラが検出 — C では実行時に壊れるまで気づかない
+// The compiler catches missing cases when new instructions are added
+// — in C, the bug would only surface at runtime
 switch instruction {
 case .i32Add: ...
 case .i32Sub: ...
-// ← 新命令を足し忘れるとコンパイルエラー
+// ← compile error if a new instruction is forgotten
 }
 ```
 
-### 12.2 Typed Throws によるトラップの構造化
+### 12.2 Structured Traps via Typed Throws
 
-`throws(WasmError)` はエラー種別をシグネチャに記述することで、
-どのエラーが起きうるかが関数のシグネチャ自体から読み取れる。
-Wasm3 の `M3Result = const char*` では文字列比較が必要だった部分を型安全に代替する。
+`throws(WasmError)` expresses which errors can occur directly in the function signature,
+replacing wasm3's `M3Result = const char*` string comparison with type-safe alternatives.
 
-### 12.3 Value Semantics による実行状態の明確化
+### 12.3 Value Semantics for Explicit State
 
-`struct` + `mutating` で設計することで、状態の変更は明示的な `mutating` 呼び出しを通じてのみ起きる。
-実行コンテキストのスナップショットが自然に書けるため、ステップ実行・テストに有用。
+`struct` + `mutating` ensures state changes only occur through explicit `mutating` calls.
+Implicit state mutation via shared references is structurally impossible.
+Execution context snapshots are natural to write, aiding step-by-step debugging and testing.
 
-### 12.4 Embedded Swift の制約がアーキテクチャを改善させる
+### 12.4 Embedded Constraints Improve Architecture
 
-`class` 禁止・動的確保制限という制約は、意図せず良い設計を促す副作用を持つ。
+Restrictions like "no class" and "no dynamic allocation" have a beneficial side effect of
+encouraging better design:
 
-- ヒープ確保を避けるため固定サイズバッファを選ぶ → メモリ使用量の予測可能性が上がる
-- 参照の共有がないため所有関係が明確になる
-- クロージャのヒープキャプチャが制限される → Host Function が自然に静的テーブル設計へ向かう
+- Choosing fixed-size buffers over heap allocation → predictable memory usage
+- No shared references → clear ownership
+- Restricted closure captures → host functions naturally trend toward static table designs
 
-### 12.5 デバッグビルドの安全性
+### 12.5 Debug-Build Safety
 
-Swift はデバッグビルドで整数オーバーフロー・配列境界外アクセスをランタイムトラップする。
-C ではこれらは未定義動作として silently 壊れる可能性がある。
-Pico の UART ログのみのデバッグ環境では、問題発生箇所が明確なトラップは大きな価値を持つ。
+Swift traps on integer overflow and out-of-bounds array access in debug builds.
+In C, these are undefined behaviour that can silently corrupt execution.
+In the UART-only debug environment of the Pico, traps with a clear failure point are invaluable.
 
-### 12.6 Protocol + Generics による算術演算の一元化（設計案）
+### 12.6 Generic Arithmetic Unification via Protocol + Generics (design proposal)
 
-Wasm の整数演算（`i32`/`i64`）は同一の意味論を持ちながら bit-width だけが異なる。
-WasmKit の `RawUnsignedInteger` プロトコル設計を参考に、`WasmInteger` プロトコルで一元化できる。
+Wasm integer arithmetic (`i32`/`i64`) has identical semantics differing only in bit width.
+Inspired by WasmKit's `RawUnsignedInteger` protocol, a `WasmInteger` protocol could unify implementations.
 
 ```swift
-// 設計案（未実装）
+// Design proposal (not yet implemented)
 protocol WasmInteger: FixedWidthInteger & UnsignedInteger {
     associatedtype Signed: FixedWidthInteger & SignedInteger
     init(bitPattern: Signed)
@@ -585,18 +586,18 @@ extension UInt32: WasmInteger { typealias Signed = Int32 }
 extension UInt64: WasmInteger { typealias Signed = Int64 }
 ```
 
-現在は `switch` の各 `case` で `i32`/`i64` を個別に実装している。
-Pico 上での実測でコードサイズがボトルネックになった場合に検討する。
+Currently i32/i64 are implemented separately in each `switch` case.
+This will be considered if code size becomes a bottleneck on real Pico hardware.
 
 ---
 
-## 13. WasmKit 実装との比較分析
+## 13. Comparison with WasmKit
 
-本プロジェクトでは `ThirdParty/WasmKit/` に Swift 製 Wasm Runtime のソースを参照できる。
+`ThirdParty/WasmKit/` contains a reference Swift Wasm Runtime for comparison.
 
-### WasmKit が Swift のメリットを活かしている点
+### Where WasmKit Leverages Swift's Strengths
 
-**Protocol + Generics による算術演算の一元化**
+**Generic arithmetic unification via Protocol + Generics**
 
 ```swift
 // Sources/WasmKit/Execution/Value.swift
@@ -606,82 +607,84 @@ extension RawUnsignedInteger {
 }
 ```
 
-**struct + Value Semantics の徹底**
+**Thorough struct + Value Semantics**
 
-`UntypedValue`・全 Instruction Operand が struct で統一されており、本プロジェクトの方針と一致する。
+`UntypedValue` and all Instruction Operands are unified as structs, consistent with this project's approach.
 
-### WasmKit がパフォーマンスのために意図的に活かしていない点
+### Where WasmKit Intentionally Trades Type Safety for Performance
 
-**enum の網羅性チェックをホットパスで放棄**
+**Abandons enum exhaustiveness in hot paths**
 
 ```swift
-// Instruction.swift の冒頭コメント
+// Instruction.swift leading comment
 /// NOTE: This enum representation is just for modeling purposes.
 /// The actual runtime representation can be different.
 ```
 
-実行ループはパフォーマンスのために型安全性を意識的に捨て、整数 opcode の `switch` を使う。
+The execution loop uses an integer opcode `switch` for performance, losing compiler-enforced exhaustiveness.
 
-**型付き WasmValue をホットパスで使わない**
+**Does not use typed WasmValue in hot paths**
 
 ```swift
-// UntypedValue.swift — i32/i64/f32/f64 を全て UInt64 で保持
+// UntypedValue.swift — stores i32/i64/f32/f64 all as UInt64
 struct UntypedValue { let storage: UInt64 }
 ```
 
-オペコードが型を知っているため、ランタイムに型タグを持たせない最適化。
+Since the opcode knows the type, a runtime type tag is unnecessary — a deliberate optimisation.
 
-### 本プロジェクトとの選択比較
+### Design Comparison
 
-| 観点 | WasmKit | 本プロジェクト | 理由 |
-|---|---|---|---|
-| 命令ディスパッチ | 整数 switch（パフォーマンス優先） | `switch` on enum（学習・安全優先） | 網羅性チェックを活用 |
-| 値の表現 | `UntypedValue`（UInt64） | `Value` enum（型安全） | 仕様と 1:1 の表現で理解しやすさを優先 |
-| エラー | 通常の `throws` | `throws(WasmError)` | Embedded Swift 推奨パターン |
+| Aspect | WasmKit | This project | Reason |
+|--------|---------|--------------|--------|
+| Instruction dispatch | Integer switch (performance) | `switch` on enum (safety/learning) | Leverage exhaustiveness during learning |
+| Value representation | `UntypedValue` (UInt64) | `Value` enum (type-safe) | 1:1 spec mapping for comprehensibility |
+| Errors | Plain `throws` | `throws(WasmError)` | Embedded Swift recommended pattern |
 
-本プロジェクトが WasmKit より型安全性を優先する理由は、パフォーマンスより「仕組みの理解と誤りの早期発見」が目的だからである。
-
----
-
-## 14. 組み込み環境における Swift 採用の評価
-
-### Embedded Swift でも有効な利点
-
-Embedded Swift で失われるのはランタイム機能（String・Array 動的確保・Swift Concurrency）のみで、
-**コンパイル時の安全機能はすべて維持される**。
-
-- enum 網羅性チェック → デバッグ困難な環境で命令追加漏れをコンパイラが検出
-- 整数オーバーフローが未定義動作にならない（`&+` で意図を明示）
-- Generics がゼロコスト抽象（モノモーフィズム化）
-- `@_silgen_name` による Pico SDK との型安全な連携
-
-### 率直なデメリット
-
-| 観点 | C | Embedded Swift |
-|---|---|---|
-| フラッシュ使用量 | 最小 | 型メタデータが残りやすく大きくなる傾向 |
-| コンパイル速度 | 速い | 遅い |
-| デバッグツール | GDB・OpenOCD が成熟 | LLDB 対応は途上 |
-| ライブラリ資産 | 膨大 | ほぼゼロ |
-| ツールチェーン安定性 | 非常に安定 | 比較的新しい |
-
-Rust `no_std` エコシステムは Embedded Swift より成熟しており（`heapless`・`defmt`・`probe-rs` 等）、
-純粋な組み込み効率では `C > Rust no_std > Embedded Swift` の順。
-
-### このプロジェクトで Embedded Swift を選ぶ理由
-
-- **コード共有**: パーサー・バリデーター・インタプリタのコアは macOS でも Pico でも同一ソース
-- **Phase 6（iOS 連携）**: BLE 経由で Wasm バイナリを送信する iOS アプリも Swift で実装する。iOS ↔ Pico の両端が Swift になることで、エラー型・プロトコル定義を共有できる可能性がある
-- **学習目的**: 「Embedded Swift の理解を深める」はプロジェクト目標の一つ
+This project prioritises type safety over performance because the goal is "understanding the mechanics
+and catching errors early", not raw throughput. If profiling identifies a bottleneck on Pico,
+migration to an `UntypedValue`-style approach will be considered.
 
 ---
 
-## 15. 関連ドキュメント
+## 14. Evaluation of Swift for Embedded Environments
 
-| ドキュメント | 内容 |
-|---|---|
-| `Documentations/PHASE2_WASM3.md` | wasm3 ソースコード調査結果・Swift 転用ポイント |
-| `Documentations/PHASE3_PARSER.md` | バイナリパーサーの実装計画 |
-| `Documentations/PHASE4_INTERPRETER.md` | インタプリタの実装計画 |
-| `Documentations/WASM_SPEC.md` | Wasm 仕様の参照まとめ |
-| `Documentations/OVERVIEW.md` | プロジェクト全体方針・インクリメンタル開発方針 |
+### Advantages That Remain in Embedded Swift
+
+Embedded Swift only loses runtime features (String, dynamic Array, Swift Concurrency).
+**All compile-time safety features are preserved.**
+
+- Enum exhaustiveness → compiler catches missing instructions in a hard-to-debug environment
+- Integer overflow is not undefined behaviour (`&+` expresses wrapping intent)
+- Generics are zero-cost abstractions (monomorphised)
+- `@_silgen_name` enables type-safe C function bridging to the Pico SDK
+
+### Honest Drawbacks
+
+| Aspect | C | Embedded Swift |
+|--------|---|----------------|
+| Flash usage | Minimal | Type metadata tends to increase binary size |
+| Compile speed | Fast | Slow |
+| Debug tooling | Mature GDB + OpenOCD | LLDB support still maturing |
+| Library ecosystem | Vast | Near zero |
+| Toolchain stability | Very stable | Relatively new |
+
+Rust `no_std` is more mature than Embedded Swift (`heapless`, `defmt`, `probe-rs`, etc.).
+In terms of raw Embedded efficiency: `C > Rust no_std > Embedded Swift`.
+
+### Why This Project Chose Embedded Swift
+
+- **Code sharing**: Parser, validator, and interpreter core is identical source for macOS and Pico
+- **Phase 6 (iOS integration)**: The iOS app that transfers Wasm binaries via BLE is also written in Swift. With Swift on both ends of iOS ↔ Pico, sharing error types and protocol definitions becomes possible
+- **Learning goal**: "Deepen understanding of Embedded Swift" is one of the project objectives
+
+---
+
+## 15. Related Documents
+
+| Document | Content |
+|----------|---------|
+| `Documentations/PHASE2_WASM3.md` | wasm3 source investigation and Swift applicability |
+| `Documentations/PHASE3_PARSER.md` | Binary parser implementation plan |
+| `Documentations/PHASE4_INTERPRETER.md` | Interpreter implementation plan |
+| `Documentations/WASM_SPEC.md` | Wasm specification reference |
+| `Documentations/OVERVIEW.md` | Overall project policy and incremental development approach |

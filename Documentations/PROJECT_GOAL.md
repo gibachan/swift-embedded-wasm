@@ -1,51 +1,50 @@
-# プロジェクト最終成果物
+# Project Goals
 
-## ターゲットハードウェア
+## Target Hardware
 
-| 区分 | ハードウェア |
-|------|-------------|
-| メイン | Raspberry Pi Pico 2 (RP2350) |
-| サブ | Raspberry Pi Pico W |
+| Category | Hardware |
+|----------|----------|
+| Primary | Raspberry Pi Pico 2 (RP2350) |
+| Secondary | Raspberry Pi Pico W |
 
 ---
 
-## 背景・動機
+## Background and Motivation
 
-通常の組み込み開発では、機能追加のたびにファームウェアを書き換えてフラッシュする必要がある。
+In conventional embedded development, every new feature requires rebuilding and reflashing the firmware.
 
 ```text
-Swift Source → Firmware Build → Flash（毎回必要）
+Swift Source → Firmware Build → Flash (required every time)
 ```
 
-Wasm Runtime を導入することで、ファームウェアを変えずに機能を動的に追加できる。
+By embedding a Wasm Runtime, new functionality can be added dynamically without changing the firmware.
 
 ```text
-Embedded Swift Runtime（一度書き込むだけ）
+Embedded Swift Runtime (flashed once)
    ↓
-Upload Wasm Script（以降はスクリプト差し替えのみ）
+Upload Wasm Script (only script replacement needed afterwards)
    ↓
 Dynamic Execution
 ```
 
-これにより以下が実現できる。
+This enables:
 
-- 後から機能追加
-- OTA スクリプト更新
-- サンドボックス化による安全な実行
-- プラグイン的拡張
-- Scriptable Device 化
+- Post-deployment feature additions
+- OTA script updates
+- Sandboxed safe execution
+- Plugin-style extensibility
+- Scriptable Device capability
 
 ---
 
-## 最終的に実現するシステム
+## The System to Build
 
-iPhone アプリから Wasm バイナリを Raspberry Pi Pico へ無線転送し、
-Pico 上の Embedded Swift Runtime がそれを動的に実行して GPIO / OLED / センサーを制御する。
+Transfer a Wasm binary wirelessly from an iPhone app to a Raspberry Pi Pico, where an Embedded Swift Runtime dynamically executes it to control GPIO, OLED, and sensors.
 
 ```text
 iPhone App
    │
-   │ BLE / Wi-Fi（Wasm バイナリ転送）
+   │ BLE / Wi-Fi (Wasm binary transfer)
    ▼
 Raspberry Pi Pico 2 (RP2350)
    │
@@ -60,76 +59,76 @@ Raspberry Pi Pico 2 (RP2350)
    │         ├── OLED
    │         └── Sensor
    ▼
-ハードウェア制御
+Hardware Control
 ```
 
 ---
 
-## 成果物一覧
+## Deliverables
 
-### 1. Wasm バイナリパーサー
+### 1. Wasm Binary Parser
 
-Wasm バイナリフォーマット（`.wasm`）を解析するライブラリ。
+A library that parses Wasm binary format (`.wasm`).
 
-- LEB128 デコード
-- Section パース（Type / Function / Code / Export）
-- Opcode デコード
-- Embedded Swift 制約（動的アロケーション最小化）に対応
+- LEB128 decoding
+- Section parsing (Type / Function / Code / Export)
+- Opcode decoding
+- Embedded Swift constraints (minimized dynamic allocation)
 
-### 2. Wasm インタプリタ
+### 2. Wasm Interpreter
 
-解析した Wasm モジュールを実行する Stack Machine ベースのインタプリタ。
+A Stack Machine-based interpreter that executes parsed Wasm modules.
 
-- Operand Stack / Call Stack / Frame 管理
-- 対応命令セット: i32 系演算・制御フロー・関数呼び出し（MVP サブセット）
-- Type Validation（実行前の静的検証）
-- Linear Memory（境界チェック付き）
+- Operand Stack / Call Stack / Frame management
+- Instruction set: i32 / i64 / f32 / f64 full arithmetic, comparison, conversion; control flow; memory load/store; Bulk Memory/Table; reference types (Wasm 2.0 major subset)
+- Type Validation (pre-execution static verification)
+- Linear Memory (with bounds checking)
 
 ### 3. Host Function Layer
 
-Wasm から Pico のハードウェアを操作するための API ブリッジ。
+An API bridge for Wasm to control Pico hardware.
 
-| Host API | 機能 |
-|----------|------|
-| `digitalWrite(pin, value)` | GPIO 出力制御 |
-| `digitalRead(pin)` | GPIO 入力読み取り |
-| `sleep(ms)` | 待機 |
-| `oledDrawText(x, y, text)` | OLED 表示 |
+| Host API | Function |
+|----------|----------|
+| `digitalWrite(pin, value)` | GPIO output control |
+| `digitalRead(pin)` | GPIO input read |
+| `sleep(ms)` | Delay |
+| `oledDrawText(x, y, text)` | OLED display |
 
-### 4. Embedded Swift Runtime（Pico 上で動作）
+### 4. Embedded Swift Runtime (runs on Pico)
 
-上記コンポーネントを統合し、Raspberry Pi Pico 2 (RP2350) 上で動作するファームウェア。
+Firmware that integrates the above components and runs on the Raspberry Pi Pico 2 (RP2350).
 
-- Wasm モジュールのロード・実行・アンロード
-- 複数 Wasm アプリの動的切り替え
-- メモリ制約対応（Fixed-size / Arena Allocator）
+- Load, execute, and unload Wasm modules
+- Dynamic switching between multiple Wasm apps
+- Memory constraint support (Fixed-size / Arena Allocator)
 
-### 5. iOS コントローラーアプリ
+### 5. iOS Controller App
 
-iPhone から Pico を操作するための Swift 製 iOS アプリ。
+A Swift iOS app for controlling the Pico from an iPhone.
 
-- BLE または Wi-Fi 経由での Wasm バイナリ転送
-- Runtime ログのリアルタイム表示
-- Wasm スクリプト管理
-- OLED プレビュー・デバイスモニター
-
----
-
-## 成功ライン
-
-| レベル | 達成条件 |
-|--------|----------|
-| **最低成功ライン** | Pico 上で Wasm を実行し、Wasm から GPIO を制御できる |
-| **中間成功ライン** | iPhone から BLE 経由で Wasm をアップロードして実行できる |
-| **最終成功ライン** | 複数 Wasm アプリを動的に切り替えられる Scriptable Device として動作する |
+- BLE-based Wasm binary transfer (Wi-Fi is future work)
+- Real-time runtime log display
+- Wasm script management
+- OLED preview and device monitor
 
 ---
 
-## 将来的な拡張（スコープ外）
+## Success Criteria
 
-本プロジェクトでは対象外だが、発展的な方向性として以下を想定している。
+| Level | Condition |
+|-------|-----------|
+| **Minimum** | Execute Wasm on Pico and control GPIO from Wasm |
+| **Intermediate** | Upload and execute Wasm from iPhone via BLE |
+| **Final** | Operate as a Scriptable Device with dynamic switching between multiple Wasm apps |
 
-- **WASI サブセット**: 標準的な Wasm システムインターフェースへの対応
-- **Bytecode 最適化**: Predecode / Threaded Interpreter による高速化
-- **Component Model**: Wasm Component Model の研究・実験
-- **Mini Scheduler**: 複数 Wasm タスクの簡易スケジューリング
+---
+
+## Future Extensions (Out of Scope)
+
+The following directions are out of scope for this project but represent potential growth areas.
+
+- **WASI subset**: Support for standard Wasm System Interface
+- **Bytecode optimization**: Speedup via Predecode / Threaded Interpreter
+- **Component Model**: Research and experimentation with the Wasm Component Model
+- **Mini Scheduler**: Simple scheduling of multiple Wasm tasks

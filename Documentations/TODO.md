@@ -1,130 +1,127 @@
-# TODO — 未実装項目一覧
+# TODO — Unimplemented Items
 
 ---
 
-## Phase 1 — Embedded Swift 開発環境
+## Phase 1 — Embedded Swift Development Environment
 
-ビルドツールチェーンのセットアップ・Embedded Swift コンパイル・BLE ファームウェアリンクはすでに確認済み（`make compile` / `make build` が通る）。
-残っているのは実機での動作確認のみ。
+The build toolchain setup, Embedded Swift compilation, and BLE firmware linking have all been verified (`make compile` / `make build` pass).
+The only remaining item is hardware verification.
 
-- [ ] **UART 経由でログが出力されることを確認する**
+- [ ] **Verify log output over UART**
 
-  Pico SDK の `stdio_init_all()` + `printf()` を使い、`"Hello from Embedded Swift\n"` 程度の文字列を UART（USB CDC）経由でホスト PC に出力する。
-  シリアルモニター（`screen` / `minicom` など）で受信できれば確認完了。
-  これが動けば「Embedded Swift コードが Pico 上で実際に実行されている」ことの最初の実証になる。
+  Use Pico SDK's `stdio_init_all()` + `printf()` to output a string such as `"Hello from Embedded Swift\n"` via UART (USB CDC) to a host PC.
+  Receiving it in a serial monitor (`screen` / `minicom` etc.) confirms success.
+  This would be the first proof that Embedded Swift code is actually executing on the Pico.
 
 ---
 
-## Phase 2 — Wasm バイナリパーサー（Embedded フェーズ向け）
+## Phase 2 — Wasm Binary Parser (for Embedded)
 
-macOS フェーズのパーサーは完了済み。以下は Embedded Swift 環境（Pico）へ移植する際に必要な作業。
-動的アロケーション（`Array<T>`）を排除し、固定サイズのデータ構造に置き換えることが目的。
+The macOS-phase parser is complete. The following work is needed when porting to an Embedded Swift environment (Pico).
+The goal is to eliminate dynamic allocation (`Array<T>`) and replace it with fixed-size data structures.
 
-- [ ] **Code Section をゼロコピー化する**
+- [ ] **Zero-copy the Code Section**
 
-  現在の実装ではパース時にすべての命令を `Instruction` enum の配列に展開し `FunctionBody` として保持している。
-  Embedded フェーズではこの配列アロケーションが問題になるため、バイト範囲だけを記録する `FunctionHandle` に変更する。
+  The current implementation expands all instructions into an `Instruction` enum array at parse time, stored as `FunctionBody`.
+  In the Embedded phase, this array allocation becomes a problem; change it to a `FunctionHandle` that stores only the byte range.
 
   ```swift
-  // 現在（macOS フェーズ）
+  // Current (macOS phase)
   struct FunctionBody {
       let locals: [ValueType]
-      let instructions: [Instruction]  // パース時に全命令を展開・アロケート
+      let instructions: [Instruction]  // all instructions expanded at parse time
   }
 
-  // 目標（Embedded フェーズ）
+  // Target (Embedded phase)
   struct FunctionHandle {
-      let codeOffset: UInt32  // Wasm バイナリ内のバイトコード開始位置
-      let codeSize: UInt32    // バイトコードのバイト数
-      let localCount: UInt32  // ローカル変数の個数
+      let codeOffset: UInt32  // byte offset of bytecode within the Wasm binary
+      let codeSize: UInt32    // byte length of the bytecode
+      let localCount: UInt32  // number of local variables
   }
   ```
 
-  インタプリタ側の実行ループも変更が必要で、`[Instruction]` を事前ロードするのではなく、
-  `BinaryReader` を使って実行しながら逐次デコードする方式（wasm3 と同じ lazy decode 方式）に移行する。
-  これにより、モジュールロード時のメモリ消費を大幅に削減できる。
+  The interpreter's execution loop will also need to change: instead of pre-loading `[Instruction]`,
+  decode instructions on the fly using a `BinaryReader` during execution (same lazy-decode approach as wasm3).
+  This greatly reduces memory consumption at module load time.
 
-- [ ] **動的配列を排除するため固定上限 `WasmLimits` を設ける**
+- [ ] **Introduce `WasmLimits` fixed upper bounds to eliminate dynamic arrays**
 
-  現在は `WasmModule` の各フィールドが `[FunctionType]` / `[UInt32]` / `[Export]` などの動的配列になっている。
-  Embedded フェーズでは `malloc` が使えないため、すべてを固定サイズのバッファに置き換える必要がある。
+  Currently each field of `WasmModule` is a dynamic array (`[FunctionType]`, `[UInt32]`, `[Export]`, etc.).
+  In the Embedded phase, `malloc` is unavailable, so all must be replaced with fixed-size buffers.
 
   ```swift
-  // 上限定数の例
+  // Example limit constants
   enum WasmLimits {
-      static let maxTypes     = 64   // 関数シグネチャの最大数
-      static let maxFunctions = 64   // 関数の最大数
-      static let maxImports   = 32   // インポートの最大数
-      static let maxExports   = 32   // エクスポートの最大数
-      static let maxGlobals   = 32   // グローバル変数の最大数
-      static let maxTables    = 4    // テーブルの最大数
-      static let maxMemories  = 1    // メモリの最大数（Wasm MVP は 1 のみ）
-      static let maxElements  = 16   // element segment の最大数
-      static let maxData      = 16   // data segment の最大数
+      static let maxTypes     = 64   // max number of function signatures
+      static let maxFunctions = 64   // max number of functions
+      static let maxImports   = 32   // max number of imports
+      static let maxExports   = 32   // max number of exports
+      static let maxGlobals   = 32   // max number of global variables
+      static let maxTables    = 4    // max number of tables
+      static let maxMemories  = 1    // max number of memories (Wasm MVP: 1 only)
+      static let maxElements  = 16   // max number of element segments
+      static let maxData      = 16   // max number of data segments
   }
   ```
 
-  `[FunctionType]` → `(FunctionType, FunctionType, ...)` のような固定長タプル、
-  または `UnsafeBufferPointer` を使ったスタティックバッファに変更する。
-  上限値は Pico 上での典型的なユースケース（数 KB 程度の Wasm バイナリ）に合わせて調整する。
+  Change `[FunctionType]` to fixed-length tuples or static buffers via `UnsafeBufferPointer`.
+  Limit values should be tuned to typical Embedded use cases (small Wasm binaries of a few KB).
 
 ---
 
-## Phase 2.5 — macOS フェーズ中に対処すべき設計改善
+## Phase 2.5 — Design Improvements Before Embedded Migration
 
-Embedded フェーズ移行前に修正しておくことで、移行コストを下げられる項目。
-いずれも macOS 上での動作には影響しないが、設計上の問題または Embedded リンクエラーの原因になりうる。
+Items to fix before the Embedded-phase migration, to reduce the migration cost.
+None of these affect macOS behavior, but they are design issues or potential Embedded link errors.
 
-- [ ] **`block`/`loop`/`if` の arity をパーサーで事前計算して命令に埋め込む**
+- [ ] **Pre-compute `block`/`loop`/`if` arity in the parser and embed in instructions**
 
-  現在の実装では、`block`/`loop`/`if` 命令の実行時に毎回 `blockArity()` / `loopBrArity()` を呼び出し、
-  `module.types` を参照して arity を計算している（`WasmInterpreter.swift:429-453`）。
+  The current implementation computes arity by calling `blockArity()` / `loopBrArity()` and
+  referencing `module.types` on every execution of a `block`/`loop`/`if` instruction.
 
-  パーサーはすでに `BlockType` と `module.types` を持っているため、この計算はパース時に一度だけ行える。
-  arity を命令自体に埋め込むことで、ホットパスから `module.types` 参照を完全に排除できる。
+  Since the parser already has `BlockType` and `module.types`, this calculation can be done once at parse time.
+  Embedding arity directly in the instruction eliminates `module.types` lookups from the hot path entirely.
 
   ```swift
-  // 現在: 実行時に毎回計算
-  case block(BlockType, Int)              // endPc のみ
-  case loop(BlockType, Int)              // startPc のみ
-  case ifElse(BlockType, Int, Int)       // elsePc, endPc のみ
+  // Current: computed at runtime on every execution
+  case block(BlockType, Int)              // endPc only
+  case loop(BlockType, Int)              // startPc only
+  case ifElse(BlockType, Int, Int)       // elsePc, endPc only
 
-  // 改善案: パーサーが計算済みの値を埋め込む
+  // Proposed: parser embeds pre-computed values
   case block(brArity: Int, paramCount: Int, endPc: Int)
   case loop(brArity: Int, startPc: Int)
   case ifElse(brArity: Int, paramCount: Int, elsePc: Int, endPc: Int)
   ```
 
-  これにより `blockArity()` / `loopBrArity()` 関数と `module.types` へのホットパス参照が不要になる。
-  変更範囲は `WasmModule.swift`（Instruction enum）・`WasmParser.swift`・`WasmInterpreter.swift` の局所的な修正で完結する。
+  This makes `blockArity()` / `loopBrArity()` and hot-path `module.types` lookups unnecessary.
+  The change is localised to `WasmModule.swift` (Instruction enum), `WasmParser.swift`, and `WasmInterpreter.swift`.
 
-- [ ] **`brTable` のターゲット配列をフラット命令列にインライン展開する**
+- [ ] **Inline `brTable` target array into the flat instruction stream**
 
-  現在の実装では `case brTable([UInt32], UInt32)` として `[UInt32]` を enum associated value に持つ。
-  `Array<T>` が enum の中に入る場合、Embedded Swift ではコンパイルは通るが **リンク時に `malloc` が要求される**。
-  現在 `make compile`（`.o` 生成）はエラーにならないが、`make build`（リンク）で問題になりうる。
+  The current implementation stores `case brTable([UInt32], UInt32)` with a `[UInt32]` as an associated value.
+  When an `Array<T>` appears inside an enum, Embedded Swift compiles fine but **requires `malloc` at link time**.
+  `make compile` (`.o` generation only) does not error, but `make build` (linking) may fail.
 
-  flat bytecode の設計を活かして、ターゲット列を pseudo-instruction としてインライン展開することで
-  動的確保を完全に排除できる。
+  Using the flat bytecode design, inline the targets as pseudo-instructions to eliminate dynamic allocation entirely.
 
   ```swift
-  // 改善案: brTable の直後に brTableEntry を count 個並べる
-  case brTable(count: UInt32, default_: UInt32)  // 直後に count 個の brTableEntry が続く
-  case brTableEntry(UInt32)                       // 各ターゲットの depth
+  // Proposed: follow brTable with count brTableEntry instructions
+  case brTable(count: UInt32, default_: UInt32)  // followed by count brTableEntry instructions
+  case brTableEntry(UInt32)                       // each target depth
 
-  // 実行時: labels[i] の代わりに instructions[ip + i] で参照できる
+  // At runtime: access targets via instructions[ip + i] instead of labels[i]
   ```
 
-  変更範囲は `WasmModule.swift`（Instruction enum）・`WasmParser.swift`・`WasmInterpreter.swift` の
-  `brTable` 処理箇所のみ。
+  The change is limited to the `brTable` handling in `WasmModule.swift`, `WasmParser.swift`, and `WasmInterpreter.swift`.
 
-- [ ] **`WasmInteger` protocol を実装して i32/i64 演算を Generic に統一する**
+- [ ] **Implement `WasmInteger` protocol to unify i32/i64 arithmetic generically**
 
-  `SWIFT_VM_DESIGN.md` Section 9.6 に採用方針が記載されているが、現状は i32/i64 の
-  算術・比較・ビット演算がすべて個別にインライン実装されており、ほぼ同一コードが重複している。
+  The adoption plan is documented in `SWIFT_VM_DESIGN.md` Section 9, but currently i32/i64
+  arithmetic, comparison, and bit operations are all implemented individually with near-duplicate code.
 
-  WasmKit の `RawUnsignedInteger` protocol を参考に `WasmInteger` protocol を実装することで、
-  演算実装の重複を削減し、将来の命令追加時の漏れをコンパイラが検出できる設計になる。
+  Implementing a `WasmInteger` protocol inspired by WasmKit's `RawUnsignedInteger` would reduce
+  duplication and allow the compiler to catch missing cases when new instructions are added.
 
   ```swift
   protocol WasmInteger: FixedWidthInteger & UnsignedInteger {
@@ -135,153 +132,140 @@ Embedded フェーズ移行前に修正しておくことで、移行コスト�
   extension UInt64: WasmInteger { typealias Signed = Int64 }
   ```
 
-  Embedded Swift でも Generics は静的ディスパッチ（モノモーフィズム）で動作するため対応可能。
-  ただし、モジュール外から呼び出す場合は `@inlinable` が必須（`EMBEDDED_SWIFT.md` Section 3 参照）。
+  Generics use static dispatch (monomorphisation) in Embedded Swift, so this is compatible.
+  However, `@inlinable` is required for calls across module boundaries (see `SWIFT_VM_DESIGN.md` Section 9).
 
 ---
 
-## Phase 3 — Wasm インタプリタ（Embedded フェーズ向け）
+## Phase 3 — Wasm Interpreter (for Embedded)
 
-macOS フェーズのインタプリタは完了済み（spectest 23,547 pass）。
-以下は Embedded フェーズへの移行時に修正・置き換えが必要な箇所。
+The macOS-phase interpreter is complete (spectest 31,925 pass / 0 fail).
+The following changes are needed when migrating to the Embedded phase.
 
-- [ ] **32 ビットターゲットでの実効アドレス計算を修正する**
+- [ ] **Fix effective address computation for 32-bit targets**
 
-  現在のメモリ命令（load/store）では、実効アドレスを以下のように計算している。
+  Memory instructions (load/store) currently compute the effective address as:
 
   ```swift
-  // 現在（macOS では動作するが、32 ビット環境で unsafe）
+  // Current (works on macOS but unsafe on 32-bit)
   let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
   ```
 
-  macOS（64 ビット）では `Int` が 64 ビット幅のためオーバーフローしないが、
-  Pico（32 ビット、`Int` が 32 ビット幅）では `addr + offset` が `UInt32.max` を超えた場合に
-  オーバーフローが発生し、不正なアドレスへのアクセスになる可能性がある。
+  On macOS (64-bit), `Int` is 64-bit wide so no overflow occurs, but on Pico (32-bit, `Int` is 32-bit)
+  `addr + offset` can overflow `UInt32.max`, producing an incorrect address.
 
   ```swift
-  // 修正後（Embedded フェーズ向け）
+  // Fixed (for Embedded phase)
   let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
   guard ea + UInt64(accessSize) <= UInt64(memory.count) else {
       throw WasmError.memoryAccessOutOfBounds
   }
   ```
 
-  `UInt64` で中間計算することで 32 ビット環境でも正しく境界チェックができる。
-  影響範囲は `WasmInterpreter.swift` 内のすべての load/store 命令（約 25 箇所）。
+  Using `UInt64` for intermediate computation ensures correct bounds checking on 32-bit targets.
+  Affects all load/store instructions in `WasmInterpreter.swift` (~25 sites).
 
-- [ ] **`Array<T>` を固定サイズバッファに置き換える**
+- [ ] **Replace `Array<T>` with fixed-size buffers**
 
-  インタプリタが実行時に使用する動的配列を固定長バッファに変更する。
-  対象と置き換え方針は以下の通り。
+  Replace the dynamic arrays used at runtime with fixed-length buffers.
 
-  | 対象フィールド | 現在 | Embedded 向け置き換え |
-  |---|---|---|
-  | `valueStack` | `[Value]` | 固定長配列 + top インデックス（例: 最大深さ 256） |
-  | `callStack` | `[CallFrame]` | 固定長配列 + depth カウンタ（例: 最大深さ 64） |
-  | `CallFrame.locals` | `[Value]` | スタック上の固定スロット（最大ローカル数 128 等） |
-  | `tables` | `[[Value]]` | 固定長バッファ（テーブル最大サイズ 256 等） |
-  | `droppedDataSegments` | `[Bool]` | 固定長ビットマップ |
-  | `droppedElementSegments` | `[Bool]` | 固定長ビットマップ |
+  | Field | Current | Embedded replacement |
+  |-------|---------|----------------------|
+  | `valueStack` | `[Value]` | Fixed-length array + top index (e.g. max depth 256) |
+  | `callStack` | `[CallFrame]` | Fixed-length array + depth counter (e.g. max depth 64) |
+  | `CallFrame.locals` | `[Value]` | Fixed slots on the stack (e.g. max locals 128) |
+  | `tables` | `[[Value]]` | Fixed-length buffer (e.g. max table size 256) |
+  | `droppedDataSegments` | `[Bool]` | Fixed-length bitmap |
+  | `droppedElementSegments` | `[Bool]` | Fixed-length bitmap |
 
-  macOS フェーズでは `Array` のまま動作確認を続け、
-  Embedded フェーズへの移行時に段階的に置き換える。
+- [x] **Eliminate argument copy in `call` / `call_indirect`**
 
-- [ ] **`call` / `callIndirect` での引数コピーを排除する**
+  Changed `pushFrame` signature from `callArgs: [Value]` to `argCount: Int`;
+  arguments are now read directly from `valueStack` without an intermediate copy.
+  The `Array(valueStack.suffix(argCount))` allocation is eliminated.
 
-  現在の実装では関数呼び出しのたびに `Array(valueStack.suffix(argCount))` を生成している
-  （`WasmInterpreter.swift:518`, `1941`）。これは関数呼び出しごとのヒープ確保であり、
-  Embedded フェーズでは `Array` の動的確保が使えないため対処が必要。
-
-  ```swift
-  // 現在: 毎呼び出しでヒープ確保
-  let callArgs = Array(valueStack.suffix(argCount))
-  valueStack.removeLast(argCount)
-  try pushFrame(funcIdx: Int(funcIdx), callArgs: callArgs)
-  ```
-
-  `CallFrame.locals` を固定サイズバッファ（上の `Array<T>` 置き換え作業）に移行する際、
-  引数の受け渡しも `valueStack` 上のオフセット参照に変更することで確保をゼロにできる。
-  wasm3 はスタックポインタを直接フレームに渡してこの問題を回避している。
+  One copy remains at the host-function boundary (intentional; avoids changing the host API).
+  `CallFrame.locals` still uses `[Value]` — fixed-buffer replacement is part of the Phase 5 work.
+  (Marked with `// TODO: Embedded Phase 5` comment in source.)
 
 ---
 
-## Phase 4 — Raspberry Pi Pico への移植・動作確認
+## Phase 4 — Porting to Raspberry Pi Pico
 
-Embedded Swift でのコンパイル（`armv7em-none-none-eabi`）およびリンク（BLE ファームウェア生成）は確認済み。
-以下の作業を経て、実機上で Wasm を実行できる状態にする。
+Embedded Swift compilation (`armv7em-none-none-eabi`) and linking (BLE firmware generation) are verified.
+The following work is needed to reach a state where Wasm runs on real hardware.
 
-### 動的アロケーション排除
+### Eliminate Dynamic Allocation
 
-Phase 2〜3 の作業（`FunctionHandle` 化・`WasmLimits` 導入・固定バッファ化）を実機向けに適用する。
-Pico では `malloc` が原則使えないため（Pico SDK は `malloc` を提供するが Embedded Swift の制約として排除する方針）、
-すべての動的確保をコンパイル時固定サイズのバッファに置き換える必要がある。
+Apply the Phase 2–3 work (`FunctionHandle`, `WasmLimits`, fixed buffers) to the real hardware build.
+On Pico, `malloc` must not be used (even though `pico_stdlib` provides it, the Embedded-phase policy
+is to eliminate all dynamic allocation), so all dynamic allocations must be replaced with
+compile-time fixed-size buffers.
 
-- [ ] **`ValueStack` を固定サイズバッファ + インデックス管理に置き換える**
+- [ ] **Replace `ValueStack` with a fixed-size buffer + index management**
 
-  最大スタック深さを定数で決め（例: 256 要素）、`top` インデックスで管理する。
-  スタックオーバーフロー時は `WasmError.stackOverflow` を throw する。
+  Fix the maximum stack depth (e.g. 256 elements) and manage it with a `top` index.
+  Throw `WasmError.stackOverflow` on overflow.
 
   ```swift
   struct ValueStack {
-      var storage: (Value, Value, ...) // 固定長タプルまたは UnsafeBufferPointer
+      var storage: (Value, Value, ...) // fixed-length tuple or UnsafeBufferPointer
       var top: Int = 0
   }
   ```
 
-- [ ] **`CallStack` / `CallFrame.locals` をスタック上の固定配列に置き換える**
+- [ ] **Replace `CallStack` / `CallFrame.locals` with fixed arrays on the stack**
 
-  コールスタックの最大深さを定数で決め（例: 64 フレーム）、固定長バッファで管理する。
-  各フレームのローカル変数も固定スロット数（例: 128 変数）に制限する。
-  関数呼び出しが上限を超えた場合は `WasmError.stackOverflow` を throw する。
+  Fix the maximum call depth (e.g. 64 frames) and manage with a fixed-length buffer.
+  Limit each frame's local variable count (e.g. 128 locals).
+  Throw `WasmError.stackOverflow` when the limit is exceeded.
 
-- [ ] **`WasmModule` の動的フィールドを固定長バッファに置き換える**
+- [ ] **Replace `WasmModule` dynamic fields with fixed-length buffers**
 
-  `Phase 2` で定義する `WasmLimits` を使い、`types` / `functions` / `exports` / `imports` /
-  `globals` / `tables` / `memories` / `elements` / `data` の各フィールドを固定長に変更する。
+  Use `WasmLimits` (defined in Phase 2) to change `types` / `functions` / `exports` / `imports` /
+  `globals` / `tables` / `memories` / `elements` / `data` fields to fixed-length.
 
-- [ ] **Arena Allocator を導入してモジュールロード時のアロケーションを削減する**
+- [ ] **Introduce an Arena Allocator to reduce allocations during module load**
 
-  Pico の SRAM から大きなバッファを一括確保し、モジュールロード中のデータをそこに積み上げる。
-  個別の `malloc`/`free` を繰り返すより断片化が起きず、組み込みに適したパターン。
+  Reserve a large buffer from Pico SRAM and stack module-load data into it.
+  This is more Embedded-friendly than repeated `malloc`/`free` calls, avoiding heap fragmentation.
 
   ```
-  [     Arena バッファ（例: SRAM の 64KB 分）     ]
-   ↑使用済み↑ ↑ここから次のデータを確保
+  [     Arena buffer (e.g. 64 KB of SRAM)     ]
+   ↑ used ↑  ↑ next allocation starts here
   ```
 
-### Host Function 実装
+### Host Function Implementation
 
-Wasm から Pico のペリフェラルを制御するためのホスト関数を実装する。
-Embedded Swift ではクロージャのヒープアロケーションが使えないため、
-`@convention(c)` 関数ポインタ + 静的テーブルで登録する。
+Implement host functions for Wasm to control Pico peripherals.
+Since Embedded Swift cannot heap-allocate closures, use `@convention(c)` function pointers + a static table.
 
-- [ ] **`digitalWrite(pin: i32, val: i32) -> void` — GPIO 出力**
+- [ ] **`digitalWrite(pin: i32, val: i32) -> void` — GPIO output**
 
-  Pico SDK の `gpio_init()` + `gpio_set_dir()` + `gpio_put()` を呼び出す。
-  `pin` は GPIO ピン番号（0〜29）、`val` は 0（LOW）/ 1（HIGH）。
-  Wasm 側からは `(import "env" "digitalWrite" (func (param i32 i32)))` でインポートする。
+  Calls Pico SDK's `gpio_init()` + `gpio_set_dir()` + `gpio_put()`.
+  `pin` is the GPIO pin number (0–29); `val` is 0 (LOW) / 1 (HIGH).
+  Wasm imports it as `(import "env" "digitalWrite" (func (param i32 i32)))`.
 
-- [ ] **`digitalRead(pin: i32) -> i32` — GPIO 入力**
+- [ ] **`digitalRead(pin: i32) -> i32` — GPIO input**
 
-  Pico SDK の `gpio_get()` を呼び出し、ピンの状態を i32 で返す。
-  Wasm 側からは `(import "env" "digitalRead" (func (param i32) (result i32)))` でインポートする。
+  Calls Pico SDK's `gpio_get()` and returns the pin state as i32.
+  Wasm imports it as `(import "env" "digitalRead" (func (param i32) (result i32)))`.
 
-- [ ] **`sleep(ms: i32) -> void` — 待機**
+- [ ] **`sleep(ms: i32) -> void` — delay**
 
-  Pico SDK の `sleep_ms()` を呼び出す。
-  Wasm から `sleep(1000)` を呼べば 1 秒待機できる。
+  Calls Pico SDK's `sleep_ms()`.
+  Calling `sleep(1000)` from Wasm waits 1 second.
 
-- [ ] **（拡張）`oledDrawText(x: i32, y: i32, ptr: i32) -> void` — OLED 表示**
+- [ ] **(Extension) `oledDrawText(x: i32, y: i32, ptr: i32) -> void` — OLED display**
 
-  Wasm の Linear Memory 上の文字列ポインタを受け取り、
-  SSD1306 等の OLED ディスプレイに I2C 経由で描画する。
-  `ptr` は Linear Memory 上のオフセット（null 終端の ASCII 文字列を想定）。
+  Receives a string pointer in Wasm linear memory and renders it on an SSD1306 OLED via I2C.
+  `ptr` is an offset into linear memory (null-terminated ASCII string assumed).
 
-### 実機動作確認
+### Hardware Verification
 
-- [ ] **Wasm から `i32.add` を実行し UART に結果を出力する**
+- [ ] **Execute `i32.add` from Wasm and print the result via UART**
 
-  以下のような最小の Wasm 関数をターゲットにする。
+  Target a minimal Wasm function such as:
 
   ```wat
   (module
@@ -291,128 +275,128 @@ Embedded Swift ではクロージャのヒープアロケーションが使え�
       i32.add))
   ```
 
-  `WasmInterpreter.callExport("add", args: [.i32(3), .i32(4)])` を呼び出し、
-  戻り値 `7` が返ること・UART に `"result: 7\n"` が出力されることを確認する。
+  Call `WasmInterpreter.callExport("add", args: [.i32(3), .i32(4)])` and verify
+  that the return value is `7` and `"result: 7\n"` appears on UART.
 
-### サイズ・RAM 最適化
+### Size and RAM Optimization
 
-- [ ] **LTO（Link-Time Optimization）を有効化してバイナリサイズを削減する**
+- [ ] **Enable LTO (Link-Time Optimization) to reduce binary size**
 
-  現状の BLE ファームウェアは `pico-ble.uf2` で 968 KB（実バイナリ約 484 KB）。
-  wasm3（C）が約 64 KB、WAMR が 100〜300 KB であることを考えると差がある。
-  `CMakeLists.txt` に `set_property(TARGET ... PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)` を追加し、
-  削減量を測定する。命令セットの削除（`#if EMBEDDED` で SIMD 等を除外）も併用する。
+  The current BLE firmware is ~968 KB (`pico-ble.uf2`; ~484 KB stripped binary).
+  Compared to wasm3 (~64 KB) and WAMR (100–300 KB), there is a significant gap.
+  Add `set_property(TARGET ... PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)` to `CMakeLists.txt`
+  and measure the reduction. Combine with removing unused instruction groups (`#if EMBEDDED`).
 
-- [ ] **実機での RAM 使用量を測定し、SRAM に収まることを確認する**
+- [ ] **Measure RAM usage on real hardware and confirm it fits in SRAM**
 
-  RP2350 の SRAM は 520 KB、RP2040 は 264 KB。
-  Wasm 実行時の RAM 使用量の内訳は以下を想定。
+  RP2350 SRAM: 520 KB; RP2040: 264 KB.
+  Estimated RAM breakdown during Wasm execution:
 
-  | 用途 | 想定サイズ |
-  |---|---|
-  | Wasm Linear Memory（1 ページ） | 64 KB |
-  | インタプリタ ValueStack | 〜4 KB（256 要素 × 16 バイト） |
-  | インタプリタ CallStack | 〜8 KB（64 フレーム × 128 バイト） |
-  | WasmModule（固定バッファ） | 〜8 KB |
-  | BLE スタック（CYW43） | 〜50 KB |
-  | Pico SDK / システム | 〜20 KB |
-  | **合計（概算）** | **〜154 KB** |
+  | Purpose | Estimated size |
+  |---------|---------------|
+  | Wasm Linear Memory (1 page) | 64 KB |
+  | Interpreter ValueStack | ~4 KB (256 elements × 16 bytes) |
+  | Interpreter CallStack | ~8 KB (64 frames × 128 bytes) |
+  | WasmModule (fixed buffers) | ~8 KB |
+  | BLE stack (CYW43) | ~50 KB |
+  | Pico SDK / system | ~20 KB |
+  | **Total (estimate)** | **~154 KB** |
 
-  `pico-ble.elf.map` でシンボルごとのサイズを確認し、予算内に収まっているか検証する。
-  RP2040 でも動作させたい場合はより厳しい削減が必要。
+  Check per-symbol sizes in `pico-ble.elf.map` and verify the budget is met.
+  Tighter reductions are needed to support RP2040 as well.
 
 ---
 
-## Phase 5 — iOS 連携
+## Phase 5 — iOS Integration
 
-BLE 経由の WASM 転送・実行の基本機能が実装済み。
-BLE 通信には Pico W 内蔵の CYW43439（Wi-Fi / BLE コンボチップ）を使用する。
-iOS アプリは SwiftUI + CoreBluetooth で実装した。
+Basic BLE-based Wasm transfer and execution is implemented.
+BLE communication uses the CYW43439 (Wi-Fi/BLE combo chip) built into the Pico W.
+The iOS app is implemented in SwiftUI + CoreBluetooth.
 
-### BLE プロトコル設計
+### BLE Protocol Design
 
-- [x] **Wasm バイナリ転送用の BLE GATT サービス・キャラクタリスティックを設計する**
+- [x] **Design BLE GATT service and characteristic for Wasm binary transfer**
 
-  単一の書き込み可能キャラクタリスティック（UUID: `...def1`）にコマンドバイトを付加したステートマシン方式を採用した。
-  設計当初の「2 キャラクタリスティック（WasmBinary + Control）」案とは異なり、1 つのキャラクタリスティックにすべてのプロトコルを集約している。
+  Adopted a state-machine approach using a single writable characteristic (UUID: `...def1`) with a command byte prefix.
+  Unlike the original two-characteristic design (WasmBinary + Control), all protocol is consolidated into one characteristic.
 
   ```
   Service UUID: 12345678-1234-5678-1234-56789abcdef0
     Characteristic UUID: 12345678-1234-5678-1234-56789abcdef1 (Write, Dynamic)
-      → コマンドバイト方式:
-          0xF0 [size_lo] [size_hi]              — 転送開始・バッファリセット
-          0xF1 [offset_lo] [offset_hi] [data…]  — チャンクデータ書き込み
-          0xF2                                   — 全受信確認後に実行
+      → Command byte protocol:
+          0xF0 [size_lo] [size_hi]              — Transfer start / buffer reset
+          0xF1 [offset_lo] [offset_hi] [data…]  — Write chunk data
+          0xF2                                   — Confirm full receipt and execute
   ```
 
-  `withResponse` 書き込みを使用し、`didWriteValueFor` 完了通知を受け取ってから次パケットを送信（順序保証）。
+  Uses `withResponse` writes; the next packet is sent only after receiving a `didWriteValueFor` completion (ordering guaranteed).
 
-- [ ] **ログ出力用の Notification キャラクタリスティックを設計する**（未実装）
+- [ ] **Design a Notification characteristic for log output** (not implemented)
 
-  Pico 側で UART に書き出すログを BLE Notification として iOS に転送する。
-  UART → リングバッファ → BLE Notification という流れで実装する。
-  MTU サイズ（20〜512 バイト）に合わせてログ行を分割・結合する。
+  Forward UART log output from Pico to iOS as BLE Notifications.
+  Implement as UART → ring buffer → BLE Notification.
+  Split and reassemble log lines to fit MTU size (20–512 bytes).
 
-- [ ] **転送完了・実行開始のハンドシェイクプロトコルを強化する**（未実装）
+- [ ] **Strengthen the transfer-complete / execution-start handshake protocol** (not implemented)
 
-  現在は受信バイト数の一致のみで完了を判定している。
-  バイナリ転送中の破損・中断を検出するため、CRC チェックサムを最終パケットに含める。
+  Currently completion is determined solely by matching received byte count.
+  Include a CRC checksum in the final packet to detect corruption or interruption during transfer.
 
-### 必須機能（iOS アプリ）
+### Required Features (iOS App)
 
-- [x] **iOS アプリから WASM ファイルを選択して Pico へ BLE 送信できる**
+- [x] **Select a Wasm file from the iOS app and send it to Pico via BLE**
 
-  アプリバンドル内にプリセットされた `.wasm` ファイルリスト（`WasmEntry.all`）からタップで選択し、
-  CoreBluetooth で Pico へ 0xF0 → 0xF1 チャンク群 → 0xF2 の順に転送する。
-  転送中は `ProgressView` でプログレスを表示する。
-  （当初案の `UIDocumentPickerViewController` によるファイルアプリ連携は未実装）
+  Tap to select from a preset `.wasm` file list (`WasmEntry.all`) bundled in the app,
+  then transfer to Pico via CoreBluetooth in the order: 0xF0 → 0xF1 chunks → 0xF2.
+  A `ProgressView` shows transfer progress.
+  (The original `UIDocumentPickerViewController` Files app integration is not implemented.)
 
-- [x] **転送した Wasm が Pico 上で即時実行される**
+- [x] **The transferred Wasm executes immediately on Pico**
 
-  0xF2 コマンド受信後、Pico 側が `executeReceivedWasm()` を呼び出し、
-  `WasmInterpreter` でモジュールをロード・`call(functionIndex: module.importedFunctionCount, args: [])` で実行する。
-  実行開始の Status Notification は未実装。
+  After receiving 0xF2, the Pico calls `executeReceivedWasm()`, loads the module with
+  `WasmInterpreter`, and executes it via `call(functionIndex: module.importedFunctionCount, args: [])`.
+  An execution-start Status Notification is not yet implemented.
 
-- [ ] **Pico の実行ログを iOS アプリでリアルタイム表示できる**（未実装）
+- [ ] **Display Pico execution logs in real time in the iOS app** (not implemented)
 
-  Log Notification を受信するたびに SwiftUI の `ScrollView` にテキストを追加する。
-  CoreBluetooth の `centralManager(_:didUpdateValueFor:)` デリゲートで受け取り、
-  `@MainActor` でバインドされた ViewModel に渡す。
+  Append text to a SwiftUI `ScrollView` each time a Log Notification is received.
+  Receive via the CoreBluetooth `centralManager(_:didUpdateValueFor:)` delegate
+  and forward to a `@MainActor`-bound ViewModel.
 
-- [x] **異なる Wasm を再転送して Pico の動作が切り替わる**
+- [x] **Re-transfer a different Wasm and switch Pico behaviour**
 
-  0xF2 実行後に `wasmRecvLen` / `wasmRecvExpected` をゼロリセットするため、
-  次の 0xF0 を受け取ればすぐに次の WASM バイナリの受信を開始できる。
-  インタプリタの明示的な RESET コマンドは未実装。
+  After 0xF2 execution, `wasmRecvLen` / `wasmRecvExpected` are reset to zero,
+  so the next 0xF0 immediately starts receiving the next binary.
+  An explicit RESET command to the interpreter is not implemented.
 
-### プリセット WASM ファイル
+### Preset Wasm Files
 
-iOS アプリのバンドルには以下の 3 つの WASM ファイルが含まれている。
-いずれも引数なし・`(export "run")` のエントリポイントを持ち、`env::blink` をインポートする。
+The iOS app bundle includes three Wasm files.
+Each has a no-argument `(export "run")` entry point and imports `env::blink`.
 
-| ファイル | 説明 |
-|---------|------|
-| `blink-loop.wasm` | LED を 3 回点滅 |
-| `blink-loop2.wasm` | LED を 5 回点滅 |
-| `blink-loop3.wasm` | LED を 10 回点滅（ループ） |
+| File | Description |
+|------|-------------|
+| `blink-loop.wasm` | Blink LED 3 times |
+| `blink-loop2.wasm` | Blink LED 5 times |
+| `blink-loop3.wasm` | Blink LED 10 times (loop) |
 
-### 拡張機能（任意）
+### Extensions (Optional)
 
-- [ ] **複数の Wasm バイナリを iOS アプリ内で保存・管理・切り替えできる**
+- [ ] **Store, manage, and switch between multiple Wasm binaries in the iOS app**
 
-  SwiftData または FileManager を使い、転送済みバイナリをアプリのドキュメントフォルダに保存する。
-  リスト表示・削除・再送信ができる管理画面を実装する。
+  Use SwiftData or FileManager to save transferred binaries to the app's Documents folder.
+  Implement a management screen with list view, deletion, and re-sending.
 
-- [ ] **iOS のファイルアプリから任意の `.wasm` を選択して転送できる**
+- [ ] **Select and transfer any `.wasm` from the iOS Files app**
 
-  `UIDocumentPickerViewController` で `.wasm` ファイルを選択できるようにする。
+  Enable `.wasm` file selection via `UIDocumentPickerViewController`.
 
-- [ ] **OLED 表示内容を iOS アプリでミラーリングできる**
+- [ ] **Mirror OLED display content in the iOS app**
 
-  Pico 側が OLED のフレームバッファ（128×64 ビット = 1 KB）を BLE Notification で定期送信し、
-  iOS アプリが `Canvas` または `UIImage` でリアルタイム描画する。
+  Have Pico periodically send its OLED frame buffer (128×64 bits = 1 KB) as BLE Notifications,
+  and render it in real time in the iOS app using `Canvas` or `UIImage`.
 
-- [ ] **Pico の CPU 負荷・メモリ使用量をモニタリングできる**
+- [ ] **Monitor Pico CPU load and memory usage**
 
-  Wasm 実行中のインタプリタから命令カウンタ・スタック使用量・メモリ使用量を定期的に取得し、
-  BLE Notification で iOS に送信する。iOS アプリでグラフ表示（Swift Charts）する。
+  Periodically retrieve instruction count, stack usage, and memory usage from the interpreter during
+  Wasm execution, send via BLE Notification, and display as charts (Swift Charts) in the iOS app.

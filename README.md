@@ -1,134 +1,145 @@
 # swift-embedded-wasm
 
-Embedded Swift で実装する WebAssembly Runtime（Raspberry Pi Pico 2 / RP2350 向け）。
+A WebAssembly Runtime implemented in Embedded Swift, targeting Raspberry Pi Pico 2 (RP2350).
 
-## 仕様準拠水準
+Transfer a Wasm binary from an iPhone via BLE — the Embedded Swift Runtime on the Pico executes it dynamically to control GPIO, OLED, and sensors.
 
-公式 [WebAssembly Spec Testsuite](https://github.com/WebAssembly/testsuite) による評価（2026-05-31 時点）:
+**Spec compliance (as of 2026-05-31):** 31,925 PASS / 0 FAIL out of 59,889 total test cases. See [SPEC_COMPLIANCE.md](Documentations/SPEC_COMPLIANCE.md) for details.
 
-- **WebAssembly 2.0 をほぼカバー**（SIMD / Memory64 を除く）
-- 総テスト 59,889 件のうち **31,925 件 PASS・FAIL ゼロ**
-- SIMD と Memory64 を除いたパスレートは **95.7%**（21,632 / 22,608）
+---
 
-SIMD（v128）と Memory64（64 ビットアドレッシング）は Embedded ターゲットに不要なため意図的に未実装。
-詳細は [`Documentations/SPEC_COMPLIANCE.md`](Documentations/SPEC_COMPLIANCE.md) を参照。
-
-## 構成
+## Repository Structure
 
 ```
 swift-embedded-wasm/
-├── Sources/WasmRuntime/                      # 共有ロジック（macOS / Pico 両方でコンパイル）
-├── Tests/WasmRuntimeTests/                   # macOS 上でのテスト（swift test）
-├── Examples/RaspberryPiPicoW-BLE/Embedded/  # BLE ペリフェラル実装（Pico W 向け、CMake ビルド）
-├── Package.swift                             # macOS 向けビルド定義（テスト・開発用）
-└── Makefile                                  # テスト・Embedded Swift 検証定義
+├── Sources/WasmRuntime/                      # Shared logic (compiles on both macOS and Pico)
+├── Tests/WasmRuntimeTests/                   # macOS tests (swift test)
+├── Examples/RaspberryPiPicoW-BLE/Embedded/  # BLE peripheral firmware (Pico W, CMake build)
+├── Package.swift                             # macOS build definition (for development and testing)
+└── Makefile                                  # Test and Embedded Swift validation targets
 ```
 
-`Sources/WasmRuntime/` 以下のコードは macOS（SwiftPM）と Pico（Makefile `compile`）の両方でコンパイルされます。
-Pico 向けの完全なビルドは `Examples/RaspberryPiPicoW-BLE/Embedded/` を参照してください。
+`Sources/WasmRuntime/` compiles on both macOS (SwiftPM) and Pico (Makefile `compile`).
+For a full Pico build, see `Examples/RaspberryPiPicoW-BLE/Embedded/`.
 
-## ビルド
+---
 
-### 前提条件
+## Build
 
-| ツール | 用途 | インストール |
-|---|---|---|
-| [swiftly](https://github.com/swiftlang/swiftly) | Swift ツールチェーン管理 | `curl -L https://swiftlang.github.io/swiftly/swiftly-install.sh \| bash` |
-| Swift 6.x (embedded stdlib 付き) | Embedded Swift コンパイル | `swiftly install latest` |
+### Prerequisites
 
-### macOS でのテスト（Pico 不要）
+| Tool | Purpose | Install |
+|------|---------|---------|
+| [swiftly](https://github.com/swiftlang/swiftly) | Swift toolchain manager | `curl -L https://swiftlang.github.io/swiftly/swiftly-install.sh \| bash` |
+| Swift 6.x (with embedded stdlib) | Embedded Swift compilation | `swiftly install latest` |
+
+### macOS Tests (no Pico required)
 
 ```sh
 swift test
 ```
 
-`Sources/WasmRuntime/` の共有ロジックを macOS 上でテストできます。実機なしで開発・検証する際のメインの手段です。
+Tests the shared logic in `Sources/WasmRuntime/` on macOS. The primary way to develop and verify without real hardware.
 
-テストは 2 種類あります。
+Two types of tests are included:
 
-#### ユニットテスト
+#### Unit Tests
 
-`Tests/WasmRuntimeTests/` 以下の手書きテスト群。パーサー・インタプリタの動作を個別に検証します。
+Handwritten tests under `Tests/WasmRuntimeTests/` that verify parser and interpreter behaviour individually.
 
-#### Spectest 準拠テスト
+#### Spec Conformance Tests
 
-公式 [WebAssembly Spec Testsuite](https://github.com/WebAssembly/testsuite) を使って、実装が Wasm 標準に沿っているか継続的に確認するテストです。
+Tests against the official [WebAssembly Spec Testsuite](https://github.com/WebAssembly/testsuite) to continuously verify spec compliance.
 
-**初回セットアップ（`wabt` が必要）**
+**Initial setup (requires `wabt`)**
 
 ```sh
-brew install wabt       # wast2json をインストール
-make spectest-gen       # .wast → JSON + .wasm に変換（Tests/WasmRuntimeTests/spectest/ に出力）
+brew install wabt       # installs wast2json
+make spectest-gen       # converts .wast → JSON + .wasm (output to Tests/WasmRuntimeTests/spectest/)
 ```
 
-その後は通常の `swift test` に自動で含まれます。
+After setup, the spectest is automatically included in `swift test`.
 
-**各テストの意味**
+**Result meanings**
 
-| 結果 | 意味 |
-|---|---|
-| PASS | 仕様通りに動作している |
-| SKIP | 未実装の命令・型を使用しているため実行できない |
-| FAIL | 仕様との不一致（バグ）|
+| Result | Meaning |
+|--------|---------|
+| PASS | Behaves as specified |
+| SKIP | Cannot run — uses an unimplemented instruction or type |
+| FAIL | Mismatch with spec (bug) |
 
-新しい命令を実装するごとに、対応するテストが SKIP → PASS または FAIL に変わります。FAIL が出た場合は仕様との不一致を示します。
+Each time a new instruction is implemented, corresponding tests move from SKIP → PASS or FAIL. A FAIL indicates a spec mismatch.
 
-**統計の確認**
+**View per-file statistics**
 
-`SpectestTests.swift` 内の以下の行のコメントを外すと、ファイルごとの pass/skip/fail 数が出力されます。
+Uncomment the following line in `SpectestTests.swift` to print pass/skip/fail counts per file:
 
 ```swift
 // print("[\(file.name)] pass=\(runner.passCount) skip=\(runner.skipCount) fail=\(runner.failCount)")
 ```
 
-**生成ファイルの削除**
+**Clean generated files**
 
 ```sh
 make spectest-clean
 ```
 
-`Tests/WasmRuntimeTests/spectest/` は `.gitignore` 対象です。
+`Tests/WasmRuntimeTests/spectest/` is listed in `.gitignore`.
 
-### Swift コンパイルのみ（Pico SDK 不要）
+### Compile Only (no Pico SDK required)
 
 ```sh
 make compile
 ```
 
-Embedded Swift のツールチェーンが正しく設定されているか確認するのに最適です。
-成功すると `build/pico-wasm.o` が生成されます。
+Useful for verifying that the Embedded Swift toolchain is configured correctly.
+On success, `build/pico-wasm.o` is generated.
 
-### 完全ビルド（.uf2 生成、Pico SDK 必要）
+### Full Build (.uf2 generation, Pico SDK required)
 
 ```sh
-# Pico SDK のクローン（初回のみ）
+# Clone the Pico SDK (first time only)
 git clone https://github.com/raspberrypi/pico-sdk ~/pico/pico-sdk
 cd ~/pico/pico-sdk && git submodule update --init
 
-# ビルド
+# Build
 make build
 ```
 
-`build/` 以下に `.elf` / `.bin` / `.uf2` が生成されます。
+Generates `.elf` / `.bin` / `.uf2` under `build/`.
 
-### Pico への書き込み
+### Flash to Pico
 
-1. BOOTSEL ボタンを押しながら USB 接続（`/Volumes/RPI-RP2` としてマウントされる）
-2. 以下を実行:
+1. Hold the BOOTSEL button while connecting via USB (mounts as `/Volumes/RPI-RP2`)
+2. Run:
 
 ```sh
 make flash
 ```
 
-### 環境変数
+### Environment Variables
 
-| 変数 | デフォルト | 説明 |
-|---|---|---|
-| `PICO_SDK_PATH` | `~/pico/pico-sdk` | Pico SDK のパス |
-| `PICO_MOUNT` | `/Volumes/RPI-RP2` | Pico のマウントパス |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PICO_SDK_PATH` | `~/pico/pico-sdk` | Path to the Pico SDK |
+| `PICO_MOUNT` | `/Volumes/RPI-RP2` | Pico mount path |
 
 ```sh
-# カスタムパスを指定する場合
+# Custom paths
 make build PICO_SDK_PATH=/path/to/pico-sdk
 make flash PICO_MOUNT=/Volumes/RPI-RP2
+```
+
+---
+
+## Examples
+
+### `Examples/RaspberryPiPicoW-BLE/`
+
+A complete end-to-end demo: transfer a Wasm binary from an iPhone to a Pico W over BLE and execute it.
+
+```
+Examples/RaspberryPiPicoW-BLE/
+├── Embedded/   # Pico W firmware (Embedded Swift + BTstack)
+└── iOS/        # iOS controller app (SwiftUI + CoreBluetooth)
 ```
