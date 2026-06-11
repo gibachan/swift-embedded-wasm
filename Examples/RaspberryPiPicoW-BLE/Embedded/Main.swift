@@ -118,7 +118,18 @@ func executeReceivedWasm() {
         // importedFunctionCount: number of imported functions.
         // The first local function begins immediately after that index.
         var interp = try WasmInterpreter(module: module, hostImports: hostImports)
-        _ = try interp.call(functionIndex: module.importedFunctionCount, args: [])
+        let runFuncIdx = module.importedFunctionCount
+        let runArgs: [Value] = module.functionType(at: runFuncIdx).params.map { vt in
+            switch vt {
+            case .i32: return .i32(0)
+            case .i64: return .i64(0)
+            case .f32: return .f32(0)
+            case .f64: return .f64(0)
+            case .funcref: return .funcref(nil)
+            case .externref: return .externref(nil)
+            }
+        }
+        _ = try interp.call(functionIndex: runFuncIdx, args: runArgs)
     } catch {
         // On WASM error, leave the LED unchanged
     }
