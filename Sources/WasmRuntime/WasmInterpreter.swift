@@ -2186,11 +2186,22 @@ struct WasmInterpreter {
         if copyCount > 0 {
           // Overlap-safe copy: copy forward when dst <= src or regions do not overlap,
           // backward when dst > src and the regions overlap (avoids overwriting src bytes).
-          if dstOff <= srcOff || dstOff >= srcOff + copyCount {
-            for i in 0..<copyCount { memory[dstOff + i] = memory[srcOff + i] }
-          } else {
-            for i in stride(from: copyCount - 1, through: 0, by: -1) {
-              memory[dstOff + i] = memory[srcOff + i]
+          memory.withUnsafeMutableBytes { buf in
+            let base = buf.baseAddress!
+            if dstOff <= srcOff || dstOff >= srcOff + copyCount {
+              // Non-overlapping (or dst <= src): use copyMemory, which compiles to a
+              // single memcpy call and allows word-width loads/stores on the 32-bit bus.
+              base.advanced(by: dstOff).copyMemory(
+                from: base.advanced(by: srcOff), byteCount: copyCount)
+            } else {
+              // Overlapping with dst > src: copyMemory (memcpy) is not safe here because
+              // it reads src bytes that dst has already overwritten. Copy backward so
+              // each source byte is read before the destination pointer reaches it.
+              let dst = base.advanced(by: dstOff).assumingMemoryBound(to: UInt8.self)
+              let src = base.advanced(by: srcOff).assumingMemoryBound(to: UInt8.self)
+              for i in stride(from: copyCount - 1, through: 0, by: -1) {
+                dst.advanced(by: i).pointee = src.advanced(by: i).pointee
+              }
             }
           }
         }
@@ -2213,7 +2224,12 @@ struct WasmInterpreter {
         guard dstOff + fillCount <= memory.count else { throw .memoryAccessOutOfBounds }
         if fillCount > 0 {
           let byte = UInt8(UInt32(bitPattern: val) & 0xFF)
-          for i in 0..<fillCount { memory[dstOff + i] = byte }
+          // initializeMemory compiles to a single memset call, allowing the CPU and
+          // compiler to use word-width stores rather than byte-by-byte iteration.
+          memory.withUnsafeMutableBytes { buf in
+            _ = buf.baseAddress!.advanced(by: dstOff)
+              .initializeMemory(as: UInt8.self, repeating: byte, count: fillCount)
+          }
         }
 
       case .tableInit(let elemIdx, let tableIdx):

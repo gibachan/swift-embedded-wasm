@@ -155,26 +155,6 @@ case ifElse(brArity: Int, paramCount: Int, elsePc: Int, endPc: Int)
 
 ---
 
-### C-2. `memoryFill` / `memoryCopy` にバースト転送を使う
-
-**場所:** `WasmInterpreter.swift` L2060-2042
-
-```swift
-// 現状: バイト単位ループ
-for i in 0..<fillCount { memory[dstOff + i] = byte }
-
-// 改善案: withUnsafeMutableBytes で memmove 相当を直接呼ぶ
-memory.withUnsafeMutableBytes { buf in
-    buf.baseAddress!.advanced(by: dstOff)
-        .initializeMemory(as: UInt8.self, repeating: byte, count: fillCount)
-}
-```
-
-Wasm の `memory.fill` / `memory.copy` はまとまったデータ転送に使われることが多く、
-ワード単位の書き込みは Pico の 32-bit バス幅に合っている。
-
----
-
 ## 優先度 D — 32-bit ターゲット安全性
 
 ### D-1. 有効アドレス計算のオーバーフローを `UInt64` 経由にする
@@ -289,7 +269,7 @@ i32/i64 で対称な 40+ ケースが半分に減り、将来的な命令追加�
 | **Phase 2.5** (macOS フェーズ完了前) | A-1, C-1, F-1 | `make build` 前に対処、コード削減 |
 | **Phase 3** (Embedded 移行) | D-1, D-2, B-1, B-2, B-3 | 32-bit 安全性とスタック固定化 |
 | **Phase 4** (Pico 実動作) | B-4, B-5 | malloc 完全排除 |
-| **最適化** | C-2, E-1, E-2 | LTO・switch 最適化・性能向上 |
+| **最適化** | E-1, E-2 | LTO・switch 最適化・性能向上 |
 
 ---
 
