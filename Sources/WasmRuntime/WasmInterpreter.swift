@@ -101,7 +101,17 @@ private struct Frame {
 }
 
 // MARK: - Block arity helpers
+//
+// These helpers are called on every execution of block/loop/if instructions and
+// sit directly in the interpreter hot path. @inline(__always) forces the compiler
+// to expand them at every call site, eliminating call overhead and enabling the
+// surrounding switch-case code to be optimised as a single unit.
+//
+// Note: if arity is pre-computed at parse time and embedded directly in each
+// block/loop/if Instruction case, these functions become unnecessary and can
+// be removed entirely.
 
+@inline(__always)
 private func blockArity(_ bt: BlockType, types: [FunctionType]) -> Int {
   switch bt {
   case .void: return 0
@@ -114,6 +124,7 @@ private func blockArity(_ bt: BlockType, types: [FunctionType]) -> Int {
 
 // For loop br: carries param count (not result count).
 // In MVP loops have no params; multi-value loops carry params on branch.
+@inline(__always)
 private func loopBrArity(_ bt: BlockType, types: [FunctionType]) -> Int {
   switch bt {
   case .void, .value: return 0
