@@ -180,25 +180,21 @@ Pico では `Int` が 32-bit。`addr + offset` が `0x1_0000_0000` 近傍にな�
 
 ## 優先度 E — バイナリサイズ削減
 
-### E-1. LTO（リンク時最適化）を有効化する
+### E-1. LTO（リンク時最適化）— Pico SDK と非互換のため保留
 
-**場所:** `Examples/RaspberryPiPicoW-BLE/Embedded/CMakeLists.txt`（`TODO.md Phase 4` に記載済み）
+**場所:** `Examples/RaspberryPiPicoW-BLE/Embedded/CMakeLists.txt`
 
-BLE ファームウェア (~484 KB stripped) は wasm3 (~64 KB) と比較して大きい。
-この差は「命令が多い/少ない」ではなく Swift の型メタデータや安全チェックのオーバーヘッドによる。
-命令を `#if !EMBEDDED` で除外する方法は一見有効に見えるが、**インタープリターはどの命令を
-含む Wasm バイナリが BLE 経由で転送されてくるかコンパイル時に知ることができない**ため、
-全命令に対応する実装が必要であり現実的ではない。
+`set_property(TARGET pico-ble PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)` を試みたが、
+Pico SDK が使用する多数の `--wrap` フラグ（`__wrap_printf`, `__wrap_puts`, `__wrap_malloc` 等）と
+GCC LTO (`-flto=auto`) が根本的に非互換であることが判明。
+LTO の最適化パス中にリンカーが `__wrap_*` シンボルの ARM/Thumb 呼び出し規約を解決できず
+"Unknown destination type" / "dangerous relocation" リンクエラーになる。
 
-代わりに LTO を有効化することで、コンパイラがリンク時に未到達コードを除去できる。
+Swift レベルの dead code elimination は `CMAKE_Swift_COMPILATION_MODE wholemodule` で既にカバーされており、
+C 境界をまたぐ LTO は現行の Pico SDK ビルド構成では使用不可。
 
-```cmake
-# CMakeLists.txt に追加（TODO.md Phase 4 の対応）
-set_property(TARGET pico-ble PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
-```
-
-LTO は「どの命令が実際に到達可能か」を静的解析できる範囲で削減するため、
-動的な命令選択と矛盾しない。
+**対応:** Phase 4 で bare-metal 環境（`pico_stdlib` 除去）に移行する際に、
+`--wrap` の必要性と LTO の併用可否を改めて評価する。
 
 ---
 
@@ -251,7 +247,7 @@ i32/i64 で対称な 40+ ケースが半分に減り、将来的な命令追加�
 | **Phase 2.5** (macOS フェーズ完了前) | A-1, C-1, F-1 | `make build` 前に対処、コード削減 |
 | **Phase 3** (Embedded 移行) | D-1, B-1, B-2, B-3 | 32-bit 安全性とスタック固定化 |
 | **Phase 4** (Pico 実動作) | B-4, B-5 | malloc 完全排除 |
-| **最適化** | E-1, E-2 | LTO・switch 最適化・性能向上 |
+| **最適化** | E-2 | switch 最適化・性能向上（E-1は--wrap非互換のため保留） |
 
 ---
 

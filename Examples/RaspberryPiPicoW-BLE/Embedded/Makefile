@@ -29,7 +29,7 @@ BUILD_DIR := build
 PICO_BOARD          ?= pico_w
 PICO_SDK_PATH       ?= $(HOME)/pico/pico-sdk
 PICO_TOOLCHAIN_PATH ?= /opt/homebrew
-SWIFT_TOOLCHAIN     ?= $(HOME)/Library/Developer/Toolchains/swift-6.3.1-RELEASE.xctoolchain/usr
+SWIFT_TOOLCHAIN     ?= $(HOME)/.swiftly
 PICO_MOUNT          ?= /Volumes/RPI-RP2
 
 .PHONY: all build reconfigure flash clean help check-sdk
