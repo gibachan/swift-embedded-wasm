@@ -155,30 +155,7 @@ case ifElse(brArity: Int, paramCount: Int, elsePc: Int, endPc: Int)
 
 ---
 
-### C-2. `callIndirect` の型比較に `zip()` を使わず直接ループにする
-
-**場所:** `WasmInterpreter.swift` L1951-1956
-
-```swift
-// 現状: zip() を使った比較
-for (e, a) in zip(expectedType.params, actualType.params) {
-    guard e == a else { throw .indirectCallTypeMismatch }
-}
-
-// 改善案: インデックスループで明示化（zip の遅延評価に依存しない）
-for i in 0..<expectedType.params.count {
-    guard expectedType.params[i] == actualType.params[i] else {
-        throw .indirectCallTypeMismatch
-    }
-}
-```
-
-`zip()` は遅延シーケンスで余分なアロケーションはないが、
-Embedded Swift ではインデックスアクセスの方が最適化しやすく意図が明確になる。
-
----
-
-### C-3. `memoryFill` / `memoryCopy` にバースト転送を使う
+### C-2. `memoryFill` / `memoryCopy` にバースト転送を使う
 
 **場所:** `WasmInterpreter.swift` L2060-2042
 
@@ -312,7 +289,7 @@ i32/i64 で対称な 40+ ケースが半分に減り、将来的な命令追加�
 | **Phase 2.5** (macOS フェーズ完了前) | A-1, C-1, F-1 | `make build` 前に対処、コード削減 |
 | **Phase 3** (Embedded 移行) | D-1, D-2, B-1, B-2, B-3 | 32-bit 安全性とスタック固定化 |
 | **Phase 4** (Pico 実動作) | B-4, B-5 | malloc 完全排除 |
-| **最適化** | C-2, C-3, E-1, E-2 | LTO・switch 最適化・性能向上 |
+| **最適化** | C-2, E-1, E-2 | LTO・switch 最適化・性能向上 |
 
 ---
 

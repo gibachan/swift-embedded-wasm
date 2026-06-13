@@ -2098,11 +2098,15 @@ struct WasmInterpreter {
           expectedType.params.count == actualType.params.count
             && expectedType.results.count == actualType.results.count
         else { throw .indirectCallTypeMismatch }
-        for (e, a) in zip(expectedType.params, actualType.params) {
-          guard e == a else { throw .indirectCallTypeMismatch }
+        for i in 0..<expectedType.params.count {
+          guard expectedType.params[i] == actualType.params[i] else {
+            throw .indirectCallTypeMismatch
+          }
         }
-        for (e, a) in zip(expectedType.results, actualType.results) {
-          guard e == a else { throw .indirectCallTypeMismatch }
+        for i in 0..<expectedType.results.count {
+          guard expectedType.results[i] == actualType.results[i] else {
+            throw .indirectCallTypeMismatch
+          }
         }
         let argCount = expectedType.params.count
         guard valueStack.count >= argCount else { throw .stackUnderflow }
