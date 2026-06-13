@@ -84,7 +84,7 @@ struct GlobalDef: Sendable {
 /// be accessible via `table.init`.
 struct ElementSegment: Sendable {
   let isPassive: Bool  // true = passive or declarative (not applied at instantiation)
-  let isDeclarative: Bool  // true = declarative (flags=3, 5, 7); pre-dropped per spec §4.5.4
+  let isDeclarative: Bool  // true = declarative (flags=3, 7 only); pre-dropped per spec §4.5.4
   let tableIndex: UInt32  // valid only when isPassive == false
   let offset: Int32  // valid only when isPassive == false
   // nil entries represent null references (ref.null in expression-based segments)

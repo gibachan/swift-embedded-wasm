@@ -110,25 +110,9 @@ private var tables: [[Value]]
 
 ---
 
-### B-5. `droppedDataSegments: [Bool]`、`droppedElementSegments: [Bool]` をビットマップに変える
+### B-5. `WasmModule` の全フィールドを固定長バッファに変える `WasmModule` の全フィールドを固定長バッファに変える
 
-**場所:** `WasmInterpreter.swift` L127-129（`// TODO: Embedded` コメント付き）
-
-```swift
-// 現状: Bool 配列（1 要素 = 1 バイト）
-private var droppedDataSegments: [Bool]
-
-// 改善案: UInt64 ビットマップ（最大 64 セグメント = 1 ワード）
-private var droppedDataSegments: UInt64 = 0  // bit i = segment i が dropped か否か
-```
-
-ヒープ割り当てを排除しつつ操作も簡単になる。
-
----
-
-### B-6. `WasmModule` の全フィールドを固定長バッファに変える
-
-**場所:** `WasmModule.swift` L423-438
+**場所:** `WasmModule.swift` L423-438 (旧 B-6)
 
 ```swift
 // 現状: 全フィールドが動的配列
@@ -327,7 +311,7 @@ i32/i64 で対称な 40+ ケースが半分に減り、将来的な命令追加�
 |--------|------|------|
 | **Phase 2.5** (macOS フェーズ完了前) | A-1, C-1, F-1 | `make build` 前に対処、コード削減 |
 | **Phase 3** (Embedded 移行) | D-1, D-2, B-1, B-2, B-3 | 32-bit 安全性とスタック固定化 |
-| **Phase 4** (Pico 実動作) | B-4, B-5, B-6 | malloc 完全排除 |
+| **Phase 4** (Pico 実動作) | B-4, B-5 | malloc 完全排除 |
 | **最適化** | C-2, C-3, E-1, E-2 | LTO・switch 最適化・性能向上 |
 
 ---

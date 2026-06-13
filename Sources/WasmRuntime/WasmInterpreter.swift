@@ -181,10 +181,10 @@ struct WasmInterpreter {
   // Tables store Value (.funcref or .externref) directly to support both funcref and externref tables.
   // The reftype of each slot is determined by the table's declared RefType.
   private var tables: [[Value]]  // reference tables: tables[tableIdx][elemIdx]
-  // TODO: Embedded — replace with fixed-size buffer
-  private var droppedDataSegments: [Bool]  // true = segment has been dropped via data.drop
-  // TODO: Embedded — replace with fixed-size buffer
-  private var droppedElementSegments: [Bool]  // true = segment has been dropped via elem.drop
+  // Bit i = 1 means segment i has been dropped. Supports up to 64 segments.
+  private var droppedDataSegments: UInt64 = 0
+  // Bit i = 1 means segment i has been dropped. Supports up to 64 segments.
+  private var droppedElementSegments: UInt64 = 0
 
   // MARK: - Init
 
@@ -320,18 +320,21 @@ struct WasmInterpreter {
       mem.replaceSubrange(start..<end, with: seg.bytes)
     }
     self.memory = mem
-    // TODO: Embedded — replace with fixed-size buffer
-    self.droppedDataSegments = [Bool](repeating: false, count: module.data.count)
-    // TODO: Embedded — replace with fixed-size buffer
+    // UInt64 bitmap supports at most 64 data segments.
+    guard module.data.count <= 64 else { throw .resourceLimitExceeded }
+    self.droppedDataSegments = 0  // all bits clear = no segments dropped
+
     // Active element segments are treated as dropped after instantiation per Wasm spec §4.5.4.
     // Declarative segments (flags=3, 7) are also pre-dropped — they exist only to make
     // ref.func instructions valid, and must never be accessible via table.init.
     // flags=5 is passive (not declarative) and remains available for table.init.
     // Only true passive segments (isPassive==true, isDeclarative==false) remain available
     // for table.init at runtime.
-    var droppedElems = [Bool](repeating: false, count: module.elements.count)
+    // UInt64 bitmap supports at most 64 element segments.
+    guard module.elements.count <= 64 else { throw .resourceLimitExceeded }
+    var droppedElems: UInt64 = 0
     for (i, seg) in module.elements.enumerated() {
-      if !seg.isPassive || seg.isDeclarative { droppedElems[i] = true }
+      if !seg.isPassive || seg.isDeclarative { droppedElems |= UInt64(1) << i }
     }
     self.droppedElementSegments = droppedElems
 
@@ -2131,12 +2134,12 @@ struct WasmInterpreter {
         let srcOff = Int(UInt32(bitPattern: src))
         let dstOff = Int(UInt32(bitPattern: dst))
         // A dropped segment has effective length 0; avoid allocating an empty array.
-        let segLen = droppedDataSegments[si] ? 0 : module.data[si].bytes.count
+        let segLen = droppedDataSegments & (UInt64(1) << si) != 0 ? 0 : module.data[si].bytes.count
         // Bounds check: applies unconditionally (n=0 with out-of-range src/dst still traps).
         guard srcOff + copyCount <= segLen else { throw .memoryAccessOutOfBounds }
         guard dstOff + copyCount <= memory.count else { throw .memoryAccessOutOfBounds }
         if copyCount > 0 {
-          // Only reached when !droppedDataSegments[si] (segLen > 0 implied by bounds check above).
+          // Only reached when segment si is not dropped (segLen > 0 implied by bounds check above).
           let segBytes = module.data[si].bytes
           for i in 0..<copyCount {
             memory[dstOff + i] = segBytes[srcOff + i]
@@ -2151,8 +2154,8 @@ struct WasmInterpreter {
         // so any access including zero-length is valid only if src == 0 && n == 0).
         // Dropping an already-dropped segment is a no-op (idempotent).
         let si = Int(segIdx)
-        guard si < droppedDataSegments.count else { throw .memoryAccessOutOfBounds }
-        droppedDataSegments[si] = true
+        guard si < module.data.count else { throw .memoryAccessOutOfBounds }
+        droppedDataSegments |= UInt64(1) << si
 
       case .memoryCopy:
         // memory.copy: [dst: i32, src: i32, n: i32] → []
@@ -2231,7 +2234,9 @@ struct WasmInterpreter {
         guard ti < tables.count else { throw .undefinedElement }
         let copyCount = Int(UInt32(bitPattern: n))
         // A dropped element segment has effective length 0.
-        let elemLen = droppedElementSegments[ei] ? 0 : module.elements[ei].functionIndices.count
+        let elemLen =
+          droppedElementSegments & (UInt64(1) << ei) != 0
+          ? 0 : module.elements[ei].functionIndices.count
         let srcOff = Int(UInt32(bitPattern: src))
         let dstOff = Int(UInt32(bitPattern: dst))
         // Bounds check: applies unconditionally (n=0 with out-of-range src/dst still traps).
@@ -2255,8 +2260,8 @@ struct WasmInterpreter {
         // Marks element segment x as dropped. Subsequent table.init from this segment
         // treats it as having length 0. Dropping an already-dropped segment is idempotent.
         let ei = Int(elemIdx)
-        guard ei < droppedElementSegments.count else { throw .undefinedElement }
-        droppedElementSegments[ei] = true
+        guard ei < module.elements.count else { throw .undefinedElement }
+        droppedElementSegments |= UInt64(1) << ei
 
       case .tableCopy(let dstTableIdx, let srcTableIdx):
         // table.copy d s: [dst: i32, src: i32, n: i32] → []
