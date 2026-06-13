@@ -285,8 +285,9 @@ struct WasmInterpreter {
   /// Calls an exported function by name (UTF-8 bytes)
   mutating func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value] {
     guard
-      let export = module.exports.first(where: { $0.nameBytes == nameBytes && $0.kind == .function }
-      )
+      let export = module.exports.first(where: {
+        $0.nameBytes.elementsEqual(nameBytes) && $0.kind == .function
+      })
     else {
       throw .functionNotFound
     }
