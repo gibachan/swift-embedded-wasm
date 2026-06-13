@@ -27,10 +27,21 @@
 /// args: argument values, memory: read-only view of linear memory.
 typealias HostFunction = ([Value], [UInt8]) -> [Value]
 
-/// Import bindings provided by the host at instantiation time
+/// Import bindings provided by the host at instantiation time.
+///
+/// Module and field names are `StaticString` (compile-time constants) so that
+/// no heap allocation is required in Embedded Swift environments.
+/// String literals are accepted directly without any change at the call site.
+///
+/// In non-Embedded builds, `functionDyn` and `memoryDyn` variants are also available
+/// for test infrastructure that constructs names from runtime byte arrays.
 enum HostImport {
-  case function(String, String, HostFunction)  // (module, name, body)
-  case memory(String, String, UInt32)  // (module, name, pages)
+  case function(StaticString, StaticString, HostFunction)  // (module, name, body)
+  case memory(StaticString, StaticString, UInt32)  // (module, name, pages)
+  #if !hasFeature(Embedded)
+    case functionDyn([UInt8], [UInt8], HostFunction)  // (moduleBytes, nameBytes, body)
+    case memoryDyn([UInt8], [UInt8], UInt32)  // (moduleBytes, nameBytes, pages)
+  #endif
 }
 
 // Wasm f32.min: propagates NaN; treats -0 < +0
@@ -138,17 +149,28 @@ struct WasmInterpreter {
     self.module = module
 
     // Match host functions to imports, preserving import order.
-    // Compare as UTF8 byte sequences (fi.module/fi.name are [UInt8]; m/n are String).
-    // String == triggers Unicode normalization (NFC) which is unavailable in Embedded Swift,
-    // so use elementsEqual against the raw utf8 view instead.
+    // fi.module / fi.name are [UInt8]; StaticString cases use withUTF8Buffer for
+    // zero-copy byte comparison without Unicode normalisation.
     var funcs: [HostFunction] = []
     for imp in module.imports {
       guard case .function(let fi) = imp else { continue }
       var found = false
       for hi in hostImports {
-        guard case .function(let m, let n, let body) = hi else { continue }
-        if fi.module.elementsEqual(m.utf8) && fi.name.elementsEqual(n.utf8) {
-          funcs.append(body)
+        var body: HostFunction?
+        switch hi {
+        case .function(let m, let n, let fn):
+          let matches = m.withUTF8Buffer { mBuf in
+            n.withUTF8Buffer { fi.module.elementsEqual(mBuf) && fi.name.elementsEqual($0) }
+          }
+          if matches { body = fn }
+        #if !hasFeature(Embedded)
+          case .functionDyn(let mBytes, let nBytes, let fn):
+            if fi.module.elementsEqual(mBytes) && fi.name.elementsEqual(nBytes) { body = fn }
+        #endif
+        default: break
+        }
+        if let fn = body {
+          funcs.append(fn)
           found = true
           break
         }
@@ -187,8 +209,22 @@ struct WasmInterpreter {
       guard case .memory(let mi) = imp else { continue }
       var found = false
       for hi in hostImports {
-        guard case .memory(let m, let n, let pages) = hi else { continue }
-        if mi.module.elementsEqual(m.utf8) && mi.name.elementsEqual(n.utf8) {
+        var matchedPages: UInt32?
+        switch hi {
+        case .memory(let m, let n, let pages):
+          let matches = m.withUTF8Buffer { mBuf in
+            n.withUTF8Buffer { mi.module.elementsEqual(mBuf) && mi.name.elementsEqual($0) }
+          }
+          if matches { matchedPages = pages }
+        #if !hasFeature(Embedded)
+          case .memoryDyn(let mBytes, let nBytes, let pages):
+            if mi.module.elementsEqual(mBytes) && mi.name.elementsEqual(nBytes) {
+              matchedPages = pages
+            }
+        #endif
+        default: break
+        }
+        if let pages = matchedPages {
           memPageCount = max(memPageCount, pages)
           found = true
           break

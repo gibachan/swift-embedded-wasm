@@ -216,8 +216,9 @@ private struct ConformanceRunner {
       let hf: HostFunction = { args, _ in
         return (try? capturedInterp.callExport(nameBytes: fieldBytes, args: args)) ?? []
       }
-      let fieldName = String(bytes: fi.name, encoding: .utf8) ?? ""
-      result.append(.function(modName, fieldName, hf))
+      // Use functionDyn to match against runtime [UInt8] names from the module's import table.
+      // StaticString cannot be constructed at runtime, so the Dyn variant is required here.
+      result.append(.functionDyn(fi.module, fi.name, hf))
     }
     return result
   }
