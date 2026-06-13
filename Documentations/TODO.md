@@ -169,14 +169,15 @@ The following changes are needed when migrating to the Embedded phase.
 
   Replace the dynamic arrays used at runtime with fixed-length buffers.
 
-  | Field | Current | Embedded replacement |
-  |-------|---------|----------------------|
-  | `valueStack` | `[Value]` | Fixed-length array + top index (e.g. max depth 256) |
-  | `callStack` | `[CallFrame]` | Fixed-length array + depth counter (e.g. max depth 64) |
-  | `CallFrame.locals` | `[Value]` | Fixed slots on the stack (e.g. max locals 128) |
-  | `tables` | `[[Value]]` | Fixed-length buffer (e.g. max table size 256) |
-  | `droppedDataSegments` | `[Bool]` | Fixed-length bitmap |
-  | `droppedElementSegments` | `[Bool]` | Fixed-length bitmap |
+  | Field | Location | Current | Embedded replacement |
+  |-------|----------|---------|----------------------|
+  | `valueStack` | `WasmInterpreter.swift` L279 | `[Value]` | Fixed-length array + top index (e.g. max depth 256) |
+  | `callStack` | `WasmInterpreter.swift` L280 | `[Frame]` | Fixed-length array + depth counter (e.g. max depth 64) |
+  | `CallFrame.locals` | `WasmInterpreter.swift` L87 | `[Value]` | Fixed slots on the stack (e.g. max locals 128) |
+  | `CallFrame.labels` | `WasmInterpreter.swift` L87 | `[Label]` | Fixed-length array (e.g. max nesting depth 32) |
+  | `tables` | `WasmInterpreter.swift` L125 | `[[Value]]` | Flat fixed-length buffer + per-table offset/count |
+
+  Note: `droppedDataSegments` and `droppedElementSegments` were `[Bool]` and are now `UInt64` bitmaps (completed).
 
 - [x] **Eliminate argument copy in `call` / `call_indirect`**
 
@@ -293,8 +294,27 @@ Since Embedded Swift cannot heap-allocate closures, use `@convention(c)` functio
 
   The current BLE firmware is ~968 KB (`pico-ble.uf2`; ~484 KB stripped binary).
   Compared to wasm3 (~64 KB) and WAMR (100–300 KB), there is a significant gap.
-  Add `set_property(TARGET ... PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)` to `CMakeLists.txt`
-  and measure the reduction. Combine with removing unused instruction groups (`#if EMBEDDED`).
+
+  **Attempted and blocked:** `INTERPROCEDURAL_OPTIMIZATION TRUE` was tried in `CMakeLists.txt`
+  but is incompatible with Pico SDK's extensive `--wrap` usage (`__wrap_printf`, `__wrap_malloc`,
+  `__wrap_memcpy`, etc.). During LTO, GCC cannot resolve the ARM/Thumb calling convention of
+  `__wrap_*` symbols, producing "Unknown destination type" / "dangerous relocation" linker errors.
+  Swift-level dead code elimination is already provided by `CMAKE_Swift_COMPILATION_MODE wholemodule`.
+
+  Re-evaluate when migrating to a bare-metal environment that does not rely on `--wrap` for
+  standard library interception.
+
+- [ ] **Add `@frozen` to the `Instruction` enum to reduce type metadata**
+
+  ```swift
+  // WasmModule.swift
+  @frozen
+  enum Instruction: Sendable { ... }
+  ```
+
+  `@frozen` tells the compiler the enum's cases are exhaustive and stable, enabling exhaustive
+  `switch` optimization and reducing Embedded Swift type metadata overhead.
+  No effect on macOS behavior; beneficial in Embedded builds.
 
 - [ ] **Measure RAM usage on real hardware and confirm it fits in SRAM**
 
