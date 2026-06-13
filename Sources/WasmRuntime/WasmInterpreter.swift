@@ -27,6 +27,32 @@
 /// args: argument values, memory: read-only view of linear memory.
 typealias HostFunction = ([Value], [UInt8]) -> [Value]
 
+// TODO: Phase 4 — unify HostFunction and HostFunctionPtr into a single calling convention,
+// eliminating the #if hasFeature(Embedded) branches throughout this file.
+#if hasFeature(Embedded)
+  /// @convention(c) function pointer for host-provided functions in Embedded builds.
+  /// No heap allocation — host functions must use globals for any state they need.
+  ///
+  /// Parameters:
+  ///   - args:        raw pointer to argument Values (reinterpret as UnsafePointer<Value> inside callee)
+  ///   - argsCount:   number of arguments
+  ///   - memory:      pointer to linear memory bytes (nil if no memory)
+  ///   - memorySize:  number of bytes in linear memory
+  ///   - results:     raw pointer to pre-allocated result buffer (nil if 0 results)
+  ///
+  /// UnsafeRawPointer / UnsafeMutableRawPointer are used instead of UnsafePointer<Value> /
+  /// UnsafeMutablePointer<Value> because `Value` is a Swift enum and is not representable
+  /// in @convention(c) function pointer signatures.
+  typealias HostFunctionPtr =
+    @convention(c) (
+      UnsafeRawPointer?,
+      Int32,
+      UnsafeMutablePointer<UInt8>?,
+      Int32,
+      UnsafeMutableRawPointer?
+    ) -> Void
+#endif
+
 /// Import bindings provided by the host at instantiation time.
 ///
 /// Module and field names are `StaticString` (compile-time constants) so that
@@ -35,10 +61,15 @@ typealias HostFunction = ([Value], [UInt8]) -> [Value]
 ///
 /// In non-Embedded builds, `functionDyn` and `memoryDyn` variants are also available
 /// for test infrastructure that constructs names from runtime byte arrays.
+/// In Embedded builds, `.function` accepts a `HostFunctionPtr` (@convention(c) pointer)
+/// instead of a `HostFunction` closure to avoid heap allocation.
 enum HostImport {
-  case function(StaticString, StaticString, HostFunction)  // (module, name, body)
-  case memory(StaticString, StaticString, UInt32)  // (module, name, pages)
-  #if !hasFeature(Embedded)
+  #if hasFeature(Embedded)
+    case function(StaticString, StaticString, HostFunctionPtr)  // (module, name, body)
+    case memory(StaticString, StaticString, UInt32)  // (module, name, pages)
+  #else
+    case function(StaticString, StaticString, HostFunction)  // (module, name, body)
+    case memory(StaticString, StaticString, UInt32)  // (module, name, pages)
     case functionDyn([UInt8], [UInt8], HostFunction)  // (moduleBytes, nameBytes, body)
     case memoryDyn([UInt8], [UInt8], UInt32)  // (moduleBytes, nameBytes, pages)
   #endif
@@ -136,11 +167,16 @@ private func loopBrArity(_ bt: BlockType, types: [FunctionType]) -> Int {
 
 // MARK: - Interpreter
 
-// Does not conform to Sendable because HostFunction (a closure) is not Sendable.
+// Does not conform to Sendable because HostFunction (a closure) is not Sendable in non-Embedded builds.
 struct WasmInterpreter {
   let module: WasmModule
   var memory: [UInt8]
-  private let hostFunctions: [HostFunction]
+  #if hasFeature(Embedded)
+    // In Embedded builds, host functions are @convention(c) pointers — no heap allocation.
+    private let hostFunctions: [HostFunctionPtr]
+  #else
+    private let hostFunctions: [HostFunction]
+  #endif
   private var globals: [Value]  // mutable global variable slots (global.get/set)
   // Tables store Value (.funcref or .externref) directly to support both funcref and externref tables.
   // The reftype of each slot is determined by the table's declared RefType.
@@ -162,33 +198,58 @@ struct WasmInterpreter {
     // Match host functions to imports, preserving import order.
     // fi.module / fi.name are [UInt8]; StaticString cases use withUTF8Buffer for
     // zero-copy byte comparison without Unicode normalisation.
-    var funcs: [HostFunction] = []
-    for imp in module.imports {
-      guard case .function(let fi) = imp else { continue }
-      var found = false
-      for hi in hostImports {
-        var body: HostFunction?
-        switch hi {
-        case .function(let m, let n, let fn):
-          let matches = m.withUTF8Buffer { mBuf in
-            n.withUTF8Buffer { fi.module.elementsEqual(mBuf) && fi.name.elementsEqual($0) }
+    #if hasFeature(Embedded)
+      // Embedded path: host functions are @convention(c) pointers — no heap-captured closures.
+      var funcs: [HostFunctionPtr] = []
+      for imp in module.imports {
+        guard case .function(let fi) = imp else { continue }
+        var found = false
+        for hi in hostImports {
+          var body: HostFunctionPtr?
+          switch hi {
+          case .function(let m, let n, let fn):
+            let matches = m.withUTF8Buffer { mBuf in
+              n.withUTF8Buffer { fi.module.elementsEqual(mBuf) && fi.name.elementsEqual($0) }
+            }
+            if matches { body = fn }
+          case .memory: break
           }
-          if matches { body = fn }
-        #if !hasFeature(Embedded)
+          if let fn = body {
+            funcs.append(fn)
+            found = true
+            break
+          }
+        }
+        guard found else { throw .importNotFound }
+      }
+      self.hostFunctions = funcs
+    #else
+      var funcs: [HostFunction] = []
+      for imp in module.imports {
+        guard case .function(let fi) = imp else { continue }
+        var found = false
+        for hi in hostImports {
+          var body: HostFunction?
+          switch hi {
+          case .function(let m, let n, let fn):
+            let matches = m.withUTF8Buffer { mBuf in
+              n.withUTF8Buffer { fi.module.elementsEqual(mBuf) && fi.name.elementsEqual($0) }
+            }
+            if matches { body = fn }
           case .functionDyn(let mBytes, let nBytes, let fn):
             if fi.module.elementsEqual(mBytes) && fi.name.elementsEqual(nBytes) { body = fn }
-        #endif
-        default: break
+          default: break
+          }
+          if let fn = body {
+            funcs.append(fn)
+            found = true
+            break
+          }
         }
-        if let fn = body {
-          funcs.append(fn)
-          found = true
-          break
-        }
+        guard found else { throw .importNotFound }
       }
-      guard found else { throw .importNotFound }
-    }
-    self.hostFunctions = funcs
+      self.hostFunctions = funcs
+    #endif
     self.globals = module.globals.map { $0.initValue }
 
     // Build per-table arrays from the Table section; one entry per declared table.
@@ -299,8 +360,12 @@ struct WasmInterpreter {
     let importedCount = module.importedFunctionCount
 
     if functionIndex < importedCount {
-      // Host function: pass a read-only view of memory
-      return hostFunctions[functionIndex](args, memory)
+      // Host function: dispatch via the appropriate calling convention
+      #if hasFeature(Embedded)
+        return callHostFunction(index: functionIndex, args: args)
+      #else
+        return hostFunctions[functionIndex](args, memory)
+      #endif
     }
 
     // Local function: validate and run iteratively
@@ -338,13 +403,47 @@ struct WasmInterpreter {
       guard valueStack.count >= argCount else { throw .stackUnderflow }
       let importedCount = module.importedFunctionCount
       if funcIdx < importedCount {
-        // Build the argument slice for the host function boundary (one copy, unavoidable).
-        let argsStart = valueStack.count - argCount
-        let callArgs = Array(valueStack[argsStart...])
-        valueStack.removeLast(argCount)
-        let result = hostFunctions[funcIdx](callArgs, memory)
-        valueStack.append(contentsOf: result)
-        return
+        #if hasFeature(Embedded)
+          // Embedded path: call via @convention(c) pointer using UnsafeBufferPointer into the
+          // value stack directly — no intermediate Array copy of arguments.
+          let argsStart = valueStack.count - argCount
+          let resultCount = module.functionType(at: funcIdx).results.count
+          // Fixed 8-slot result buffer; host functions returning >8 values are unsupported in
+          // Embedded builds. Guard against out-of-bounds writes at runtime.
+          precondition(
+            resultCount <= 8,
+            "HostFunctionPtr: resultCount \(resultCount) exceeds 8-slot result buffer — not supported in Embedded"
+          )
+          // withUnsafeTemporaryAllocation guarantees correct alignment and stride for Value
+          // elements — unlike a homogeneous tuple, whose layout Swift does not formally guarantee.
+          withUnsafeTemporaryAllocation(of: Value.self, capacity: 8) { resultsBuf in
+            valueStack.withUnsafeBytes { stackRaw in
+              // Pass args as UnsafeRawPointer — callee reinterprets to UnsafePointer<Value>.
+              let argsRaw: UnsafeRawPointer? =
+                stackRaw.baseAddress.map { $0.advanced(by: argsStart * MemoryLayout<Value>.stride) }
+              let resultsRaw: UnsafeMutableRawPointer? =
+                resultCount > 0 ? UnsafeMutableRawPointer(resultsBuf.baseAddress!) : nil
+              memory.withUnsafeMutableBytes { memBuf in
+                let memPtr = memBuf.baseAddress?.assumingMemoryBound(to: UInt8.self)
+                let memLen = Int32(memBuf.count)
+                hostFunctions[funcIdx](argsRaw, Int32(argCount), memPtr, memLen, resultsRaw)
+              }
+            }
+            valueStack.removeLast(argCount)
+            for i in 0..<resultCount {
+              valueStack.append(resultsBuf[i])
+            }
+          }
+          return
+        #else
+          // Non-Embedded path: build the argument slice for the host function boundary (one copy).
+          let argsStart = valueStack.count - argCount
+          let callArgs = Array(valueStack[argsStart...])
+          valueStack.removeLast(argCount)
+          let result = hostFunctions[funcIdx](callArgs, memory)
+          valueStack.append(contentsOf: result)
+          return
+        #endif
       }
       let localIdx = funcIdx - importedCount
       let typeIdx = Int(module.functions[localIdx])
@@ -2277,4 +2376,45 @@ struct WasmInterpreter {
 
     return valueStack
   }
+
+  // MARK: - Embedded Host Function Dispatch
+
+  #if hasFeature(Embedded)
+    /// Calls a host function by index using the @convention(c) HostFunctionPtr interface.
+    ///
+    /// This helper is used by `call(functionIndex:args:)` in Embedded builds to avoid
+    /// heap-captured closures. Arguments are passed via UnsafeBufferPointer and results
+    /// are read from a fixed 8-slot stack buffer.
+    ///
+    /// Limitation: host functions returning more than 8 values are not supported in Embedded.
+    private mutating func callHostFunction(index: Int, args: [Value]) -> [Value] {
+      let resultCount = module.functionType(at: index).results.count
+      // Fixed 8-slot result buffer; host functions returning >8 values are unsupported in
+      // Embedded builds. Guard against out-of-bounds writes at runtime.
+      precondition(
+        resultCount <= 8,
+        "HostFunctionPtr: resultCount \(resultCount) exceeds 8-slot result buffer — not supported in Embedded"
+      )
+      // withUnsafeTemporaryAllocation guarantees correct alignment and stride for Value
+      // elements — unlike a homogeneous tuple, whose layout Swift does not formally guarantee.
+      var results: [Value] = []
+      withUnsafeTemporaryAllocation(of: Value.self, capacity: 8) { resultsBuf in
+        args.withUnsafeBytes { argsRaw in
+          let argsPtr: UnsafeRawPointer? = argsRaw.baseAddress
+          let resultsRaw: UnsafeMutableRawPointer? =
+            resultCount > 0 ? UnsafeMutableRawPointer(resultsBuf.baseAddress!) : nil
+          memory.withUnsafeMutableBytes { memBuf in
+            let memPtr = memBuf.baseAddress?.assumingMemoryBound(to: UInt8.self)
+            let memLen = Int32(memBuf.count)
+            // Pass args as UnsafeRawPointer — callee reinterprets to UnsafePointer<Value>.
+            hostFunctions[index](argsPtr, Int32(args.count), memPtr, memLen, resultsRaw)
+          }
+        }
+        for i in 0..<resultCount {
+          results.append(resultsBuf[i])
+        }
+      }
+      return results
+    }
+  #endif
 }

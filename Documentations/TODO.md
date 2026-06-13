@@ -240,6 +240,15 @@ compile-time fixed-size buffers.
 Implement host functions for Wasm to control Pico peripherals.
 Since Embedded Swift cannot heap-allocate closures, use `@convention(c)` function pointers + a static table.
 
+- [x] **Migrate `HostFunction` closure to `@convention(c)` function pointer**
+
+  `HostFunctionPtr` type alias and `HostImport` enum are now conditionally compiled with
+  `#if hasFeature(Embedded)`. In Embedded builds, host functions are registered as
+  `@convention(c)` function pointers (no heap-captured closures).
+  `pushFrame` uses `withUnsafeTemporaryAllocation` + `UnsafeRawPointer` for argument passing.
+  The `hostBlink` function in `Examples/RaspberryPiPicoW-BLE/Embedded/Main.swift` is implemented
+  as a `@_cdecl("hostBlink")` function (closure eliminated).
+
 - [ ] **`digitalWrite(pin: i32, val: i32) -> void` — GPIO output**
 
   Calls Pico SDK's `gpio_init()` + `gpio_set_dir()` + `gpio_put()`.

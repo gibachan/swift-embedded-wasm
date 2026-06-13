@@ -93,6 +93,22 @@ func attWriteCallback(
     return 0
 }
 
+// Host function for the "env::blink" import.
+// Uses @convention(c) via HostFunctionPtr — no capture, no heap allocation.
+// Reads ledPin from the global declared at the top of this file.
+// args/results are UnsafeRawPointer because Value (Swift enum) is not @convention(c)-representable.
+@_cdecl("hostBlink")
+func hostBlink(
+  _ args: UnsafeRawPointer?, _ argsCount: Int32,
+  _ memory: UnsafeMutablePointer<UInt8>?, _ memorySize: Int32,
+  _ results: UnsafeMutableRawPointer?
+) {
+  cyw43_arch_gpio_put(ledPin, true)
+  sleep_ms(300)
+  cyw43_arch_gpio_put(ledPin, false)
+  sleep_ms(300)
+}
+
 // Execute the WASM binary that has been written into the static receive buffer.
 // The WASM module is expected to export a single entry-point function with no
 // parameters, located at the first local function index (after all imports).
@@ -103,17 +119,8 @@ func executeReceivedWasm() {
     var parser = WasmParser(wasmBuf)
     do throws(WasmError) {
         let module = try parser.parse()
-        // [Embedded-TODO]: HostFunction is a heap-allocated closure type.
-        // When migrating to fully constrained Embedded, replace with a
-        // @convention(c) function pointer and read ledPin from the global directly.
         let hostImports: [HostImport] = [
-            .function("env", "blink", { _, _ in
-                cyw43_arch_gpio_put(ledPin, true)
-                sleep_ms(300)
-                cyw43_arch_gpio_put(ledPin, false)
-                sleep_ms(300)
-                return []
-            }),
+            .function("env", "blink", hostBlink),
         ]
         // importedFunctionCount: number of imported functions.
         // The first local function begins immediately after that index.
