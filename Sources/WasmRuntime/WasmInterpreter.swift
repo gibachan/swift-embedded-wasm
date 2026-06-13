@@ -1993,9 +1993,9 @@ struct WasmInterpreter {
         // delta is a u32 argument packed into i32; treat as unsigned.
         // A negative i32 bit pattern becomes a huge u32, which will exceed any max — safe.
         let n = Int(UInt32(bitPattern: delta))
+        // Use UInt64 arithmetic to avoid overflow on 32-bit targets (Int is 32-bit on Pico).
+        let newByteCount = UInt64(n) * UInt64(pageSize)
         let newPages = oldPages + n
-        // Guard against Int overflow before multiplying (important on 32-bit targets).
-        let overflows = n > Int.max / pageSize
         // Check the memory's declared maximum limit (from MemoryType.max, in pages).
         let memMax: UInt32? = module.memories.first?.max
         let exceedsMax: Bool
@@ -2005,10 +2005,11 @@ struct WasmInterpreter {
           // No declared max: Wasm spec hard-limits to 65536 pages (4 GiB).
           exceedsMax = newPages > 65536
         }
-        if overflows || exceedsMax {
+        // newByteCount > Int.max means the allocation would overflow Int on 32-bit targets.
+        if newByteCount > UInt64(Int.max) || exceedsMax {
           valueStack.append(.i32(-1))
         } else {
-          memory.append(contentsOf: [UInt8](repeating: 0, count: n * pageSize))
+          memory.append(contentsOf: [UInt8](repeating: 0, count: Int(newByteCount)))
           valueStack.append(.i32(oldPagesI32))
         }
 

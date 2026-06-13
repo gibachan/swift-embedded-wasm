@@ -178,24 +178,6 @@ Pico では `Int` が 32-bit。`addr + offset` が `0x1_0000_0000` 近傍にな�
 
 ---
 
-### D-2. `memoryGrow` の `n * pageSize` 乗算をオーバーフロー保護する
-
-**場所:** `WasmInterpreter.swift` L1848
-
-```swift
-// 現状: Int が 32-bit の時 n * 65536 がオーバーフローする可能性
-let overflows = n > Int.max / pageSize
-
-// 改善案: UInt64 で計算してから結果をチェック
-let newByteCount = UInt64(n) * UInt64(pageSize)
-guard newByteCount <= UInt64(Int.max) else {
-    valueStack.append(.i32(-1))
-    break
-}
-```
-
----
-
 ## 優先度 E — バイナリサイズ削減
 
 ### E-1. LTO（リンク時最適化）を有効化する
@@ -267,7 +249,7 @@ i32/i64 で対称な 40+ ケースが半分に減り、将来的な命令追加�
 | フェーズ | 項目 | 理由 |
 |--------|------|------|
 | **Phase 2.5** (macOS フェーズ完了前) | A-1, C-1, F-1 | `make build` 前に対処、コード削減 |
-| **Phase 3** (Embedded 移行) | D-1, D-2, B-1, B-2, B-3 | 32-bit 安全性とスタック固定化 |
+| **Phase 3** (Embedded 移行) | D-1, B-1, B-2, B-3 | 32-bit 安全性とスタック固定化 |
 | **Phase 4** (Pico 実動作) | B-4, B-5 | malloc 完全排除 |
 | **最適化** | E-1, E-2 | LTO・switch 最適化・性能向上 |
 
