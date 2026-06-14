@@ -307,23 +307,21 @@ Dynamically allocated `[UInt8]`. `pico_stdlib` provides `posix_memalign`/`free`,
 so this links correctly on the `pico-ble` target. Bounds checking is explicit.
 
 ```swift
-// Example bounds check
-let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+// Bounds check — all 23 load/store handlers (Phase 3 complete)
+let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+guard ea + UInt64(N) <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+let eaInt = Int(ea)
 ```
 
-### Phase 5+ Issues
+`UInt64` intermediate arithmetic prevents silent wraparound on 32-bit targets (RP2350) where
+`Int` is 32 bits wide. This fix is applied to all 23 load/store instruction handlers.
+
+### Remaining Issues
 
 - `memory.grow`'s dynamic `realloc` requires care on RAM-constrained Pico
 - Pure bare-metal (without `pico_stdlib`) requires replacement with a fixed-size buffer
-- On 32-bit targets (Pico / RP2350), `Int` is 32-bit wide, requiring `UInt64` intermediate arithmetic for effective address calculation
-
-```swift
-// TODO: Embedded Phase 5 — 32-bit target overflow protection
-let ea64 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
-guard ea64 + UInt64(accessWidth) <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
-let ea = Int(ea64)
-```
+- Bulk memory ops (`memoryFill` / `memoryCopy` / `memoryInit`) still use the old `Int &+` pattern
+  and are marked `[macOS-phase-OK, Embedded-TODO]` in source; will be fixed in Phase 5
 
 ---
 

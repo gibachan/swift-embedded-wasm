@@ -156,28 +156,25 @@ None of these affect macOS behavior, but they are design issues or potential Emb
 The macOS-phase interpreter is complete (spectest 31,925 pass / 0 fail).
 The following changes are needed when migrating to the Embedded phase.
 
-- [ ] **Fix effective address computation for 32-bit targets**
+- [x] **Fix effective address computation for 32-bit targets**
 
-  Memory instructions (load/store) currently compute the effective address as:
+  All 23 memory load/store instruction handlers in `WasmInterpreter.swift` have been updated.
 
   ```swift
-  // Current (works on macOS but unsafe on 32-bit)
+  // Before (works on macOS but silent wraparound on 32-bit)
   let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-  ```
+  guard ea + N <= memory.count else { throw .memoryAccessOutOfBounds }
 
-  On macOS (64-bit), `Int` is 64-bit wide so no overflow occurs, but on Pico (32-bit, `Int` is 32-bit)
-  `addr + offset` can overflow `UInt32.max`, producing an incorrect address.
-
-  ```swift
-  // Fixed (for Embedded phase)
+  // After (correct on 32-bit RP2350 where Int is 32 bits)
   let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
-  guard ea + UInt64(accessSize) <= UInt64(memory.count) else {
-      throw WasmError.memoryAccessOutOfBounds
-  }
+  guard ea + UInt64(N) <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+  let eaInt = Int(ea)
   ```
 
-  Using `UInt64` for intermediate computation ensures correct bounds checking on 32-bit targets.
-  Affects all load/store instructions in `WasmInterpreter.swift` (~25 sites).
+  Using `UInt64` for intermediate computation prevents silent wraparound on 32-bit targets.
+
+  Note: bulk memory ops (`memoryFill` / `memoryCopy` / `memoryInit`) still use the old `Int &+`
+  pattern and are marked `[macOS-phase-OK, Embedded-TODO]`. They will be fixed in Phase 5.
 
 - [ ] **Replace `Array<T>` with fixed-size buffers**
 

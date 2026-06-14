@@ -1772,240 +1772,257 @@ struct WasmInterpreter {
       case .i32Load(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 4 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let value =
-          UInt32(memory[ea]) | (UInt32(memory[ea + 1]) << 8) | (UInt32(memory[ea + 2]) << 16)
-          | (UInt32(memory[ea + 3]) << 24)
+          UInt32(memory[eaInt]) | (UInt32(memory[eaInt + 1]) << 8)
+          | (UInt32(memory[eaInt + 2]) << 16) | (UInt32(memory[eaInt + 3]) << 24)
         valueStack.append(.i32(Int32(bitPattern: value)))
 
       case .i64Load(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 8 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 8 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let value =
-          UInt64(memory[ea]) | (UInt64(memory[ea + 1]) << 8) | (UInt64(memory[ea + 2]) << 16)
-          | (UInt64(memory[ea + 3]) << 24) | (UInt64(memory[ea + 4]) << 32)
-          | (UInt64(memory[ea + 5]) << 40) | (UInt64(memory[ea + 6]) << 48)
-          | (UInt64(memory[ea + 7]) << 56)
+          UInt64(memory[eaInt]) | (UInt64(memory[eaInt + 1]) << 8)
+          | (UInt64(memory[eaInt + 2]) << 16) | (UInt64(memory[eaInt + 3]) << 24)
+          | (UInt64(memory[eaInt + 4]) << 32) | (UInt64(memory[eaInt + 5]) << 40)
+          | (UInt64(memory[eaInt + 6]) << 48) | (UInt64(memory[eaInt + 7]) << 56)
         valueStack.append(.i64(Int64(bitPattern: value)))
 
       case .f32Load(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 4 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let bits =
-          UInt32(memory[ea]) | (UInt32(memory[ea + 1]) << 8) | (UInt32(memory[ea + 2]) << 16)
-          | (UInt32(memory[ea + 3]) << 24)
+          UInt32(memory[eaInt]) | (UInt32(memory[eaInt + 1]) << 8)
+          | (UInt32(memory[eaInt + 2]) << 16) | (UInt32(memory[eaInt + 3]) << 24)
         // Float(bitPattern:) reinterprets the raw IEEE 754 bit pattern, preserving NaN payloads.
         valueStack.append(.f32(Float(bitPattern: bits)))
 
       case .f64Load(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 8 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 8 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let bits =
-          UInt64(memory[ea]) | (UInt64(memory[ea + 1]) << 8) | (UInt64(memory[ea + 2]) << 16)
-          | (UInt64(memory[ea + 3]) << 24) | (UInt64(memory[ea + 4]) << 32)
-          | (UInt64(memory[ea + 5]) << 40) | (UInt64(memory[ea + 6]) << 48)
-          | (UInt64(memory[ea + 7]) << 56)
+          UInt64(memory[eaInt]) | (UInt64(memory[eaInt + 1]) << 8)
+          | (UInt64(memory[eaInt + 2]) << 16) | (UInt64(memory[eaInt + 3]) << 24)
+          | (UInt64(memory[eaInt + 4]) << 32) | (UInt64(memory[eaInt + 5]) << 40)
+          | (UInt64(memory[eaInt + 6]) << 48) | (UInt64(memory[eaInt + 7]) << 56)
         // Double(bitPattern:) reinterprets the raw IEEE 754 bit pattern, preserving NaN payloads.
         valueStack.append(.f64(Double(bitPattern: bits)))
 
       case .i32Load8S(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 1 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 1 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
         // Sign-extend 8-bit to 32-bit via Int8 reinterpretation then widen.
-        valueStack.append(.i32(Int32(Int8(bitPattern: memory[ea]))))
+        valueStack.append(.i32(Int32(Int8(bitPattern: memory[Int(ea)]))))
 
       case .i32Load8U(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 1 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 1 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
         // Zero-extend: UInt8 → Int32 always produces a non-negative value.
-        valueStack.append(.i32(Int32(memory[ea])))
+        valueStack.append(.i32(Int32(memory[Int(ea)])))
 
       case .i32Load16S(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 2 <= memory.count else { throw .memoryAccessOutOfBounds }
-        let raw = UInt16(memory[ea]) | (UInt16(memory[ea + 1]) << 8)
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 2 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
+        let raw = UInt16(memory[eaInt]) | (UInt16(memory[eaInt + 1]) << 8)
         // Sign-extend 16-bit to 32-bit via Int16 reinterpretation then widen.
         valueStack.append(.i32(Int32(Int16(bitPattern: raw))))
 
       case .i32Load16U(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 2 <= memory.count else { throw .memoryAccessOutOfBounds }
-        let raw = UInt16(memory[ea]) | (UInt16(memory[ea + 1]) << 8)
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 2 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
+        let raw = UInt16(memory[eaInt]) | (UInt16(memory[eaInt + 1]) << 8)
         // Zero-extend: UInt16 → Int32 always produces a non-negative value.
         valueStack.append(.i32(Int32(raw)))
 
       case .i64Load8S(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 1 <= memory.count else { throw .memoryAccessOutOfBounds }
-        valueStack.append(.i64(Int64(Int8(bitPattern: memory[ea]))))
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 1 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        valueStack.append(.i64(Int64(Int8(bitPattern: memory[Int(ea)]))))
 
       case .i64Load8U(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 1 <= memory.count else { throw .memoryAccessOutOfBounds }
-        valueStack.append(.i64(Int64(memory[ea])))
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 1 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        valueStack.append(.i64(Int64(memory[Int(ea)])))
 
       case .i64Load16S(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 2 <= memory.count else { throw .memoryAccessOutOfBounds }
-        let raw = UInt16(memory[ea]) | (UInt16(memory[ea + 1]) << 8)
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 2 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
+        let raw = UInt16(memory[eaInt]) | (UInt16(memory[eaInt + 1]) << 8)
         valueStack.append(.i64(Int64(Int16(bitPattern: raw))))
 
       case .i64Load16U(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 2 <= memory.count else { throw .memoryAccessOutOfBounds }
-        let raw = UInt16(memory[ea]) | (UInt16(memory[ea + 1]) << 8)
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 2 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
+        let raw = UInt16(memory[eaInt]) | (UInt16(memory[eaInt + 1]) << 8)
         valueStack.append(.i64(Int64(raw)))
 
       case .i64Load32S(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 4 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let raw =
-          UInt32(memory[ea]) | (UInt32(memory[ea + 1]) << 8) | (UInt32(memory[ea + 2]) << 16)
-          | (UInt32(memory[ea + 3]) << 24)
+          UInt32(memory[eaInt]) | (UInt32(memory[eaInt + 1]) << 8)
+          | (UInt32(memory[eaInt + 2]) << 16) | (UInt32(memory[eaInt + 3]) << 24)
         valueStack.append(.i64(Int64(Int32(bitPattern: raw))))
 
       case .i64Load32U(_, let offset):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 4 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let raw =
-          UInt32(memory[ea]) | (UInt32(memory[ea + 1]) << 8) | (UInt32(memory[ea + 2]) << 16)
-          | (UInt32(memory[ea + 3]) << 24)
+          UInt32(memory[eaInt]) | (UInt32(memory[eaInt + 1]) << 8)
+          | (UInt32(memory[eaInt + 2]) << 16) | (UInt32(memory[eaInt + 3]) << 24)
         valueStack.append(.i64(Int64(raw)))
 
       case .i32Store(_, let offset):
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .i32(let value) = valueStack.removeLast() else { throw .typeMismatch }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 4 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let u = UInt32(bitPattern: value)
-        memory[ea] = UInt8(u & 0xFF)
-        memory[ea + 1] = UInt8((u >> 8) & 0xFF)
-        memory[ea + 2] = UInt8((u >> 16) & 0xFF)
-        memory[ea + 3] = UInt8((u >> 24) & 0xFF)
+        memory[eaInt] = UInt8(u & 0xFF)
+        memory[eaInt + 1] = UInt8((u >> 8) & 0xFF)
+        memory[eaInt + 2] = UInt8((u >> 16) & 0xFF)
+        memory[eaInt + 3] = UInt8((u >> 24) & 0xFF)
 
       case .i64Store(_, let offset):
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .i64(let value) = valueStack.removeLast() else { throw .typeMismatch }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 8 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 8 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let u = UInt64(bitPattern: value)
-        memory[ea] = UInt8(u & 0xFF)
-        memory[ea + 1] = UInt8((u >> 8) & 0xFF)
-        memory[ea + 2] = UInt8((u >> 16) & 0xFF)
-        memory[ea + 3] = UInt8((u >> 24) & 0xFF)
-        memory[ea + 4] = UInt8((u >> 32) & 0xFF)
-        memory[ea + 5] = UInt8((u >> 40) & 0xFF)
-        memory[ea + 6] = UInt8((u >> 48) & 0xFF)
-        memory[ea + 7] = UInt8((u >> 56) & 0xFF)
+        memory[eaInt] = UInt8(u & 0xFF)
+        memory[eaInt + 1] = UInt8((u >> 8) & 0xFF)
+        memory[eaInt + 2] = UInt8((u >> 16) & 0xFF)
+        memory[eaInt + 3] = UInt8((u >> 24) & 0xFF)
+        memory[eaInt + 4] = UInt8((u >> 32) & 0xFF)
+        memory[eaInt + 5] = UInt8((u >> 40) & 0xFF)
+        memory[eaInt + 6] = UInt8((u >> 48) & 0xFF)
+        memory[eaInt + 7] = UInt8((u >> 56) & 0xFF)
 
       case .f32Store(_, let offset):
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .f32(let value) = valueStack.removeLast() else { throw .typeMismatch }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 4 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         // bitPattern reinterprets the IEEE 754 representation without any conversion.
         let u = value.bitPattern
-        memory[ea] = UInt8(u & 0xFF)
-        memory[ea + 1] = UInt8((u >> 8) & 0xFF)
-        memory[ea + 2] = UInt8((u >> 16) & 0xFF)
-        memory[ea + 3] = UInt8((u >> 24) & 0xFF)
+        memory[eaInt] = UInt8(u & 0xFF)
+        memory[eaInt + 1] = UInt8((u >> 8) & 0xFF)
+        memory[eaInt + 2] = UInt8((u >> 16) & 0xFF)
+        memory[eaInt + 3] = UInt8((u >> 24) & 0xFF)
 
       case .f64Store(_, let offset):
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .f64(let value) = valueStack.removeLast() else { throw .typeMismatch }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 8 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 8 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         // bitPattern reinterprets the IEEE 754 representation without any conversion.
         let u = value.bitPattern
-        memory[ea] = UInt8(u & 0xFF)
-        memory[ea + 1] = UInt8((u >> 8) & 0xFF)
-        memory[ea + 2] = UInt8((u >> 16) & 0xFF)
-        memory[ea + 3] = UInt8((u >> 24) & 0xFF)
-        memory[ea + 4] = UInt8((u >> 32) & 0xFF)
-        memory[ea + 5] = UInt8((u >> 40) & 0xFF)
-        memory[ea + 6] = UInt8((u >> 48) & 0xFF)
-        memory[ea + 7] = UInt8((u >> 56) & 0xFF)
+        memory[eaInt] = UInt8(u & 0xFF)
+        memory[eaInt + 1] = UInt8((u >> 8) & 0xFF)
+        memory[eaInt + 2] = UInt8((u >> 16) & 0xFF)
+        memory[eaInt + 3] = UInt8((u >> 24) & 0xFF)
+        memory[eaInt + 4] = UInt8((u >> 32) & 0xFF)
+        memory[eaInt + 5] = UInt8((u >> 40) & 0xFF)
+        memory[eaInt + 6] = UInt8((u >> 48) & 0xFF)
+        memory[eaInt + 7] = UInt8((u >> 56) & 0xFF)
 
       case .i32Store8(_, let offset):
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .i32(let value) = valueStack.removeLast() else { throw .typeMismatch }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 1 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 1 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
         // Store only the low 8 bits; upper bits are silently discarded per the Wasm spec.
-        memory[ea] = UInt8(UInt32(bitPattern: value) & 0xFF)
+        memory[Int(ea)] = UInt8(UInt32(bitPattern: value) & 0xFF)
 
       case .i32Store16(_, let offset):
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .i32(let value) = valueStack.removeLast() else { throw .typeMismatch }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 2 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 2 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         // Store only the low 16 bits; upper bits are silently discarded per the Wasm spec.
         let u = UInt32(bitPattern: value)
-        memory[ea] = UInt8(u & 0xFF)
-        memory[ea + 1] = UInt8((u >> 8) & 0xFF)
+        memory[eaInt] = UInt8(u & 0xFF)
+        memory[eaInt + 1] = UInt8((u >> 8) & 0xFF)
 
       case .i64Store8(_, let offset):
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .i64(let value) = valueStack.removeLast() else { throw .typeMismatch }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 1 <= memory.count else { throw .memoryAccessOutOfBounds }
-        memory[ea] = UInt8(UInt64(bitPattern: value) & 0xFF)
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 1 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        memory[Int(ea)] = UInt8(UInt64(bitPattern: value) & 0xFF)
 
       case .i64Store16(_, let offset):
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .i64(let value) = valueStack.removeLast() else { throw .typeMismatch }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 2 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 2 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let u = UInt64(bitPattern: value)
-        memory[ea] = UInt8(u & 0xFF)
-        memory[ea + 1] = UInt8((u >> 8) & 0xFF)
+        memory[eaInt] = UInt8(u & 0xFF)
+        memory[eaInt + 1] = UInt8((u >> 8) & 0xFF)
 
       case .i64Store32(_, let offset):
         guard valueStack.count >= 2 else { throw .stackUnderflow }
         guard case .i64(let value) = valueStack.removeLast() else { throw .typeMismatch }
         guard case .i32(let addr) = valueStack.removeLast() else { throw .typeMismatch }
-        let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-        guard ea >= 0 && ea + 4 <= memory.count else { throw .memoryAccessOutOfBounds }
+        let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
+        guard ea + 4 <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
+        let eaInt = Int(ea)
         let u = UInt64(bitPattern: value)
-        memory[ea] = UInt8(u & 0xFF)
-        memory[ea + 1] = UInt8((u >> 8) & 0xFF)
-        memory[ea + 2] = UInt8((u >> 16) & 0xFF)
-        memory[ea + 3] = UInt8((u >> 24) & 0xFF)
+        memory[eaInt] = UInt8(u & 0xFF)
+        memory[eaInt + 1] = UInt8((u >> 8) & 0xFF)
+        memory[eaInt + 2] = UInt8((u >> 16) & 0xFF)
+        memory[eaInt + 3] = UInt8((u >> 24) & 0xFF)
 
       case .memorySize:
         // memory.size: [] → [i32]
