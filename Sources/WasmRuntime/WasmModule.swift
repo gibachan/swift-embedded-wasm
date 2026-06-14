@@ -116,7 +116,8 @@ enum Instruction: Sendable {
   case jump(Int)  // unconditional jump to PC (used to skip else body)
   case br(UInt32)  // 0x0C
   case brIf(UInt32)  // 0x0D
-  case brTable([UInt32], UInt32)  // 0x0E: target_labels[], default_label
+  case brTable(count: UInt32, default_: UInt32)  // 0x0E: followed by `count` brTableEntry instructions in flat stream
+  case brTableEntry(UInt32)  // each non-default target depth; consumed inline by brTable handler
   case return_  // 0x0F
   case call(UInt32)  // 0x10
   case callIndirect(UInt32, UInt32)  // 0x11: typeIdx, tableIdx

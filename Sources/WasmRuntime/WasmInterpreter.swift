@@ -690,12 +690,32 @@ struct WasmInterpreter {
           try handleBranch(depth: depth, fi: fi)
         }
 
-      case .brTable(let labels, let default_):
+      case .brTable(let count, let default_):
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let idx) = valueStack.removeLast() else { throw .typeMismatch }
-        let i = Int(idx)
-        let depth = (i >= 0 && i < labels.count) ? labels[i] : default_
+        let ui = UInt32(bitPattern: idx)
+        let depth: UInt32
+        if ui < count {
+          // Entries follow the header in the flat instruction stream.
+          // ip was already incremented past the header (to headerPc+1) before dispatch,
+          // so entry ui is at frames[fi].ip + Int(ui).
+          let entryPc = frames[fi].ip + Int(ui)
+          guard entryPc < frames[fi].instructions.count else {
+            throw WasmError.invalidInstruction(0x0E)
+          }
+          guard case .brTableEntry(let d) = frames[fi].instructions[entryPc] else {
+            throw WasmError.invalidInstruction(0x0E)
+          }
+          depth = d
+        } else {
+          depth = default_
+        }
         try handleBranch(depth: depth, fi: fi)
+
+      case .brTableEntry:
+        // This instruction is consumed inline by the brTable handler above and should
+        // never be reached through normal dispatch (brTable always jumps past them).
+        throw WasmError.invalidInstruction(0x0E)
 
       case .unreachable:
         throw WasmError.unreachableReached

@@ -260,13 +260,24 @@
         if !isUnreachable() { try checkBranch(depth: depth) }
       // brIf is conditional: does not mark code as unreachable.
 
-      case .brTable(let targets, let defaultTarget):
+      case .brTable(let count, let default_):
         try popExpecting(.i32)
         if !isUnreachable() {
-          for d in targets { try checkBranch(depth: d) }
-          try checkBranch(depth: defaultTarget)
+          // Targets are stored in the `count` brTableEntry instructions following the header.
+          for i in 0..<Int(count) {
+            let entryPc = ip + 1 + i
+            guard entryPc < instructions.count,
+              case .brTableEntry(let d) = instructions[entryPc]
+            else { throw WasmError.invalidInstruction(0x0E) }
+            try checkBranch(depth: d)
+          }
+          try checkBranch(depth: default_)
         }
         setUnreachable()
+
+      case .brTableEntry:
+        // Consumed by the brTable case above via look-ahead; no independent type-stack effect.
+        break
 
       case .return_:
         // `br` to the implicit function frame = return.

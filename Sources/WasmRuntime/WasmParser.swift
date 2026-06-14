@@ -845,11 +845,20 @@ struct WasmParser {
         instructions.append(.brIf(try readU32()))
 
       case 0x0E:  // br_table
+        // Binary format: count t_0 t_1 ... t_{count-1} default
+        // We must read all count non-default targets before reading default_.
+        // Use backpatching to avoid a temporary [UInt32] allocation:
+        //   1. Emit the header with placeholder default_=0
+        //   2. Emit each brTableEntry as we decode it
+        //   3. Read default_ and backpatch the header
         let count = try readU32()
-        var labels: [UInt32] = []
-        for _ in 0..<count { labels.append(try readU32()) }
+        let headerPc = instructions.count
+        instructions.append(.brTable(count: count, default_: 0))  // placeholder; backpatched below
+        for _ in 0..<count {
+          instructions.append(.brTableEntry(try readU32()))
+        }
         let default_ = try readU32()
-        instructions.append(.brTable(labels, default_))
+        instructions[headerPc] = .brTable(count: count, default_: default_)  // backpatch
 
       case 0x0F:  // return
         instructions.append(.return_)
