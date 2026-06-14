@@ -32,17 +32,31 @@ The goal is to eliminate dynamic allocation (`Array<T>`) and replace it with fix
       let instructions: [Instruction]  // all instructions expanded at parse time
   }
 
-  // Target (Embedded phase)
+  // Implemented (Embedded phase — active in #if hasFeature(Embedded) builds)
   struct FunctionHandle {
-      let codeOffset: UInt32  // byte offset of bytecode within the Wasm binary
-      let codeSize: UInt32    // byte length of the bytecode
-      let localCount: UInt32  // number of local variables
+      let codeOffset: UInt32           // byte offset of instruction stream within rawBytes
+      let codeSize: UInt32             // byte length of instruction stream
+      let locals: [ValueType]          // local variable types (TODO: fixed buffer in Phase 4)
+      let hasBulkMemoryInstruction: Bool
+      let jumpTable: [JumpEntry]       // pre-computed block/loop/if targets (TODO: fixed buffer in Phase 4)
+  }
+
+  struct JumpEntry {
+      let instrOffset: UInt32  // absolute byte position of block/loop/if opcode
+      let target1: UInt32      // block/if: byte after end; loop: first byte of body
+      let target2: UInt32      // ifElse: byte after end (br-continuation); others: 0
   }
   ```
 
-  The interpreter's execution loop will also need to change: instead of pre-loading `[Instruction]`,
-  decode instructions on the fly using a `BinaryReader` during execution (same lazy-decode approach as wasm3).
-  This greatly reduces memory consumption at module load time.
+  In the current Embedded build, the interpreter lazy-decodes a `[Instruction]` array from the
+  stored byte range on each function call. The jump table is pre-built at parse time and will be
+  consumed by the Phase 4 on-the-fly decoder to resolve `br`/`br_if` targets in O(1) without
+  scanning forward through raw bytes at runtime.
+
+  The `parseFlatBodyTracked()` method in `WasmParser.swift` (Embedded-only) builds both the
+  temporary `[Instruction]` array and the `[JumpEntry]` table in a single pass, using a
+  pre-append-then-backpatch strategy that maintains pre-order (parent block before children).
+  This ordering allows Phase 4's decoder to advance its jump table cursor monotonically.
 
 - [ ] **Introduce `WasmLimits` fixed upper bounds to eliminate dynamic arrays**
 
@@ -97,23 +111,22 @@ None of these affect macOS behavior, but they are design issues or potential Emb
   This makes `blockArity()` / `loopBrArity()` and hot-path `module.types` lookups unnecessary.
   The change is localised to `WasmModule.swift` (Instruction enum), `WasmParser.swift`, and `WasmInterpreter.swift`.
 
-- [ ] **Inline `brTable` target array into the flat instruction stream**
+- [x] **Inline `brTable` target array into the flat instruction stream**
 
-  The current implementation stores `case brTable([UInt32], UInt32)` with a `[UInt32]` as an associated value.
-  When an `Array<T>` appears inside an enum, Embedded Swift compiles fine but **requires `malloc` at link time**.
-  `make compile` (`.o` generation only) does not error, but `make build` (linking) may fail.
-
-  Using the flat bytecode design, inline the targets as pseudo-instructions to eliminate dynamic allocation entirely.
+  The previous implementation stored `case brTable([UInt32], UInt32)` with a heap-allocated `[UInt32]`.
+  This was replaced with a flat-bytecode scheme:
 
   ```swift
-  // Proposed: follow brTable with count brTableEntry instructions
+  // Current implementation (no malloc required)
   case brTable(count: UInt32, default_: UInt32)  // followed by count brTableEntry instructions
   case brTableEntry(UInt32)                       // each target depth
 
   // At runtime: access targets via instructions[ip + i] instead of labels[i]
   ```
 
-  The change is limited to the `brTable` handling in `WasmModule.swift`, `WasmParser.swift`, and `WasmInterpreter.swift`.
+  The parser uses a backpatch strategy: emit the header with `default_=0`, emit each `brTableEntry`
+  as targets are read, then overwrite the header with the real `default_`.
+  All 31,925 spectests pass; Embedded Swift compilation (`armv7em`) succeeds.
 
 - [ ] **Implement `WasmInteger` protocol to unify i32/i64 arithmetic generically**
 
@@ -202,6 +215,27 @@ Apply the Phase 2–3 work (`FunctionHandle`, `WasmLimits`, fixed buffers) to th
 On Pico, `malloc` must not be used (even though `pico_stdlib` provides it, the Embedded-phase policy
 is to eliminate all dynamic allocation), so all dynamic allocations must be replaced with
 compile-time fixed-size buffers.
+
+- [x] **Pre-compute jump table in `FunctionHandle` (Phase 4 preparation)**
+
+  `FunctionHandle.jumpTable: [JumpEntry]` is built at parse time by `parseFlatBodyTracked()`.
+  Each entry maps the absolute byte position of a `block`/`loop`/`if` opcode to its target
+  byte positions within `WasmModule.rawBytes`.
+  Entries are in pre-order (parent before children), enabling Phase 4's on-the-fly decoder
+  to advance a monotonic cursor — one step per control-flow opcode — for O(1) target lookup.
+
+  Remaining Phase 4 work: replace `[JumpEntry]` with a fixed-size buffer to eliminate the
+  `malloc` dependency (marked `// TODO: Embedded Phase 4` in source).
+
+- [ ] **Replace lazy decode with true on-the-fly decode (primary Phase 4 goal)**
+
+  The current Embedded interpreter still lazy-decodes a `[Instruction]` array from `rawBytes`
+  on each function call (`pushFrame` path). Phase 4 replaces this with a `ip: UInt32` byte
+  offset that advances through `rawBytes` directly, using the `jumpTable` to resolve
+  `br`/`br_if`/`br_table` targets without forward scanning.
+
+  Prerequisites completed: `FunctionHandle` zero-copy byte range (Phase 2), `brTable` flat
+  inline (Phase 2.5②), jump table pre-computation (above).
 
 - [ ] **Replace `ValueStack` with a fixed-size buffer + index management**
 

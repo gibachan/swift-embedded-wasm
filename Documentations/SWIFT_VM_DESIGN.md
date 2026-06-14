@@ -56,7 +56,7 @@ Implement one instruction at a time with verifiable granularity (following the `
 |-----------|------|
 | `WasmParser` | Converts Wasm binary to `WasmModule` |
 | `WasmValidator` | Validates module type consistency (enabled only via `#if !hasFeature(Embedded)`) |
-| `WasmInterpreter` | Executes the module (Stack Machine). Tracks `data.drop` state via `droppedDataSegments: [Bool]` |
+| `WasmInterpreter` | Executes the module (Stack Machine). Tracks `data.drop` / `elem.drop` state via `droppedDataSegments: UInt64` / `droppedElementSegments: UInt64` bitmaps |
 | `WasmModule` | Parsed Wasm module (functions, memory, globals). `DataSegment.offset: Int32?` (nil = passive, non-nil = active write offset) |
 | Linear Memory | `var memory: [UInt8]` (held by the interpreter). Responsible for bounds checking |
 | Host Function Table | `[HostFunction]` array (indexed in import declaration order) |
@@ -231,9 +231,64 @@ All instructions are laid out in a flat array; block/loop/if carry their jump ta
 The parser computes and embeds offsets at parse time.
 The same approach is used by CPython bytecode and JavaScriptCore, making it educationally valuable.
 
-### Phase 2: Further Optimization (future, when needed)
+### Phase 2: Zero-Copy Code Section — `FunctionHandle` (implemented, Embedded builds)
 
-Consider only after profiling identifies a bottleneck on real Pico hardware. Not included in current design.
+In Embedded builds (`#if hasFeature(Embedded)`), the parser no longer expands instructions into
+`[Instruction]` at load time. Instead it stores a `FunctionHandle` — a compact byte-range descriptor
+that allows the interpreter to re-parse the function body on demand.
+
+```swift
+// Embedded build: WasmModule.code is [FunctionHandle], not [FunctionBody]
+struct FunctionHandle: Sendable {
+    let codeOffset: UInt32            // byte offset of instruction stream in rawBytes
+    let codeSize: UInt32              // byte length of instruction stream
+    let locals: [ValueType]           // local variable types (TODO: fixed buffer in Phase 4)
+    let hasBulkMemoryInstruction: Bool
+    let jumpTable: [JumpEntry]        // pre-computed block/loop/if targets
+}
+```
+
+`WasmModule.rawBytes` holds the original Wasm binary. When the interpreter calls a function, it
+constructs a sub-parser over the stored byte range and calls the shared `parseFlatBody()` to
+obtain a `[Instruction]` array. This eliminates the per-function `[Instruction]` allocation at
+load time, replacing it with a per-call allocation (acceptable until Phase 4 removes it entirely).
+
+### Phase 2.5: Jump Table Pre-computation (implemented, Embedded builds)
+
+To support Phase 4's on-the-fly decoder, `FunctionHandle` includes a `jumpTable: [JumpEntry]`
+built at parse time. This table maps each `block`/`loop`/`if` opcode to its byte-offset targets
+within `rawBytes`, eliminating the need to scan forward through raw bytes at runtime.
+
+```swift
+struct JumpEntry: Sendable {
+    let instrOffset: UInt32  // absolute byte position of the block/loop/if opcode in rawBytes
+    let target1: UInt32      // block: byte after end opcode (br-continuation)
+                             // loop:  first byte of loop body (br restarts here)
+                             // if/else: byte of else clause start (or byte after end if no else)
+    let target2: UInt32      // if/else: byte after end opcode (br-continuation)
+                             // block/loop: 0 (unused)
+}
+```
+
+**Pre-order invariant**: entries are stored in the order the `block`/`loop`/`if` opcodes appear
+in the byte stream (parent before children). Phase 4's on-the-fly decoder advances a monotonically
+increasing integer cursor by 1 each time it encounters a control-flow opcode. This gives O(1)
+lookup without search.
+
+The parser variant `parseFlatBodyTracked()` (Embedded-only, in `WasmParser.swift`) builds both the
+temporary `[Instruction]` array and the `[JumpEntry]` table in a single pass, using the same
+backpatch strategy as `parseFlatBody` for control-flow PCs.
+
+### Phase 4 (planned): True On-the-Fly Decode
+
+Phase 4 will replace the lazy-decode path (re-parse to `[Instruction]` on each call) with a
+`ip: UInt32` byte offset that advances through `rawBytes` directly. The `jumpTable` pre-built
+in Phase 2.5 provides O(1) target resolution for `br`/`br_if`/`br_table`.
+
+The remaining `[JumpEntry]` allocation will also be replaced with a fixed-size buffer, and
+`CallFrame` will track a byte-offset `ip` instead of an instruction-array index.
+
+Consider only when Phase 4 hardware execution is the target. Not needed for spectest validation.
 
 ---
 

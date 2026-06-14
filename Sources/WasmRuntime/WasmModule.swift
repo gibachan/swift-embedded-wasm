@@ -362,6 +362,29 @@ struct FunctionBody: Sendable {
 // Phase 4 goal: replace lazy decode with true on-the-fly decode (no [Instruction] cache).
 
 #if hasFeature(Embedded)
+  /// One control-flow entry in a function's jump table.
+  ///
+  /// All offsets are absolute byte positions within the WasmModule.rawBytes buffer —
+  /// the same coordinate space as the on-the-fly decoder's ip in Phase 4.
+  ///
+  /// Entries are stored in **pre-order** (parent block before its children) so that
+  /// Phase 4's on-the-fly decoder can walk the table with a monotonically advancing
+  /// integer cursor, advancing by 1 each time it encounters a block/loop/if opcode.
+  /// This gives O(1) lookup per control-flow opcode without search.
+  ///
+  /// Semantics by instruction kind:
+  ///   block:   target1 = byte position of instruction after blockEnd (br-continuation)
+  ///            target2 = 0 (unused)
+  ///   loop:    target1 = byte position of first instruction in loop body (br restarts here)
+  ///            target2 = 0 (unused)
+  ///   ifElse:  target1 = byte position of else clause start (or endPc if no else)
+  ///            target2 = byte position of instruction after end (br-continuation)
+  struct JumpEntry: Sendable {
+    let instrOffset: UInt32  // absolute byte position of the block/loop/if opcode
+    let target1: UInt32
+    let target2: UInt32
+  }
+
   /// A function body descriptor for zero-copy Embedded builds.
   ///
   /// Stores only the byte range of the function body within the original Wasm binary,
@@ -380,6 +403,11 @@ struct FunctionBody: Sendable {
     /// instruction. Stored to support the data-count section requirement check without
     /// needing to fully decode the instruction stream at parse time.
     let hasBulkMemoryInstruction: Bool
+    /// Jump table mapping each block/loop/if opcode's absolute byte offset to its target
+    /// byte positions within rawBytes. Built at parse time; consumed by the Phase 4
+    /// on-the-fly decoder to resolve br/br_if targets without re-scanning instructions.
+    // TODO: Embedded Phase 4 — replace [JumpEntry] with a fixed-size buffer.
+    let jumpTable: [JumpEntry]
   }
 #endif
 
