@@ -7,8 +7,12 @@
 
 struct WasmParser {
   private var stream: BufferStream
+  // Retain the original buffer so that Embedded builds can re-scan function body
+  // byte ranges for lazy decode (FunctionHandle) without re-allocating.
+  private let buffer: UnsafeBufferPointer<UInt8>
 
   init(_ buffer: UnsafeBufferPointer<UInt8>) {
+    self.buffer = buffer
     self.stream = BufferStream(buffer)
   }
 
@@ -24,7 +28,13 @@ struct WasmParser {
     var memories: [MemoryType] = []
     var globals: [GlobalDef] = []
     var exports: [Export] = []
-    var code: [FunctionBody] = []
+    // In Embedded builds, code is [FunctionHandle] (zero-copy byte ranges).
+    // In macOS builds, code is [FunctionBody] (pre-decoded [Instruction] arrays).
+    #if hasFeature(Embedded)
+      var code: [FunctionHandle] = []
+    #else
+      var code: [FunctionBody] = []
+    #endif
     var start: UInt32? = nil
     var elements: [ElementSegment] = []
     var data: [DataSegment] = []
@@ -75,7 +85,11 @@ struct WasmParser {
       case 7: exports = try parseExportSection()
       case 8: start = try parseStartSection()
       case 9: elements = try parseElementSection()
-      case 10: code = try parseCodeSection()
+      #if hasFeature(Embedded)
+        case 10: code = try parseFunctionHandles()
+      #else
+        case 10: code = try parseCodeSection()
+      #endif
       case 11: data = try parseDataSection()
       case 12:
         // Data Count section (§5.5.15): a single u32 that must equal the number of
@@ -107,28 +121,49 @@ struct WasmParser {
     // Use explicit loops instead of nested closures to avoid heap-capturing closures
     // that are not supported in Embedded Swift.
     var hasBulkMemoryInstruction = false
-    outerLoop: for body in code {
-      for instr in body.instructions {
-        if case .memoryInit(_) = instr {
+    #if hasFeature(Embedded)
+      // In Embedded builds, each FunctionHandle pre-scanned for bulk memory opcodes
+      // during parseCodeSection() — use the cached flag directly.
+      for body in code {
+        if body.hasBulkMemoryInstruction {
           hasBulkMemoryInstruction = true
-          break outerLoop
-        }
-        if case .dataDrop(_) = instr {
-          hasBulkMemoryInstruction = true
-          break outerLoop
+          break
         }
       }
-    }
+    #else
+      outerLoop: for body in code {
+        for instr in body.instructions {
+          if case .memoryInit(_) = instr {
+            hasBulkMemoryInstruction = true
+            break outerLoop
+          }
+          if case .dataDrop(_) = instr {
+            hasBulkMemoryInstruction = true
+            break outerLoop
+          }
+        }
+      }
+    #endif
     if hasBulkMemoryInstruction && dataCount == nil {
       throw .dataCountRequired
     }
 
-    let module = WasmModule(
-      types: types, imports: imports, functions: functions,
-      tables: tables, memories: memories, globals: globals,
-      exports: exports, code: code,
-      start: start, elements: elements, data: data
-    )
+    #if hasFeature(Embedded)
+      let module = WasmModule(
+        types: types, imports: imports, functions: functions,
+        tables: tables, memories: memories, globals: globals,
+        exports: exports, code: code,
+        start: start, elements: elements, data: data,
+        rawBytes: Array(buffer)
+      )
+    #else
+      let module = WasmModule(
+        types: types, imports: imports, functions: functions,
+        tables: tables, memories: memories, globals: globals,
+        exports: exports, code: code,
+        start: start, elements: elements, data: data
+      )
+    #endif
     #if !hasFeature(Embedded)
       try WasmValidator(module: module).validate()
     #endif
@@ -597,6 +632,58 @@ struct WasmParser {
     return bodies
   }
 
+  /// Code section (id=10) — Embedded builds: records byte ranges instead of expanding instructions.
+  ///
+  /// For each function body: reads local declarations, records the byte offset of the instruction
+  /// stream, advances the stream by calling parseFlatBody (discarding the result), then stores
+  /// the byte range and local types in a FunctionHandle.
+  ///
+  /// The temporary [Instruction] array built by parseFlatBody is also used to detect bulk-memory
+  /// opcodes (needed for data-count section validation) without requiring a separate byte scan.
+  // TODO: Embedded Phase 4 — replace parseFlatBody call with a zero-allocation byte skipper.
+  #if hasFeature(Embedded)
+    private mutating func parseFunctionHandles() throws(WasmError) -> [FunctionHandle] {
+      let count = try readU32()
+      var handles: [FunctionHandle] = []
+      for _ in 0..<count {
+        let bodySize = try readU32()
+
+        let localDeclCount = try readU32()
+        var locals: [ValueType] = []
+        for _ in 0..<localDeclCount {
+          let n = try readU32()
+          let vt = try readValueType()
+          guard n <= bodySize else { throw .unexpectedEnd }
+          for _ in 0..<n { locals.append(vt) }
+        }
+
+        let codeStart = UInt32(stream.offset)
+        var tempInstructions: [Instruction] = []
+        _ = try parseFlatBody(into: &tempInstructions)
+        let codeEnd = UInt32(stream.offset)
+
+        var hasBulkMemory = false
+        for instr in tempInstructions {
+          switch instr {
+          case .memoryInit: hasBulkMemory = true
+          case .dataDrop: hasBulkMemory = true
+          default: break
+          }
+          if hasBulkMemory { break }
+        }
+
+        handles.append(
+          FunctionHandle(
+            codeOffset: codeStart,
+            codeSize: codeEnd - codeStart,
+            locals: locals,
+            hasBulkMemoryInstruction: hasBulkMemory
+          ))
+      }
+      return handles
+    }
+  #endif
+
   /// Data section (id=11): array of initial data segments for linear memory
   ///
   /// Supported flags:
@@ -679,7 +766,7 @@ struct WasmParser {
   ///     [elsePc]    ... else body ...
   ///     [elseEndPc] blockEnd          ← pops if label for else path
   ///     [endPc]     ...               ← both paths converge here
-  private mutating func parseFlatBody(into instructions: inout [Instruction]) throws(WasmError)
+  mutating func parseFlatBody(into instructions: inout [Instruction]) throws(WasmError)
     -> Bool
   {
     while true {

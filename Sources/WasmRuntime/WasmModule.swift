@@ -348,6 +348,46 @@ struct FunctionBody: Sendable {
   }
 }
 
+// MARK: - Function Handle (Embedded only)
+//
+// In Embedded Swift builds, the code section is stored as zero-copy byte ranges instead
+// of pre-expanded [Instruction] arrays. This eliminates parse-time heap allocation for
+// instructions — the raw Wasm binary bytes are the sole source of truth.
+//
+// The interpreter lazy-decodes each function body into [Instruction] on first call,
+// reusing the existing parseFlatBody() machinery. This defers allocation to call time
+// and skips it entirely for uncalled functions, reducing module load time and peak memory.
+//
+// Phase 4 goal: replace lazy decode with true on-the-fly decode (no [Instruction] cache).
+
+#if hasFeature(Embedded)
+  /// A function body descriptor for zero-copy Embedded builds.
+  ///
+  /// Stores only the byte range of the function body within the original Wasm binary,
+  /// plus local variable types needed for frame setup. The interpreter re-parses the
+  /// byte range into [Instruction] on first call (lazy decode).
+  struct FunctionHandle: Sendable {
+    /// Byte offset of the instruction stream start (after local declarations) within
+    /// the Wasm binary buffer passed to WasmParser.init.
+    let codeOffset: UInt32
+    /// Byte length of the instruction stream (from codeOffset to 0x0B end opcode, inclusive).
+    let codeSize: UInt32
+    /// Local variable types declared in this function body (separate from parameters).
+    // TODO: Embedded Phase 4 — replace with fixed-size buffer when malloc is eliminated.
+    let locals: [ValueType]
+    /// True if this function body contains a memory.init (0xFC 0x08) or data.drop (0xFC 0x09)
+    /// instruction. Stored to support the data-count section requirement check without
+    /// needing to fully decode the instruction stream at parse time.
+    let hasBulkMemoryInstruction: Bool
+  }
+#endif
+
+// MARK: - Module Code Storage
+
+// In macOS/non-Embedded builds, the module stores pre-decoded [Instruction] arrays
+// for maximum interpreter throughput (no per-call re-parsing overhead).
+// In Embedded builds, byte ranges are stored and decoded lazily on first call.
+
 // MARK: - Memory
 
 /// Limits for a Wasm linear memory (in pages; 1 page = 64 KiB)
@@ -428,7 +468,16 @@ struct WasmModule: Sendable {
   let memories: [MemoryType]  // Memory section
   let globals: [GlobalDef]  // Global section
   let exports: [Export]  // Export section
-  let code: [FunctionBody]  // Code section
+  // Code section: [FunctionBody] in macOS builds (pre-decoded);
+  //               [FunctionHandle] in Embedded builds (zero-copy byte ranges).
+  #if hasFeature(Embedded)
+    let code: [FunctionHandle]
+    /// Original binary bytes retained for lazy instruction decode (FunctionHandle → [Instruction]).
+    // TODO: Embedded Phase 4 — eliminate by decoding on-the-fly without caching [Instruction].
+    let rawBytes: [UInt8]
+  #else
+    let code: [FunctionBody]
+  #endif
   let start: UInt32?  // Start section
   let elements: [ElementSegment]  // Element section
   let data: [DataSegment]  // Data section
@@ -441,42 +490,85 @@ struct WasmModule: Sendable {
   /// Cached at init to avoid re-scanning imports on every call dispatch.
   private let importedFunctionTypeIndices: [UInt32]
 
-  init(
-    types: [FunctionType],
-    imports: [Import] = [],
-    functions: [UInt32],
-    tables: [TableType] = [],
-    memories: [MemoryType],
-    globals: [GlobalDef] = [],
-    exports: [Export],
-    code: [FunctionBody],
-    start: UInt32? = nil,
-    elements: [ElementSegment] = [],
-    data: [DataSegment] = []
-  ) {
-    self.types = types
-    self.imports = imports
-    self.functions = functions
-    self.tables = tables
-    self.memories = memories
-    self.globals = globals
-    self.exports = exports
-    self.code = code
-    self.start = start
-    self.elements = elements
-    self.data = data
+  // Two separate inits (rather than #if inside a single parameter list) avoid
+  // SourceKit confusion with conditional compilation inside parameter declarations.
+  #if hasFeature(Embedded)
+    init(
+      types: [FunctionType],
+      imports: [Import] = [],
+      functions: [UInt32],
+      tables: [TableType] = [],
+      memories: [MemoryType],
+      globals: [GlobalDef] = [],
+      exports: [Export],
+      code: [FunctionHandle],
+      start: UInt32? = nil,
+      elements: [ElementSegment] = [],
+      data: [DataSegment] = [],
+      rawBytes: [UInt8]
+    ) {
+      self.types = types
+      self.imports = imports
+      self.functions = functions
+      self.tables = tables
+      self.memories = memories
+      self.globals = globals
+      self.exports = exports
+      self.code = code
+      self.start = start
+      self.elements = elements
+      self.data = data
+      self.rawBytes = rawBytes
 
-    var count = 0
-    var typeIndices: [UInt32] = []
-    for imp in imports {
-      if case .function(let fi) = imp {
-        typeIndices.append(fi.typeIndex)
-        count += 1
+      var count = 0
+      var typeIndices: [UInt32] = []
+      for imp in imports {
+        if case .function(let fi) = imp {
+          typeIndices.append(fi.typeIndex)
+          count += 1
+        }
       }
+      self.importedFunctionCount = count
+      self.importedFunctionTypeIndices = typeIndices
     }
-    self.importedFunctionCount = count
-    self.importedFunctionTypeIndices = typeIndices
-  }
+  #else
+    init(
+      types: [FunctionType],
+      imports: [Import] = [],
+      functions: [UInt32],
+      tables: [TableType] = [],
+      memories: [MemoryType],
+      globals: [GlobalDef] = [],
+      exports: [Export],
+      code: [FunctionBody],
+      start: UInt32? = nil,
+      elements: [ElementSegment] = [],
+      data: [DataSegment] = []
+    ) {
+      self.types = types
+      self.imports = imports
+      self.functions = functions
+      self.tables = tables
+      self.memories = memories
+      self.globals = globals
+      self.exports = exports
+      self.code = code
+      self.start = start
+      self.elements = elements
+      self.data = data
+
+      var count = 0
+      var typeIndices: [UInt32] = []
+      for imp in imports {
+        if case .function(let fi) = imp {
+          typeIndices.append(fi.typeIndex)
+          count += 1
+        }
+      }
+      self.importedFunctionCount = count
+      self.importedFunctionTypeIndices = typeIndices
+    }
+  #endif
 
   /// Returns the FunctionType for the given function index (including imports).
   /// O(1): uses the cached type index array built at init.

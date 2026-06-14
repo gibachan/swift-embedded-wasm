@@ -7,7 +7,7 @@
 The build toolchain setup, Embedded Swift compilation, and BLE firmware linking have all been verified (`make compile` / `make build` pass).
 The only remaining item is hardware verification.
 
-- [ ] **Verify log output over UART**
+- [x] **Verify log output over UART**
 
   Use Pico SDK's `stdio_init_all()` + `printf()` to output a string such as `"Hello from Embedded Swift\n"` via UART (USB CDC) to a host PC.
   Receiving it in a serial monitor (`screen` / `minicom` etc.) confirms success.
@@ -20,7 +20,7 @@ The only remaining item is hardware verification.
 The macOS-phase parser is complete. The following work is needed when porting to an Embedded Swift environment (Pico).
 The goal is to eliminate dynamic allocation (`Array<T>`) and replace it with fixed-size data structures.
 
-- [ ] **Zero-copy the Code Section**
+- [x] **Zero-copy the Code Section**
 
   The current implementation expands all instructions into an `Instruction` enum array at parse time, stored as `FunctionBody`.
   In the Embedded phase, this array allocation becomes a problem; change it to a `FunctionHandle` that stores only the byte range.

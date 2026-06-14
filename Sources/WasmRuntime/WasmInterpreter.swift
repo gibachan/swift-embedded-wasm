@@ -451,35 +451,77 @@ struct WasmInterpreter {
       let localIdx = funcIdx - importedCount
       let typeIdx = Int(module.functions[localIdx])
       let funcType = module.types[typeIdx]
-      let body = module.code[localIdx]
       guard argCount == funcType.params.count else { throw .argumentCountMismatch }
-      // Build locals by reading arguments directly from the value stack top, then
-      // appending zero-initialised slots for declared local variables.
-      // No intermediate callArgs array — arguments stay on the stack until consumed here.
       let argsStart = valueStack.count - argCount
       // TODO: Embedded Phase 5 — this Array() heap-allocates on every Wasm function call.
       // Replace with a fixed-capacity Value buffer (e.g. static array or UnsafeMutableBufferPointer).
       var locals: [Value] = Array(valueStack[argsStart...])
       valueStack.removeLast(argCount)
-      for vt in body.locals {
-        switch vt {
-        case .i32: locals.append(.i32(0))
-        case .i64: locals.append(.i64(0))
-        case .f32: locals.append(.f32(0.0))
-        case .f64: locals.append(.f64(0.0))
-        case .funcref: locals.append(.funcref(nil))  // nil = null reference per Wasm spec default
-        case .externref: locals.append(.externref(nil))  // nil = null reference per Wasm spec default
+      #if hasFeature(Embedded)
+        // Embedded path: lazy-decode the function body from the raw binary buffer.
+        // FunctionHandle stores only the byte range; [Instruction] is re-parsed on every call.
+        // TODO: Embedded Phase 4 — replace with true on-the-fly decode (no [Instruction] allocation).
+        let handle = module.code[localIdx]
+        for vt in handle.locals {
+          switch vt {
+          case .i32: locals.append(.i32(0))
+          case .i64: locals.append(.i64(0))
+          case .f32: locals.append(.f32(0.0))
+          case .f64: locals.append(.f64(0.0))
+          case .funcref: locals.append(.funcref(nil))
+          case .externref: locals.append(.externref(nil))
+          }
         }
-      }
-      // stackBase is set after removeLast so it points to the post-args stack top.
-      frames.append(
-        Frame(
-          instructions: body.instructions,
-          ip: 0,
-          labels: [],
-          locals: locals,
-          stackBase: valueStack.count,
-          resultCount: funcType.results.count))
+        var bodyInstructions: [Instruction] = []
+        var lazyDecodeError: WasmError?
+        module.rawBytes.withUnsafeBytes { rawBuf in
+          let typedBuf = rawBuf.bindMemory(to: UInt8.self)
+          guard let base = typedBuf.baseAddress else {
+            lazyDecodeError = .unexpectedEnd
+            return
+          }
+          let slice = UnsafeBufferPointer(
+            start: base.advanced(by: Int(handle.codeOffset)),
+            count: Int(handle.codeSize))
+          var subParser = WasmParser(slice)
+          do {
+            _ = try subParser.parseFlatBody(into: &bodyInstructions)
+          } catch let e as WasmError {
+            lazyDecodeError = e
+          } catch {
+            lazyDecodeError = .unexpectedEnd
+          }
+        }
+        if let e = lazyDecodeError { throw e }
+        frames.append(
+          Frame(
+            instructions: bodyInstructions,
+            ip: 0,
+            labels: [],
+            locals: locals,
+            stackBase: valueStack.count,
+            resultCount: funcType.results.count))
+      #else
+        let body = module.code[localIdx]
+        for vt in body.locals {
+          switch vt {
+          case .i32: locals.append(.i32(0))
+          case .i64: locals.append(.i64(0))
+          case .f32: locals.append(.f32(0.0))
+          case .f64: locals.append(.f64(0.0))
+          case .funcref: locals.append(.funcref(nil))
+          case .externref: locals.append(.externref(nil))
+          }
+        }
+        frames.append(
+          Frame(
+            instructions: body.instructions,
+            ip: 0,
+            labels: [],
+            locals: locals,
+            stackBase: valueStack.count,
+            resultCount: funcType.results.count))
+      #endif
     }
 
     // Handle a branch to label at `depth` levels from the top of the label stack.
