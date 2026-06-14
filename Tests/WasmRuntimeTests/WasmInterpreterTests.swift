@@ -69,12 +69,12 @@ struct WasmParserTests {
     //  [13] blockEnd  (end of block)
     //  [14] blockEnd  (end of loop)
     #expect(body.instructions.count == 15)
-    guard case .loop(_, let startPc) = body.instructions[2] else {
+    guard case .loop(_, _, let startPc) = body.instructions[2] else {
       Issue.record("Expected loop instruction at index 2")
       return
     }
     #expect(startPc == 3)
-    guard case .block(_, let endPc) = body.instructions[3] else {
+    guard case .block(_, _, _, let endPc) = body.instructions[3] else {
       Issue.record("Expected block instruction at index 3")
       return
     }

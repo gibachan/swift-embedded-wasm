@@ -88,28 +88,29 @@ The goal is to eliminate dynamic allocation (`Array<T>`) and replace it with fix
 Items to fix before the Embedded-phase migration, to reduce the migration cost.
 None of these affect macOS behavior, but they are design issues or potential Embedded link errors.
 
-- [ ] **Pre-compute `block`/`loop`/`if` arity in the parser and embed in instructions**
+- [x] **Pre-compute `block`/`loop`/`if` arity in the parser and embed in instructions**
 
-  The current implementation computes arity by calling `blockArity()` / `loopBrArity()` and
-  referencing `module.types` on every execution of a `block`/`loop`/`if` instruction.
+  `brArity` and `paramCount` are now pre-computed at parse time by `blockArityForBlock()` and
+  `loopBrArityFromBlockType()` in `WasmParser.swift` and embedded directly in the instruction.
+  The interpreter no longer calls `blockArity()` / `loopBrArity()` or accesses `module.types` at runtime.
 
-  Since the parser already has `BlockType` and `module.types`, this calculation can be done once at parse time.
-  Embedding arity directly in the instruction eliminates `module.types` lookups from the hot path entirely.
+  `BlockType` is retained in the enum cases for use by the macOS validator (`WasmValidator`).
+  Parser helpers now throw `WasmError.typeMismatch` for out-of-range type indices instead of
+  returning a silent fallback.
 
   ```swift
-  // Current: computed at runtime on every execution
+  // Before: arity computed at runtime on every execution
   case block(BlockType, Int)              // endPc only
   case loop(BlockType, Int)              // startPc only
   case ifElse(BlockType, Int, Int)       // elsePc, endPc only
 
-  // Proposed: parser embeds pre-computed values
-  case block(brArity: Int, paramCount: Int, endPc: Int)
-  case loop(brArity: Int, startPc: Int)
-  case ifElse(brArity: Int, paramCount: Int, elsePc: Int, endPc: Int)
+  // After: parser embeds pre-computed values
+  case block(BlockType, brArity: Int, paramCount: Int, endPc: Int)
+  case loop(BlockType, brArity: Int, startPc: Int)
+  case ifElse(BlockType, brArity: Int, paramCount: Int, elsePc: Int, endPc: Int)
   ```
 
-  This makes `blockArity()` / `loopBrArity()` and hot-path `module.types` lookups unnecessary.
-  The change is localised to `WasmModule.swift` (Instruction enum), `WasmParser.swift`, and `WasmInterpreter.swift`.
+  Change is localised to `WasmModule.swift` (Instruction enum), `WasmParser.swift`, and `WasmInterpreter.swift`.
 
 - [x] **Inline `brTable` target array into the flat instruction stream**
 

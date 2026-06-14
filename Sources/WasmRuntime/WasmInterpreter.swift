@@ -131,39 +131,9 @@ private struct Frame {
   let resultCount: Int  // number of return values
 }
 
-// MARK: - Block arity helpers
-//
-// These helpers are called on every execution of block/loop/if instructions and
-// sit directly in the interpreter hot path. @inline(__always) forces the compiler
-// to expand them at every call site, eliminating call overhead and enabling the
-// surrounding switch-case code to be optimised as a single unit.
-//
-// Note: if arity is pre-computed at parse time and embedded directly in each
-// block/loop/if Instruction case, these functions become unnecessary and can
-// be removed entirely.
-
-@inline(__always)
-private func blockArity(_ bt: BlockType, types: [FunctionType]) -> Int {
-  switch bt {
-  case .void: return 0
-  case .value: return 1
-  case .typeIndex(let idx):
-    guard Int(idx) < types.count else { return 0 }
-    return types[Int(idx)].results.count
-  }
-}
-
-// For loop br: carries param count (not result count).
-// In MVP loops have no params; multi-value loops carry params on branch.
-@inline(__always)
-private func loopBrArity(_ bt: BlockType, types: [FunctionType]) -> Int {
-  switch bt {
-  case .void, .value: return 0
-  case .typeIndex(let idx):
-    guard Int(idx) < types.count else { return 0 }
-    return types[Int(idx)].params.count
-  }
-}
+// block/loop/if arity is now pre-computed at parse time and stored directly in each
+// Instruction case (brArity, paramCount fields). The blockArity() / loopBrArity()
+// helpers that previously looked up module.types at runtime have been removed.
 
 // MARK: - Interpreter
 
@@ -636,10 +606,9 @@ struct WasmInterpreter {
 
       // MARK: Flat Control Flow
 
-      case .block(let bt, let endPc):
+      case .block(_, let brArity, let paramCount, let endPc):
         // Push a label. endPc is the continuation PC for br (past the blockEnd).
-        let brArity = blockArity(bt, types: module.types)
-        let paramCount = loopBrArity(bt, types: module.types)
+        // brArity and paramCount are pre-computed at parse time — no module.types lookup needed.
         frames[fi].labels.append(
           Label(
             kind: .block,
@@ -647,9 +616,9 @@ struct WasmInterpreter {
             brArity: brArity,
             continuationPc: endPc))
 
-      case .loop(let bt, let startPc):
+      case .loop(_, let brArity, let startPc):
         // Push a label. startPc is where br(0) restarts the loop.
-        let brArity = loopBrArity(bt, types: module.types)
+        // brArity (= loop param count) is pre-computed at parse time.
         frames[fi].labels.append(
           Label(
             kind: .loop,
@@ -657,12 +626,11 @@ struct WasmInterpreter {
             brArity: brArity,
             continuationPc: startPc))
 
-      case .ifElse(let bt, let elsePc, let endPc):
+      case .ifElse(_, let brArity, let paramCount, let elsePc, let endPc):
         // Pop condition; jump to elsePc if false. Push a label for both paths.
+        // brArity and paramCount are pre-computed at parse time — no module.types lookup needed.
         guard !valueStack.isEmpty else { throw .stackUnderflow }
         guard case .i32(let cond) = valueStack.removeLast() else { throw .typeMismatch }
-        let brArity = blockArity(bt, types: module.types)
-        let paramCount = loopBrArity(bt, types: module.types)
         frames[fi].labels.append(
           Label(
             kind: .ifElse,

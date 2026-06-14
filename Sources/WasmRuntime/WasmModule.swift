@@ -100,18 +100,31 @@ struct ElementSegment: Sendable {
 /// no nested arrays, no heap allocation required.
 ///
 /// Flat control flow model:
-///   block(bt, endPc)         — pushes a label; br to this label jumps to endPc
-///   loop(bt, startPc)        — pushes a label; br to this label jumps to startPc (restart)
-///   ifElse(bt, elsePc, endPc)— pops condition; jumps to elsePc if 0; br jumps to endPc
+///   block(bt, brArity, paramCount, endPc)
+///       — pushes a label; br to this label jumps to endPc;
+///         brArity = result count (values carried on br / fall-through);
+///         paramCount = parameter count (re-pushed when entering the block).
+///   loop(bt, brArity, startPc)
+///       — pushes a label; br to this label jumps to startPc (restart);
+///         brArity = param count (br to a loop restarts with its args).
+///   ifElse(bt, brArity, paramCount, elsePc, endPc)
+///       — pops condition; jumps to elsePc if 0; br jumps to endPc;
+///         brArity = result count; paramCount = parameter count.
+///
+/// BlockType is retained in each case for the non-Embedded validator, which requires the
+/// full param/result type arrays to check type-stack consistency.  The interpreter hot path
+/// uses only the pre-computed integer fields (brArity, paramCount) and never reads BlockType,
+/// eliminating the module.types lookup that the previous blockArity()/loopBrArity() helpers
+/// performed on every execution of a block/loop/if instruction.
 ///   blockEnd                 — pops the top label (normal fall-through exit)
 ///   jump(pc)                 — unconditional jump (skips the else body in if/else)
 enum Instruction: Sendable {
   case unreachable  // 0x00
   case nop  // 0x01
   // Flat structured control flow (no indirect cases; all PCs computed by parser)
-  case block(BlockType, Int)  // 0x02: endPc = PC after blockEnd (br-continuation)
-  case loop(BlockType, Int)  // 0x03: startPc = first body instruction (br restarts here)
-  case ifElse(BlockType, Int, Int)  // 0x04: elsePc, endPc (br-continuation)
+  case block(BlockType, brArity: Int, paramCount: Int, endPc: Int)  // 0x02
+  case loop(BlockType, brArity: Int, startPc: Int)  // 0x03
+  case ifElse(BlockType, brArity: Int, paramCount: Int, elsePc: Int, endPc: Int)  // 0x04
   case blockEnd  // marks end of block/loop/if body; pops the label
   case jump(Int)  // unconditional jump to PC (used to skip else body)
   case br(UInt32)  // 0x0C

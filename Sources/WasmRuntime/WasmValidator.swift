@@ -189,7 +189,7 @@
       case .nop:
         break
 
-      case .block(let bt, _):
+      case .block(let bt, _, _, _):
         let (params, results) = try blockTypes(bt)
         for param in params.reversed() { try popExpecting(param) }
         let h = stack.count
@@ -201,7 +201,7 @@
             startHeight: h, resultTypes: results, labelTypes: results, unreachable: inheritUR)
         )
 
-      case .loop(let bt, _):
+      case .loop(let bt, _, _):
         let (params, results) = try blockTypes(bt)
         for param in params.reversed() { try popExpecting(param) }
         let h = stack.count
@@ -213,7 +213,7 @@
             startHeight: h, resultTypes: results, labelTypes: params, unreachable: inheritUR)
         )
 
-      case .ifElse(let bt, let elsePc, _):
+      case .ifElse(let bt, _, _, let elsePc, _):
         try popExpecting(.i32)  // condition
         let (params, results) = try blockTypes(bt)
         for param in params.reversed() { try popExpecting(param) }

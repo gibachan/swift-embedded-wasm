@@ -10,10 +10,47 @@ struct WasmParser {
   // Retain the original buffer so that Embedded builds can re-scan function body
   // byte ranges for lazy decode (FunctionHandle) without re-allocating.
   private let buffer: UnsafeBufferPointer<UInt8>
+  // Type section contents, populated during parse() before the code section is reached.
+  // Used by parseFlatBody / parseFlatBodyTracked to pre-compute block/loop/if arity at
+  // parse time, eliminating the runtime module.types lookup in the interpreter hot path.
+  private var types: [FunctionType] = []
 
   init(_ buffer: UnsafeBufferPointer<UInt8>) {
     self.buffer = buffer
     self.stream = BufferStream(buffer)
+  }
+
+  // MARK: - Block arity helpers (parse-time pre-computation)
+
+  /// Returns (brArity, paramCount) for a block/if instruction from its BlockType.
+  ///
+  /// brArity   = result count of the block type (carried on br / fall-through).
+  /// paramCount = parameter count (consumed and re-pushed when entering the block).
+  private func blockArityForBlock(_ bt: BlockType) throws(WasmError) -> (
+    brArity: Int, paramCount: Int
+  ) {
+    switch bt {
+    case .void: return (brArity: 0, paramCount: 0)
+    case .value: return (brArity: 1, paramCount: 0)
+    case .typeIndex(let idx):
+      guard Int(idx) < types.count else { throw WasmError.typeMismatch }
+      let ft = types[Int(idx)]
+      return (brArity: ft.results.count, paramCount: ft.params.count)
+    }
+  }
+
+  /// Returns the brArity for a loop instruction from its BlockType.
+  ///
+  /// For loops, `br` restarts the loop — the continuation takes the loop's *parameters*,
+  /// not its results.  So brArity = param count of the block type.
+  private func loopBrArityFromBlockType(_ bt: BlockType) throws(WasmError) -> Int {
+    switch bt {
+    case .void: return 0
+    case .value: return 0  // single-result loop has 0 params → br restarts with 0 values
+    case .typeIndex(let idx):
+      guard Int(idx) < types.count else { throw WasmError.typeMismatch }
+      return types[Int(idx)].params.count
+    }
   }
 
   // MARK: - Public
@@ -76,7 +113,10 @@ struct WasmParser {
 
       switch id {
       case 0: try parseCustomSection(size: Int(size))  // custom section: validate name UTF-8
-      case 1: types = try parseTypeSection()
+      case 1:
+        let parsedTypes = try parseTypeSection()
+        types = parsedTypes  // local: passed to WasmModule
+        self.types = parsedTypes  // stored field: used by parseFlatBody for arity pre-computation
       case 2: imports = try parseImportSection()
       case 3: functions = try parseFunctionSection()
       case 4: tables = try parseTableSection()
@@ -708,8 +748,10 @@ struct WasmParser {
 
         case 0x02:  // block
           let bt = try readBlockType()
+          let (brArity, paramCount) = try blockArityForBlock(bt)
           let blockPc = instructions.count
-          instructions.append(.block(bt, 0))  // placeholder; endPc backpatched below
+          // Placeholder; endPc backpatched below.
+          instructions.append(.block(bt, brArity: brArity, paramCount: paramCount, endPc: 0))
           // Pre-append placeholder so outer block's entry precedes inner blocks' entries
           // (pre-order). Phase 4's monotonically-advancing cursor requires this ordering.
           let jumpEntryIdx = jumpTable.count
@@ -719,18 +761,20 @@ struct WasmParser {
           instructions.append(.blockEnd)
           // stream.offset now sits just past the 0x0B end opcode.
           let endByteOffset = UInt32(stream.offset)
-          instructions[blockPc] = .block(bt, blockEndPc + 1)
+          instructions[blockPc] = .block(
+            bt, brArity: brArity, paramCount: paramCount, endPc: blockEndPc + 1)
           // Backpatch: target1 is now known (byte just after the end opcode).
           jumpTable[jumpEntryIdx] = JumpEntry(
             instrOffset: opcodeByteOffset, target1: endByteOffset, target2: 0)
 
         case 0x03:  // loop
           let bt = try readBlockType()
+          let loopBrArity = try loopBrArityFromBlockType(bt)
           // stream.offset now points at the first byte of the loop body.
           // Phase 4 decoder will restart here on a br targeting this loop.
           let startByteOffset = UInt32(stream.offset)
           let startPc = instructions.count + 1  // first body instruction follows the loop instr
-          instructions.append(.loop(bt, startPc))
+          instructions.append(.loop(bt, brArity: loopBrArity, startPc: startPc))
           // target1 (startByteOffset) is already known before recursion, so the entry can be
           // fully appended here — no backpatch needed. Placing it before the recursive call
           // ensures pre-order: this loop's entry precedes any inner blocks' entries.
@@ -741,8 +785,11 @@ struct WasmParser {
 
         case 0x04:  // if [else] end
           let bt = try readBlockType()
+          let (brArity, paramCount) = try blockArityForBlock(bt)
           let ifPc = instructions.count
-          instructions.append(.ifElse(bt, 0, 0))  // placeholder; both PCs backpatched below
+          // Placeholder; both PCs backpatched below.
+          instructions.append(
+            .ifElse(bt, brArity: brArity, paramCount: paramCount, elsePc: 0, endPc: 0))
           // Pre-append placeholder BEFORE the first recursive call (then-body) so that
           // this if's entry precedes any inner blocks in both then-body and else-body (pre-order).
           let jumpEntryIdx = jumpTable.count
@@ -772,7 +819,8 @@ struct WasmParser {
             let endByteOffset = UInt32(stream.offset)
             let endPc = instructions.count  // both paths converge here
 
-            instructions[ifPc] = .ifElse(bt, elsePc, endPc)
+            instructions[ifPc] = .ifElse(
+              bt, brArity: brArity, paramCount: paramCount, elsePc: elsePc, endPc: endPc)
             instructions[jumpPc] = .jump(endPc)
             _ = elseEndPc  // consumed above
 
@@ -789,7 +837,8 @@ struct WasmParser {
             let endByteOffset = UInt32(stream.offset)
             let endPc = instructions.count  // past blockEnd; br-continuation
 
-            instructions[ifPc] = .ifElse(bt, blockEndPc, endPc)
+            instructions[ifPc] = .ifElse(
+              bt, brArity: brArity, paramCount: paramCount, elsePc: blockEndPc, endPc: endPc)
             // Backpatch: no else; condition-false jumps directly to endPc byte position.
             jumpTable[jumpEntryIdx] = JumpEntry(
               instrOffset: opcodeByteOffset, target1: endByteOffset, target2: endByteOffset)
@@ -1266,24 +1315,31 @@ struct WasmParser {
 
       case 0x02:  // block
         let bt = try readBlockType()
+        let (brArity, paramCount) = try blockArityForBlock(bt)
         let blockPc = instructions.count
-        instructions.append(.block(bt, 0))  // placeholder; endPc backpatched below
+        // Placeholder; endPc backpatched below after body and blockEnd are appended.
+        instructions.append(.block(bt, brArity: brArity, paramCount: paramCount, endPc: 0))
         _ = try parseFlatBody(into: &instructions)
         let blockEndPc = instructions.count
         instructions.append(.blockEnd)
-        instructions[blockPc] = .block(bt, blockEndPc + 1)
+        instructions[blockPc] = .block(
+          bt, brArity: brArity, paramCount: paramCount, endPc: blockEndPc + 1)
 
       case 0x03:  // loop
         let bt = try readBlockType()
+        let loopBrArity = try loopBrArityFromBlockType(bt)
         let startPc = instructions.count + 1  // first body instruction follows the loop instr
-        instructions.append(.loop(bt, startPc))
+        instructions.append(.loop(bt, brArity: loopBrArity, startPc: startPc))
         _ = try parseFlatBody(into: &instructions)
         instructions.append(.blockEnd)
 
       case 0x04:  // if [else] end
         let bt = try readBlockType()
+        let (brArity, paramCount) = try blockArityForBlock(bt)
         let ifPc = instructions.count
-        instructions.append(.ifElse(bt, 0, 0))  // placeholder; both PCs backpatched below
+        // Placeholder; both PCs backpatched below after body extents are known.
+        instructions.append(
+          .ifElse(bt, brArity: brArity, paramCount: paramCount, elsePc: 0, endPc: 0))
 
         let stoppedAtElse = try parseFlatBody(into: &instructions)
 
@@ -1304,7 +1360,8 @@ struct WasmParser {
           instructions.append(.blockEnd)
           let endPc = instructions.count  // both paths converge here
 
-          instructions[ifPc] = .ifElse(bt, elsePc, endPc)
+          instructions[ifPc] = .ifElse(
+            bt, brArity: brArity, paramCount: paramCount, elsePc: elsePc, endPc: endPc)
           instructions[jumpPc] = .jump(endPc)
           _ = elseEndPc  // consumed above
 
@@ -1314,7 +1371,8 @@ struct WasmParser {
           instructions.append(.blockEnd)
           let endPc = instructions.count  // past blockEnd; br-continuation
 
-          instructions[ifPc] = .ifElse(bt, blockEndPc, endPc)
+          instructions[ifPc] = .ifElse(
+            bt, brArity: brArity, paramCount: paramCount, elsePc: blockEndPc, endPc: endPc)
         }
 
       case 0x00:  // unreachable

@@ -220,16 +220,18 @@ indirect case ifElse(BlockType, thenBody: [Instruction], elseBody: [Instruction]
 
 ```swift
 // Current implementation (no malloc required)
-case block(BlockType, Int)       // endPc: index of instruction after blockEnd
-case loop(BlockType, Int)        // startPc: first body instruction (br returns here)
-case ifElse(BlockType, Int, Int) // elsePc, endPc
+case block(BlockType, brArity: Int, paramCount: Int, endPc: Int)
+case loop(BlockType, brArity: Int, startPc: Int)
+case ifElse(BlockType, brArity: Int, paramCount: Int, elsePc: Int, endPc: Int)
 case blockEnd                    // end-of-body marker for block/loop/if
 case jump(Int)                   // unconditional jump to PC (skips else body)
 ```
 
 All instructions are laid out in a flat array; block/loop/if carry their jump target PC directly.
-The parser computes and embeds offsets at parse time.
-The same approach is used by CPython bytecode and JavaScriptCore, making it educationally valuable.
+`brArity` and `paramCount` are pre-computed at parse time by `blockArityForBlock()` /
+`loopBrArityFromBlockType()` in `WasmParser.swift`, eliminating all `module.types` lookups from
+the interpreter hot path. `BlockType` is retained in the cases for use by the macOS validator.
+The same flat-bytecode approach is used by CPython bytecode and JavaScriptCore, making it educationally valuable.
 
 ### Phase 2: Zero-Copy Code Section — `FunctionHandle` (implemented, Embedded builds)
 
