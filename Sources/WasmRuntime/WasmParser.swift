@@ -5,6 +5,27 @@
 //
 // Reference: https://webassembly.github.io/spec/core/binary/modules.html
 
+// Stack entry used by the iterative parseFlatBody to track open block/loop/if scopes
+// without recursive calls.  Each case stores only the values needed for backpatching
+// when the matching `end` (or `else`) byte is encountered.
+//
+// Embedded-safe: no indirect cases, no class storage, plain value enum.
+private enum PendingBlock {
+  // A `block` instruction awaiting its `end`; stores the pc of the block header instruction
+  // so that endPc can be backpatched once the body is complete.
+  case block(headerPc: Int, bt: BlockType, brArity: Int, paramCount: Int)
+  // A `loop` instruction: startPc is already baked into the emitted instruction at parse time,
+  // so no backpatch is required at `end`.
+  case loop
+  // An `if` without an `else` yet; stores the header pc for backpatching both
+  // elsePc and endPc when `else` or `end` is reached.
+  case ifThen(headerPc: Int, bt: BlockType, brArity: Int, paramCount: Int)
+  // An `if` after `else` has been seen; stores header pc (for ifElse backpatch),
+  // jumpPc (the `.jump` placeholder in the then-path), and elsePc (first instruction
+  // of the else body) for final backpatching at `end`.
+  case ifElse(headerPc: Int, jumpPc: Int, elsePc: Int, bt: BlockType, brArity: Int, paramCount: Int)
+}
+
 struct WasmParser {
   private var stream: BufferStream
   // Retain the original buffer so that Embedded builds can re-scan function body
@@ -1309,6 +1330,23 @@ struct WasmParser {
   mutating func parseFlatBody(into instructions: inout [Instruction]) throws(WasmError)
     -> Bool
   {
+    // Iterative replacement for the former recursive implementation.
+    //
+    // The old design called parseFlatBody recursively for each block/loop/if body,
+    // which exhausted the Swift call stack on deeply-nested Wasm spec test modules
+    // (SIGBUS / signal 10).  This version maintains an explicit `pending` stack of
+    // PendingBlock entries so that every opcode is handled in a single flat loop.
+    //
+    // Protocol:
+    //   • `case 0x0B` (end) with an empty `pending` stack → function body is done → return false
+    //   • `case 0x05` (else) with an empty `pending` stack → should not occur in a well-formed
+    //     module when called from parseFlatBody at the outermost level; returns true to preserve
+    //     the original caller contract (the Embedded parseFlatBodyTracked still uses that protocol).
+    //
+    // TODO: Embedded — [PendingBlock] is a heap-allocated Array; replace with a fixed-size ring
+    // buffer when targeting Pico (max nesting depth in practice is small).
+    var pending: [PendingBlock] = []
+
     while true {
       let opcode = try readByte()
       switch opcode {
@@ -1316,63 +1354,94 @@ struct WasmParser {
       case 0x02:  // block
         let bt = try readBlockType()
         let (brArity, paramCount) = try blockArityForBlock(bt)
-        let blockPc = instructions.count
-        // Placeholder; endPc backpatched below after body and blockEnd are appended.
+        let headerPc = instructions.count
+        // Placeholder; endPc is backpatched when matching `end` is processed below.
         instructions.append(.block(bt, brArity: brArity, paramCount: paramCount, endPc: 0))
-        _ = try parseFlatBody(into: &instructions)
-        let blockEndPc = instructions.count
-        instructions.append(.blockEnd)
-        instructions[blockPc] = .block(
-          bt, brArity: brArity, paramCount: paramCount, endPc: blockEndPc + 1)
+        pending.append(.block(headerPc: headerPc, bt: bt, brArity: brArity, paramCount: paramCount))
 
       case 0x03:  // loop
         let bt = try readBlockType()
         let loopBrArity = try loopBrArityFromBlockType(bt)
-        let startPc = instructions.count + 1  // first body instruction follows the loop instr
+        // startPc is the index of the first instruction *after* the loop header,
+        // i.e. the first body instruction.  Baked in at emit time; no backpatch needed.
+        let startPc = instructions.count + 1
         instructions.append(.loop(bt, brArity: loopBrArity, startPc: startPc))
-        _ = try parseFlatBody(into: &instructions)
-        instructions.append(.blockEnd)
+        pending.append(.loop)
 
       case 0x04:  // if [else] end
         let bt = try readBlockType()
         let (brArity, paramCount) = try blockArityForBlock(bt)
-        let ifPc = instructions.count
-        // Placeholder; both PCs backpatched below after body extents are known.
+        let headerPc = instructions.count
+        // Placeholder; elsePc and endPc are backpatched at `else` / `end` below.
         instructions.append(
           .ifElse(bt, brArity: brArity, paramCount: paramCount, elsePc: 0, endPc: 0))
+        pending.append(
+          .ifThen(headerPc: headerPc, bt: bt, brArity: brArity, paramCount: paramCount))
 
-        let stoppedAtElse = try parseFlatBody(into: &instructions)
+      case 0x05:  // else — terminates the then-body, begins the else-body
+        if pending.isEmpty {
+          // Top-level `else` with no open block on our pending stack.
+          // This can only happen when parseFlatBody is called from the outer
+          // recursive protocol (parseFlatBodyTracked still uses that), so we
+          // preserve the original return-true convention here.
+          return true
+        }
+        // Pop the matching ifThen entry.
+        guard case .ifThen(let headerPc, let bt, let brArity, let paramCount) = pending.removeLast()
+        else {
+          // `else` can only legitimately close an `if`; any other pending entry is malformed.
+          throw WasmError.invalidInstruction(0x05)
+        }
+        // Emit blockEnd to close the then-path label, then a jump placeholder that will
+        // skip over the else body once both paths are known.
+        let thenEndPc = instructions.count
+        instructions.append(.blockEnd)
+        _ = thenEndPc  // label for readability; endPc is computed from instructions.count below
+        let jumpPc = instructions.count
+        instructions.append(.jump(0))  // placeholder; backpatched when matching `end` is seen
+        let elsePc = instructions.count  // first instruction of the else body
+        pending.append(
+          .ifElse(
+            headerPc: headerPc, jumpPc: jumpPc, elsePc: elsePc,
+            bt: bt, brArity: brArity, paramCount: paramCount))
 
-        if stoppedAtElse {
-          // Has else clause:
-          //   then path: blockEnd pops if label, then jump skips else body
-          //   else path: jumps to elsePc, falls through to elseBlockEnd which pops if label
-          let thenEndPc = instructions.count
-          instructions.append(.blockEnd)
-          _ = thenEndPc  // unused after backpatch; compiler hint only
-          let jumpPc = instructions.count
-          instructions.append(.jump(0))  // placeholder; target backpatched below
-
-          let elsePc = instructions.count
-          _ = try parseFlatBody(into: &instructions)
-
-          let elseEndPc = instructions.count
-          instructions.append(.blockEnd)
-          let endPc = instructions.count  // both paths converge here
-
-          instructions[ifPc] = .ifElse(
-            bt, brArity: brArity, paramCount: paramCount, elsePc: elsePc, endPc: endPc)
-          instructions[jumpPc] = .jump(endPc)
-          _ = elseEndPc  // consumed above
-
-        } else {
-          // No else: else path jumps directly to blockEnd; both paths pop the label there
+      case 0x0B:  // end — terminates the innermost open scope, or the function body
+        if pending.isEmpty {
+          // No open block/loop/if: this `end` terminates the function body.
+          return false
+        }
+        switch pending.removeLast() {
+        case .block(let headerPc, let bt, let brArity, let paramCount):
+          // Backpatch the block header with the pc *past* blockEnd (= br continuation).
           let blockEndPc = instructions.count
           instructions.append(.blockEnd)
-          let endPc = instructions.count  // past blockEnd; br-continuation
+          instructions[headerPc] = .block(
+            bt, brArity: brArity, paramCount: paramCount, endPc: blockEndPc + 1)
 
-          instructions[ifPc] = .ifElse(
-            bt, brArity: brArity, paramCount: paramCount, elsePc: blockEndPc, endPc: endPc)
+        case .loop:
+          // startPc was baked in at emit time; just close the body.
+          instructions.append(.blockEnd)
+
+        case .ifThen(let headerPc, let bt, let brArity, let paramCount):
+          // if without else: the else path jumps directly to blockEnd,
+          // and endPc (br continuation) is one past blockEnd.
+          let blockEndPc = instructions.count
+          instructions.append(.blockEnd)
+          let endPc = instructions.count
+          instructions[headerPc] = .ifElse(
+            bt, brArity: brArity, paramCount: paramCount,
+            elsePc: blockEndPc, endPc: endPc)
+
+        case .ifElse(let headerPc, let jumpPc, let elsePc, let bt, let brArity, let paramCount):
+          // if/else: close the else body, backpatch both the if header and the then-path jump.
+          let elseEndPc = instructions.count
+          instructions.append(.blockEnd)
+          _ = elseEndPc  // consumed; endPc is one past
+          let endPc = instructions.count
+          instructions[headerPc] = .ifElse(
+            bt, brArity: brArity, paramCount: paramCount,
+            elsePc: elsePc, endPc: endPc)
+          instructions[jumpPc] = .jump(endPc)
         }
 
       case 0x00:  // unreachable
@@ -1380,12 +1449,6 @@ struct WasmParser {
 
       case 0x01:  // nop
         instructions.append(.nop)
-
-      case 0x05:  // else: terminates the then-body
-        return true
-
-      case 0x0B:  // end: terminates a block or function body
-        return false
 
       case 0x0C:  // br
         instructions.append(.br(try readU32()))
