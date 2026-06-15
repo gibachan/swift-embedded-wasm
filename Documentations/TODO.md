@@ -176,6 +176,45 @@ The following changes are needed when migrating to the Embedded phase.
   Note: bulk memory ops (`memoryFill` / `memoryCopy` / `memoryInit`) still use the old `Int &+`
   pattern and are marked `[macOS-phase-OK, Embedded-TODO]`. They will be fixed in Phase 5.
 
+- [x] **Fix `parseFlatBody` stack overflow on deeply nested Wasm (SIGBUS / signal 10)**
+
+  The original `parseFlatBody` in `WasmParser.swift` was recursive: each `block` / `loop` / `if`
+  opcode called `parseFlatBody` again for the nested body.  On deeply nested Wasm binaries this
+  caused a native stack overflow (SIGBUS / signal 10 on macOS; certain crash on the Pico's
+  4 KB default stack).
+
+  The fix rewrites `parseFlatBody` as a single-pass iterative loop using an explicit
+  `var pending: [PendingBlock]` stack:
+
+  - Open scopes (`block`, `loop`, `if`) push a `PendingBlock` entry that records the backpatch
+    sites (endPc slot, elsePc slot for `if`).
+  - The outer `while true` loop processes opcodes without any native stack growth.
+  - The `end` opcode pops the top `PendingBlock` and fills in the stored backpatch slots,
+    exactly as the recursive version did before returning.
+
+  `parseFlatBodyTracked` (Embedded-only, builds `[JumpEntry]` alongside) still uses the
+  original recursive approach and remains a follow-up item.
+
+  ```swift
+  // Before: recursive — deep nesting → stack overflow
+  case .block:
+      let stoppedAtEnd = try parseFlatBody(into: &instructions) // recursive call
+
+  // After: iterative — pending[] holds open scopes
+  var pending: [PendingBlock] = []
+  while true {
+      let opcode = try stream.consume()
+      switch opcode {
+      case 0x02: // block
+          pending.append(.block(endPcSlot: instructions.count))
+      case 0x0B: // end
+          if pending.isEmpty { return false }  // end of outermost scope
+          let top = pending.removeLast()
+          // backpatch endPc into the recorded slot
+      }
+  }
+  ```
+
 - [ ] **Replace `Array<T>` with fixed-size buffers**
 
   Replace the dynamic arrays used at runtime with fixed-length buffers.
@@ -225,12 +264,32 @@ compile-time fixed-size buffers.
   Remaining Phase 4 work: replace `[JumpEntry]` with a fixed-size buffer to eliminate the
   `malloc` dependency (marked `// TODO: Embedded Phase 4` in source).
 
-- [ ] **Replace lazy decode with true on-the-fly decode (primary Phase 4 goal)**
+- [x] **Replace lazy decode with true on-the-fly decode (primary Phase 4 goal)**
 
-  The current Embedded interpreter still lazy-decodes a `[Instruction]` array from `rawBytes`
-  on each function call (`pushFrame` path). Phase 4 replaces this with a `ip: UInt32` byte
-  offset that advances through `rawBytes` directly, using the `jumpTable` to resolve
-  `br`/`br_if`/`br_table` targets without forward scanning.
+  Implemented in `WasmInterpreterEmbedded.swift` (~2700 lines, Embedded-only).
+  The per-call `[Instruction]` array allocation is eliminated.  Opcodes are now decoded
+  directly from `module.rawBytes` as execution proceeds.
+
+  Key components:
+  - `runIterativeEmbedded()` — Embedded execution entry point (replaces lazy-decode path)
+  - `dispatchEmbedded()` — non-mutating; receives mutable state as `inout` arguments;
+    uses a local `BinaryReader` cursor to decode opcodes and immediates directly from `rawBytes`
+  - `EmbeddedFrame` — per-call frame tracking `ip: UInt32` (absolute byte offset in `rawBytes`),
+    `jumpCursor: Int` (monotonic index into `jumpTable`), `localBase: Int` (index of first
+    local on `valueStack`), `resultCount: Int`, and `labels: [Label]`
+  - `BinaryReader` — zero-allocation byte reader over `UnsafeBufferPointer<UInt8>`;
+    handles LEB128, floats, and block types inline
+  - `jumpCursorForIp()` — binary search fallback that re-synchronises `jumpCursor` after a
+    non-sequential IP change (taken branch, function return, etc.)
+
+  Local variables are stored on the shared value stack at
+  `valueStack[localBase ..< localBase + localCount]`, eliminating per-frame `[Value]` allocation.
+  Mutable interpreter state (`memory`, `globals`, `tables`, `droppedDataSegments`,
+  `droppedElementSegments`) is extracted into local variables at the top of
+  `runIterativeEmbedded()` and passed to `dispatchEmbedded()` as `inout`, avoiding
+  overlapping-access (exclusivity) violations.
+
+  All opcodes (0x00–0xFC) are implemented.
 
   Prerequisites completed: `FunctionHandle` zero-copy byte range (Phase 2), `brTable` flat
   inline (Phase 2.5②), jump table pre-computation (above).

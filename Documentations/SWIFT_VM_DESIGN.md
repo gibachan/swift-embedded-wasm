@@ -250,10 +250,11 @@ struct FunctionHandle: Sendable {
 }
 ```
 
-`WasmModule.rawBytes` holds the original Wasm binary. When the interpreter calls a function, it
-constructs a sub-parser over the stored byte range and calls the shared `parseFlatBody()` to
-obtain a `[Instruction]` array. This eliminates the per-function `[Instruction]` allocation at
-load time, replacing it with a per-call allocation (acceptable until Phase 4 removes it entirely).
+`WasmModule.rawBytes` holds the original Wasm binary. In the Phase 2 lazy-decode path, when
+the interpreter called a function it constructed a sub-parser over the stored byte range and called
+`parseFlatBody()` to obtain a `[Instruction]` array — eliminating the per-function allocation at
+load time and replacing it with a per-call allocation. Phase 4 (`WasmInterpreterEmbedded.swift`)
+removes this per-call allocation entirely by decoding opcodes on-the-fly directly from `rawBytes`.
 
 ### Phase 2.5: Jump Table Pre-computation (implemented, Embedded builds)
 
@@ -281,16 +282,99 @@ The parser variant `parseFlatBodyTracked()` (Embedded-only, in `WasmParser.swift
 temporary `[Instruction]` array and the `[JumpEntry]` table in a single pass, using the same
 backpatch strategy as `parseFlatBody` for control-flow PCs.
 
-### Phase 4 (planned): True On-the-Fly Decode
+**Note on iterative vs recursive parsing:** `parseFlatBody` was rewritten from recursive to
+iterative (using an explicit `var pending: [PendingBlock]` stack) to prevent native stack overflow
+(SIGBUS / signal 10) on deeply nested Wasm binaries. `parseFlatBodyTracked()` still uses the
+original recursive approach and is a follow-up item for a future phase.
 
-Phase 4 will replace the lazy-decode path (re-parse to `[Instruction]` on each call) with a
-`ip: UInt32` byte offset that advances through `rawBytes` directly. The `jumpTable` pre-built
-in Phase 2.5 provides O(1) target resolution for `br`/`br_if`/`br_table`.
+### Phase 4 (implemented): True On-the-Fly Decode
 
-The remaining `[JumpEntry]` allocation will also be replaced with a fixed-size buffer, and
-`CallFrame` will track a byte-offset `ip` instead of an instruction-array index.
+`WasmInterpreterEmbedded.swift` (Embedded-only, ~2700 lines) replaces the lazy-decode path
+with a true on-the-fly decoder.  The per-call `[Instruction]` array is eliminated; opcodes are
+decoded directly from `module.rawBytes` as execution proceeds.
 
-Consider only when Phase 4 hardware execution is the target. Not needed for spectest validation.
+#### `BinaryReader`
+
+A zero-allocation byte reader over `UnsafeBufferPointer<UInt8>`.  Handles LEB128 (unsigned and
+signed), IEEE 754 floats, and block type bytes inline.  Used inside `dispatchEmbedded()` as a
+local variable — there is no shared `BinaryReader` state per frame.
+
+```swift
+struct BinaryReader {
+    let buffer: UnsafeBufferPointer<UInt8>
+    var offset: Int                         // current read position within buffer
+
+    @inline(__always)
+    mutating func readByte() throws(WasmError) -> UInt8 { ... }
+    mutating func readU32() throws(WasmError) -> UInt32 { ... }  // unsigned LEB128
+    mutating func readS32() throws(WasmError) -> Int32  { ... }  // signed LEB128
+    mutating func readS64() throws(WasmError) -> Int64  { ... }  // signed LEB128
+    mutating func readF32() throws(WasmError) -> Float  { ... }  // 4-byte LE IEEE 754
+    mutating func readF64() throws(WasmError) -> Double { ... }  // 8-byte LE IEEE 754
+}
+```
+
+#### `EmbeddedFrame`
+
+Per-call frame used by `runIterativeEmbedded()`.  Tracks a byte-offset `ip` instead of an
+instruction-array index.
+
+```swift
+private struct EmbeddedFrame {
+    var ip: UInt32       // absolute byte offset in module.rawBytes
+    var jumpCursor: Int  // monotonic index into FunctionHandle.jumpTable
+    let handleIdx: Int   // index into module.code
+    let localBase: Int   // index of first local/param on valueStack
+    let localCount: Int  // params + declared locals; depth of valueStack at body start
+    let resultCount: Int // number of return values
+    var labels: [Label]  // TODO: Embedded Phase 5 — replace with fixed-size buffer
+}
+```
+
+Local variables (params + declared locals) are stored on the shared `valueStack` at indices
+`localBase ..< localBase + localCount`.  This eliminates per-frame heap allocation for locals.
+
+#### `runIterativeEmbedded()`
+
+The Embedded execution entry point.  Replaces the Phase 3 lazy-decode path.
+
+Mutable interpreter state (`memory`, `globals`, `tables`, `droppedDataSegments`,
+`droppedElementSegments`) is extracted into local variables at the top of this function and
+written back before returning.  All mutations go through those local variables — `self` is
+not accessed again until the `defer` write-back.  This avoids overlapping-access (exclusivity)
+violations that arise when both a closure capturing `self` and an `inout` parameter pointing
+into `self` are live simultaneously.
+
+#### `dispatchEmbedded()`
+
+Non-mutating method that takes mutable state as `inout` arguments.  Executes one instruction
+at the current `ip` of the top frame and advances it.
+
+The method creates a local `BinaryReader` positioned at the current `ip`, reads the opcode
+byte, then falls into a `switch` that handles all opcodes (0x00–0xFC).  Immediates are decoded
+inline from the reader without any temporary allocation.
+
+#### `jumpCursorForIp()`
+
+Binary search that returns the first `jumpTable` index where `entry.instrOffset >= ip`.
+Called when `ip` changes non-sequentially (branch taken, function return, etc.) to
+re-synchronise the monotonic `jumpCursor`.
+
+In the sequential forward path, `jumpCursor` advances by 1 each time a `block` / `loop` / `if`
+opcode is encountered (pre-order invariant of the jump table).  The binary search is only needed
+after non-sequential jumps.
+
+```swift
+private func jumpCursorForIp(_ ip: UInt32, in jumpTable: [JumpEntry]) -> Int {
+    // standard binary search: first index where jumpTable[i].instrOffset >= ip
+}
+```
+
+#### Remaining Phase 4 open items
+
+- Replace `[JumpEntry]` with a fixed-size buffer to eliminate `malloc` for jump tables.
+- Replace `[Label]` inside `EmbeddedFrame` with a fixed-size buffer.
+- Replace `ValueStack` / `CallStack` with fixed-size arrays (see TODO.md Phase 4).
 
 ---
 
@@ -328,10 +412,15 @@ let eaInt = Int(ea)
 ## 7. Host Function Design
 
 wasm3 uses signature strings like `"v(ii)"` for runtime type checking.
-This project registers host functions as closures and manages them in an array indexed by import order.
+This project registers host functions in an array indexed by import order, with the
+representation differing between macOS and Embedded builds.
+
+### macOS Build
+
+Host functions are registered as Swift closures.
 
 ```swift
-// WasmInterpreter.swift
+// WasmInterpreter.swift (non-Embedded)
 typealias HostFunction = ([Value], [UInt8]) -> [Value]
 
 enum HostImport {
@@ -340,24 +429,49 @@ enum HostImport {
 }
 ```
 
-`WasmInterpreter.init()` matches `hostImports` against import declarations in order
-and stores them as a `[HostFunction]` array for O(1) index access.
-
-Benefits:
-- No `class` — Embedded Swift compatible
-- Array instead of `Dictionary` (`[String: ...]`) avoids dynamic hash computation
-- Module/function name comparison uses `elementsEqual` byte comparison (avoids `String ==`)
-
 ```swift
-// Usage
+// Usage (macOS)
 let hostImports: [HostImport] = [
     .function("env", "gpio_put") { args, _ in
-        // GPIO operation
         return []
     }
 ]
 let interpreter = try WasmInterpreter(module: module, hostImports: hostImports)
 ```
+
+### Embedded Build
+
+Embedded Swift cannot heap-allocate closures.  Host functions are instead registered as
+`@convention(c)` function pointers (no captures) via `#if hasFeature(Embedded)`.
+Arguments are passed through `withUnsafeTemporaryAllocation` + `UnsafeRawPointer`, avoiding any
+heap allocation at the call site.
+
+```swift
+// WasmInterpreter.swift (Embedded)
+#if hasFeature(Embedded)
+typealias HostFunctionPtr = @convention(c) (UnsafeRawPointer, Int, UnsafeMutableRawPointer, Int) -> Void
+
+enum HostImport {
+    case function(String, String, HostFunctionPtr)
+    case memory(String, String, UInt32)
+}
+#endif
+```
+
+```swift
+// Examples/RaspberryPiPicoW-BLE/Embedded/Main.swift
+@_cdecl("hostBlink")
+func hostBlink(_ argsPtr: UnsafeRawPointer, _ argsCount: Int,
+               _ resultsPtr: UnsafeMutableRawPointer, _ resultsCount: Int) {
+    // GPIO blink implementation — no closure capture
+}
+```
+
+### Common Benefits
+
+- No `class` — Embedded Swift compatible
+- Array instead of `Dictionary` (`[String: ...]`) avoids dynamic hash computation
+- Module/function name comparison uses `elementsEqual` byte comparison (avoids `String ==`)
 
 ---
 
@@ -574,9 +688,10 @@ The Pico's default stack size is a few KB. Avoid deep recursion and large stack 
 | Error type | `const char*` (NULL = success) | `enum WasmError: Error` (parser + interpreter unified) |
 | Value storage | `union + u8 type` | `enum Value` with associated values |
 | Validation | None (stub) | `#if !hasFeature(Embedded)`: full (`WasmValidator`) / Embedded: skipped |
-| Host function registration | String signature `"v(ii)"` | `HostFunction` closure array (managed by import order) |
-| Opcode dispatch | Threaded Code (function pointer + tail call) | `switch` on `Instruction` enum |
-| Control flow representation | Nested function calls | Flat bytecode + jump offsets (Phase 1.5 complete) |
+| Host function registration | String signature `"v(ii)"` | macOS: closure array; Embedded: `@convention(c)` function pointer array |
+| Opcode dispatch | Threaded Code (function pointer + tail call) | macOS: `switch` on `Instruction` enum; Embedded: `switch` on raw opcode byte decoded on-the-fly from `rawBytes` |
+| Code representation | Compiled threaded code | macOS: flat `[Instruction]`; Embedded: `FunctionHandle` (byte range + pre-computed `[JumpEntry]`) |
+| Control flow representation | Nested function calls | Flat bytecode + jump offsets (Phase 1.5); Embedded uses byte-offset `ip` + monotonic `jumpCursor` |
 | Memory management | Manual (`malloc` / `realloc`) | `[UInt8]` (dynamic; fixed buffer planned for Phase 5) |
 | Thread safety | None | Single-threaded `struct` (`actor` not supported in Embedded) |
 | Ownership | Pointer-based pseudo-management (`IM3Runtime*`) | `struct` + value semantics |

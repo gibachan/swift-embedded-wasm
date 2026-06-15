@@ -9,7 +9,19 @@
       "Bash(make build *)",
       "Bash(make clean *)",
       "Bash(wasm-objdump *)",
-      "Bash(rm -rf build)"
+      "Bash(rm -rf build)",
+      "Bash(git stash *)",
+      "Bash(git checkout *)",
+      "Bash(git -C /Users/tatsuyuki/src/swift/swift-embedded-wasm status --short)",
+      "Bash(grep -E \"passed\\\\.$|failed\\\\.$|All tests\")",
+      "Bash(python3 *)",
+      "Bash(awk -F'0x' '{print \"0x\"$2}')",
+      "Bash(tee /tmp/test_output.txt)",
+      "Bash(kill %1)",
+      "Read(//tmp/**)",
+      "Bash(git -C /Users/tatsuyuki/src/swift/swift-embedded-wasm diff Sources/WasmRuntime/WasmInterpreter.swift)",
+      "Bash(git -C /Users/tatsuyuki/src/swift/swift-embedded-wasm stash)",
+      "Bash(git -C /Users/tatsuyuki/src/swift/swift-embedded-wasm stash pop)"
     ]
   }
 }

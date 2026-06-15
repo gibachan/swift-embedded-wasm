@@ -78,7 +78,9 @@ Even in the macOS phase, implement to match Embedded Swift constraints from the 
 - Do not create intermediate copies in hot paths (e.g., `Array(xxx.suffix(n))`)
 - Do not use `String ==` comparisons (use `[UInt8]` byte comparisons instead)
 - Always use typed throws: `throws(WasmError)`
-- Mark locations where dynamic `Array<T>` allocation is structurally unavoidable (e.g., frame `locals`) with `// TODO: Embedded Phase 5`
+- Mark locations where dynamic `Array<T>` allocation is structurally unavoidable with `// TODO: Embedded Phase 5`
+  - Frame `locals`: in the Embedded path (`WasmInterpreterEmbedded.swift`), locals are stored on the shared `valueStack` (no per-frame `[Value]` allocation). The macOS path still uses `[Value]` locals.
+  - Frame `labels` (`EmbeddedFrame.labels: [Label]`): still `[Label]` in the Embedded path — fixed-buffer replacement is a Phase 5 item.
 - Validation should be omitted in Embedded builds and implemented only for non-Embedded (macOS) via `#if !hasFeature(Embedded)`
 
 ---
