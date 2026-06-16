@@ -192,8 +192,9 @@ The following changes are needed when migrating to the Embedded phase.
   - The `end` opcode pops the top `PendingBlock` and fills in the stored backpatch slots,
     exactly as the recursive version did before returning.
 
-  `parseFlatBodyTracked` (Embedded-only, builds `[JumpEntry]` alongside) still uses the
-  original recursive approach and remains a follow-up item.
+  `parseFlatBodyTracked` (Embedded-only, builds `[JumpEntry]` alongside) was also rewritten
+  iteratively in the same commit (`22f7571`), using the same `[PendingBlock]` approach extended
+  to carry `jumpEntryIdx` and `opcodeByteOffset` for jump-table backpatching.
 
   ```swift
   // Before: recursive — deep nesting → stack overflow
