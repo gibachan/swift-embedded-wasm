@@ -1,5 +1,7 @@
 # swift-embedded-wasm
 
+[![CI](https://github.com/gibachan/swift-embedded-wasm/actions/workflows/ci.yml/badge.svg)](https://github.com/gibachan/swift-embedded-wasm/actions/workflows/ci.yml)
+
 A WebAssembly Runtime implemented in Embedded Swift, targeting Raspberry Pi Pico 2 (RP2350).
 
 Transfer a Wasm binary from an iPhone via BLE — the Embedded Swift Runtime on the Pico executes it dynamically to control GPIO, OLED, and sensors.
