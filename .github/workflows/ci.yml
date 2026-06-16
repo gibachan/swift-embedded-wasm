@@ -15,8 +15,32 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Read Swift version
+        run: echo "SWIFT_VERSION=$(cat .swift-version)" >> $GITHUB_ENV
+
+      - name: Cache Swift toolchain
+        id: cache-toolchain
+        uses: actions/cache@v5
+        with:
+          path: ~/.swiftly
+          key: ${{ runner.os }}-swiftly-${{ env.SWIFT_VERSION }}
+
+      - name: Install swiftly
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          curl -O https://download.swift.org/swiftly/darwin/swiftly.pkg
+          installer -pkg swiftly.pkg -target CurrentUserHomeDirectory
+          ~/.swiftly/bin/swiftly init --quiet-shell-followup
+
+      - name: Install Swift toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: ~/.swiftly/bin/swiftly install ${{ env.SWIFT_VERSION }} --assume-yes
+
+      - name: Add swiftly to PATH
+        run: echo "$HOME/.swiftly/bin" >> $GITHUB_PATH
+
       - name: Cache SwiftPM build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .build
           key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Sources/**/*.swift', 'Tests/**/*.swift') }}
@@ -37,19 +61,18 @@ jobs:
         run: echo "SWIFT_VERSION=$(cat .swift-version)" >> $GITHUB_ENV
 
       - name: Cache Swift toolchain
-        id: cache-toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.local/share/swiftly
           key: ${{ runner.os }}-swiftly-${{ env.SWIFT_VERSION }}
 
-      - name: Setup Swift
-        uses: swift-actions/setup-swift@v2.4.0
+      - name: Install Swift via swiftly
+        uses: vapor/swiftly-action@v0.2.1
         with:
-          swift-version: ${{ env.SWIFT_VERSION }}
+          toolchain: ${{ env.SWIFT_VERSION }}
 
       - name: Cache SwiftPM build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .build
           key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Sources/**/*.swift', 'Tests/**/*.swift') }}
@@ -71,7 +94,7 @@ jobs:
 
       - name: Cache Swift toolchain
         id: cache-toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.swiftly
           key: ${{ runner.os }}-swiftly-${{ env.SWIFT_VERSION }}
