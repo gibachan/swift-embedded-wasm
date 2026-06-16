@@ -349,86 +349,60 @@ enum Instruction: Sendable {
   case unimplemented(UInt8)
 }
 
-// MARK: - Function Body
+// MARK: - Function Handle
+//
+// The code section is stored as zero-copy byte ranges (FunctionHandle) in both Embedded
+// and non-Embedded builds. The on-the-fly interpreter decodes opcodes directly from
+// rawBytes at execution time using the pre-computed jump table for O(1) control-flow
+// target resolution.
 
-struct FunctionBody: Sendable {
-  /// Local variable types declared inside the function (separate from parameters)
-  let locals: [ValueType]
-  let instructions: [Instruction]
-
-  init(locals: [ValueType], instructions: [Instruction]) {
-    self.locals = locals
-    self.instructions = instructions
-  }
+/// One control-flow entry in a function's jump table.
+///
+/// All offsets are absolute byte positions within the WasmModule.rawBytes buffer —
+/// the same coordinate space as the on-the-fly decoder's ip in Phase 4.
+///
+/// Entries are stored in **pre-order** (parent block before its children) so that
+/// Phase 4's on-the-fly decoder can walk the table with a monotonically advancing
+/// integer cursor, advancing by 1 each time it encounters a block/loop/if opcode.
+/// This gives O(1) lookup per control-flow opcode without search.
+///
+/// Semantics by instruction kind:
+///   block:   target1 = byte position of instruction after blockEnd (br-continuation)
+///            target2 = 0 (unused)
+///   loop:    target1 = byte position of first instruction in loop body (br restarts here)
+///            target2 = 0 (unused)
+///   ifElse:  target1 = byte position of else clause start (or endPc if no else)
+///            target2 = byte position of instruction after end (br-continuation)
+struct JumpEntry: Sendable {
+  let instrOffset: UInt32  // absolute byte position of the block/loop/if opcode
+  let target1: UInt32
+  let target2: UInt32
 }
 
-// MARK: - Function Handle (Embedded only)
-//
-// In Embedded Swift builds, the code section is stored as zero-copy byte ranges instead
-// of pre-expanded [Instruction] arrays. This eliminates parse-time heap allocation for
-// instructions — the raw Wasm binary bytes are the sole source of truth.
-//
-// The interpreter lazy-decodes each function body into [Instruction] on first call,
-// reusing the existing parseFlatBody() machinery. This defers allocation to call time
-// and skips it entirely for uncalled functions, reducing module load time and peak memory.
-//
-// Phase 4 goal: replace lazy decode with true on-the-fly decode (no [Instruction] cache).
-
-#if hasFeature(Embedded)
-  /// One control-flow entry in a function's jump table.
-  ///
-  /// All offsets are absolute byte positions within the WasmModule.rawBytes buffer —
-  /// the same coordinate space as the on-the-fly decoder's ip in Phase 4.
-  ///
-  /// Entries are stored in **pre-order** (parent block before its children) so that
-  /// Phase 4's on-the-fly decoder can walk the table with a monotonically advancing
-  /// integer cursor, advancing by 1 each time it encounters a block/loop/if opcode.
-  /// This gives O(1) lookup per control-flow opcode without search.
-  ///
-  /// Semantics by instruction kind:
-  ///   block:   target1 = byte position of instruction after blockEnd (br-continuation)
-  ///            target2 = 0 (unused)
-  ///   loop:    target1 = byte position of first instruction in loop body (br restarts here)
-  ///            target2 = 0 (unused)
-  ///   ifElse:  target1 = byte position of else clause start (or endPc if no else)
-  ///            target2 = byte position of instruction after end (br-continuation)
-  struct JumpEntry: Sendable {
-    let instrOffset: UInt32  // absolute byte position of the block/loop/if opcode
-    let target1: UInt32
-    let target2: UInt32
-  }
-
-  /// A function body descriptor for zero-copy Embedded builds.
-  ///
-  /// Stores only the byte range of the function body within the original Wasm binary,
-  /// plus local variable types needed for frame setup. The interpreter re-parses the
-  /// byte range into [Instruction] on first call (lazy decode).
-  struct FunctionHandle: Sendable {
-    /// Byte offset of the instruction stream start (after local declarations) within
-    /// the Wasm binary buffer passed to WasmParser.init.
-    let codeOffset: UInt32
-    /// Byte length of the instruction stream (from codeOffset to 0x0B end opcode, inclusive).
-    let codeSize: UInt32
-    /// Local variable types declared in this function body (separate from parameters).
-    // TODO: Embedded Phase 4 — replace with fixed-size buffer when malloc is eliminated.
-    let locals: [ValueType]
-    /// True if this function body contains a memory.init (0xFC 0x08) or data.drop (0xFC 0x09)
-    /// instruction. Stored to support the data-count section requirement check without
-    /// needing to fully decode the instruction stream at parse time.
-    let hasBulkMemoryInstruction: Bool
-    /// Jump table mapping each block/loop/if opcode's absolute byte offset to its target
-    /// byte positions within rawBytes. Built at parse time; consumed by the Phase 4
-    /// on-the-fly decoder to resolve br/br_if targets without re-scanning instructions.
-    // TODO: Embedded Phase 4 — replace [JumpEntry] with a fixed-size buffer.
-    let jumpTable: [JumpEntry]
-  }
-#endif
-
-// MARK: - Module Code Storage
-
-// In macOS/non-Embedded builds, the module stores pre-decoded [Instruction] arrays
-// for maximum interpreter throughput (no per-call re-parsing overhead).
-// In Embedded builds, byte ranges are stored and decoded lazily on first call.
+/// A function body descriptor for zero-copy Embedded builds.
+///
+/// Stores only the byte range of the function body within the original Wasm binary,
+/// plus local variable types needed for frame setup. The interpreter re-parses the
+/// byte range into [Instruction] on first call (lazy decode).
+struct FunctionHandle: Sendable {
+  /// Byte offset of the instruction stream start (after local declarations) within
+  /// the Wasm binary buffer passed to WasmParser.init.
+  let codeOffset: UInt32
+  /// Byte length of the instruction stream (from codeOffset to 0x0B end opcode, inclusive).
+  let codeSize: UInt32
+  /// Local variable types declared in this function body (separate from parameters).
+  // TODO: Embedded Phase 4 — replace with fixed-size buffer when malloc is eliminated.
+  let locals: [ValueType]
+  /// True if this function body contains a memory.init (0xFC 0x08) or data.drop (0xFC 0x09)
+  /// instruction. Stored to support the data-count section requirement check without
+  /// needing to fully decode the instruction stream at parse time.
+  let hasBulkMemoryInstruction: Bool
+  /// Jump table mapping each block/loop/if opcode's absolute byte offset to its target
+  /// byte positions within rawBytes. Built at parse time; consumed by the Phase 4
+  /// on-the-fly decoder to resolve br/br_if targets without re-scanning instructions.
+  // TODO: Embedded Phase 4 — replace [JumpEntry] with a fixed-size buffer.
+  let jumpTable: [JumpEntry]
+}
 
 // MARK: - Memory
 
@@ -510,16 +484,8 @@ struct WasmModule: Sendable {
   let memories: [MemoryType]  // Memory section
   let globals: [GlobalDef]  // Global section
   let exports: [Export]  // Export section
-  // Code section: [FunctionBody] in macOS builds (pre-decoded);
-  //               [FunctionHandle] in Embedded builds (zero-copy byte ranges).
-  #if hasFeature(Embedded)
-    let code: [FunctionHandle]
-    /// Original binary bytes retained for lazy instruction decode (FunctionHandle → [Instruction]).
-    // TODO: Embedded Phase 4 — eliminate by decoding on-the-fly without caching [Instruction].
-    let rawBytes: [UInt8]
-  #else
-    let code: [FunctionBody]
-  #endif
+  let code: [FunctionHandle]  // Code section: byte ranges with pre-computed jump tables
+  let rawBytes: [UInt8]  // Original binary buffer retained for on-the-fly instruction decode
   let start: UInt32?  // Start section
   let elements: [ElementSegment]  // Element section
   let data: [DataSegment]  // Data section
@@ -532,85 +498,44 @@ struct WasmModule: Sendable {
   /// Cached at init to avoid re-scanning imports on every call dispatch.
   private let importedFunctionTypeIndices: [UInt32]
 
-  // Two separate inits (rather than #if inside a single parameter list) avoid
-  // SourceKit confusion with conditional compilation inside parameter declarations.
-  #if hasFeature(Embedded)
-    init(
-      types: [FunctionType],
-      imports: [Import] = [],
-      functions: [UInt32],
-      tables: [TableType] = [],
-      memories: [MemoryType],
-      globals: [GlobalDef] = [],
-      exports: [Export],
-      code: [FunctionHandle],
-      start: UInt32? = nil,
-      elements: [ElementSegment] = [],
-      data: [DataSegment] = [],
-      rawBytes: [UInt8]
-    ) {
-      self.types = types
-      self.imports = imports
-      self.functions = functions
-      self.tables = tables
-      self.memories = memories
-      self.globals = globals
-      self.exports = exports
-      self.code = code
-      self.start = start
-      self.elements = elements
-      self.data = data
-      self.rawBytes = rawBytes
+  init(
+    types: [FunctionType],
+    imports: [Import] = [],
+    functions: [UInt32],
+    tables: [TableType] = [],
+    memories: [MemoryType],
+    globals: [GlobalDef] = [],
+    exports: [Export],
+    code: [FunctionHandle],
+    start: UInt32? = nil,
+    elements: [ElementSegment] = [],
+    data: [DataSegment] = [],
+    rawBytes: [UInt8]
+  ) {
+    self.types = types
+    self.imports = imports
+    self.functions = functions
+    self.tables = tables
+    self.memories = memories
+    self.globals = globals
+    self.exports = exports
+    self.code = code
+    self.start = start
+    self.elements = elements
+    self.data = data
+    self.rawBytes = rawBytes
 
-      var count = 0
-      var typeIndices: [UInt32] = []
-      for imp in imports {
-        if case .function(let fi) = imp {
-          typeIndices.append(fi.typeIndex)
-          count += 1
-        }
+    var count = 0
+    var typeIndices: [UInt32] = []
+    for imp in imports {
+      if case .function(let fi) = imp {
+        typeIndices.append(fi.typeIndex)
+        count += 1
       }
-      self.importedFunctionCount = count
-      self.importedFunctionTypeIndices = typeIndices
     }
-  #else
-    init(
-      types: [FunctionType],
-      imports: [Import] = [],
-      functions: [UInt32],
-      tables: [TableType] = [],
-      memories: [MemoryType],
-      globals: [GlobalDef] = [],
-      exports: [Export],
-      code: [FunctionBody],
-      start: UInt32? = nil,
-      elements: [ElementSegment] = [],
-      data: [DataSegment] = []
-    ) {
-      self.types = types
-      self.imports = imports
-      self.functions = functions
-      self.tables = tables
-      self.memories = memories
-      self.globals = globals
-      self.exports = exports
-      self.code = code
-      self.start = start
-      self.elements = elements
-      self.data = data
-
-      var count = 0
-      var typeIndices: [UInt32] = []
-      for imp in imports {
-        if case .function(let fi) = imp {
-          typeIndices.append(fi.typeIndex)
-          count += 1
-        }
-      }
-      self.importedFunctionCount = count
-      self.importedFunctionTypeIndices = typeIndices
-    }
-  #endif
+    self.importedFunctionCount = count
+    self.importedFunctionTypeIndices = typeIndices
+  }
 
   /// Returns the FunctionType for the given function index (including imports).
   /// O(1): uses the cached type index array built at init.

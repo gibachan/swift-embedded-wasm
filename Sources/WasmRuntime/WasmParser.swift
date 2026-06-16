@@ -5,25 +5,33 @@
 //
 // Reference: https://webassembly.github.io/spec/core/binary/modules.html
 
-// Stack entry used by the iterative parseFlatBody to track open block/loop/if scopes
+// Stack entry used by parseFlatBodyTracked to track open block/loop/if scopes
 // without recursive calls.  Each case stores only the values needed for backpatching
 // when the matching `end` (or `else`) byte is encountered.
 //
-// Embedded-safe: no indirect cases, no class storage, plain value enum.
+// No indirect cases, no class storage — plain value enum.
 private enum PendingBlock {
   // A `block` instruction awaiting its `end`; stores the pc of the block header instruction
-  // so that endPc can be backpatched once the body is complete.
-  case block(headerPc: Int, bt: BlockType, brArity: Int, paramCount: Int)
-  // A `loop` instruction: startPc is already baked into the emitted instruction at parse time,
-  // so no backpatch is required at `end`.
+  // so that endPc can be backpatched, plus the jumpTable slot for byte-offset backpatch.
+  case block(
+    headerPc: Int, bt: BlockType, brArity: Int, paramCount: Int,
+    jumpEntryIdx: Int, opcodeByteOffset: UInt32)
+  // A `loop` instruction: startPc and the full JumpEntry are baked in at parse time;
+  // no backpatch is required at `end`.
   case loop
-  // An `if` without an `else` yet; stores the header pc for backpatching both
-  // elsePc and endPc when `else` or `end` is reached.
-  case ifThen(headerPc: Int, bt: BlockType, brArity: Int, paramCount: Int)
+  // An `if` without an `else` yet; stores the header pc and jumpTable slot for
+  // backpatching both elsePc/endPc and the byte-offset targets when `else` or `end` arrives.
+  case ifThen(
+    headerPc: Int, bt: BlockType, brArity: Int, paramCount: Int,
+    jumpEntryIdx: Int, opcodeByteOffset: UInt32)
   // An `if` after `else` has been seen; stores header pc (for ifElse backpatch),
-  // jumpPc (the `.jump` placeholder in the then-path), and elsePc (first instruction
-  // of the else body) for final backpatching at `end`.
-  case ifElse(headerPc: Int, jumpPc: Int, elsePc: Int, bt: BlockType, brArity: Int, paramCount: Int)
+  // jumpPc (the `.jump` placeholder in the then-path), elsePc (first instruction of
+  // the else body), elseByteOffset (byte position for JumpEntry.target1), and the
+  // jumpTable slot for final backpatching at `end`.
+  case ifElse(
+    headerPc: Int, jumpPc: Int, elsePc: Int,
+    bt: BlockType, brArity: Int, paramCount: Int,
+    jumpEntryIdx: Int, opcodeByteOffset: UInt32, elseByteOffset: UInt32)
 }
 
 struct WasmParser {
@@ -86,13 +94,7 @@ struct WasmParser {
     var memories: [MemoryType] = []
     var globals: [GlobalDef] = []
     var exports: [Export] = []
-    // In Embedded builds, code is [FunctionHandle] (zero-copy byte ranges).
-    // In macOS builds, code is [FunctionBody] (pre-decoded [Instruction] arrays).
-    #if hasFeature(Embedded)
-      var code: [FunctionHandle] = []
-    #else
-      var code: [FunctionBody] = []
-    #endif
+    var code: [FunctionHandle] = []
     var start: UInt32? = nil
     var elements: [ElementSegment] = []
     var data: [DataSegment] = []
@@ -146,11 +148,7 @@ struct WasmParser {
       case 7: exports = try parseExportSection()
       case 8: start = try parseStartSection()
       case 9: elements = try parseElementSection()
-      #if hasFeature(Embedded)
-        case 10: code = try parseFunctionHandles()
-      #else
-        case 10: code = try parseCodeSection()
-      #endif
+      case 10: code = try parseFunctionHandles()
       case 11: data = try parseDataSection()
       case 12:
         // Data Count section (§5.5.15): a single u32 that must equal the number of
@@ -182,49 +180,23 @@ struct WasmParser {
     // Use explicit loops instead of nested closures to avoid heap-capturing closures
     // that are not supported in Embedded Swift.
     var hasBulkMemoryInstruction = false
-    #if hasFeature(Embedded)
-      // In Embedded builds, each FunctionHandle pre-scanned for bulk memory opcodes
-      // during parseCodeSection() — use the cached flag directly.
-      for body in code {
-        if body.hasBulkMemoryInstruction {
-          hasBulkMemoryInstruction = true
-          break
-        }
+    for body in code {
+      if body.hasBulkMemoryInstruction {
+        hasBulkMemoryInstruction = true
+        break
       }
-    #else
-      outerLoop: for body in code {
-        for instr in body.instructions {
-          if case .memoryInit(_) = instr {
-            hasBulkMemoryInstruction = true
-            break outerLoop
-          }
-          if case .dataDrop(_) = instr {
-            hasBulkMemoryInstruction = true
-            break outerLoop
-          }
-        }
-      }
-    #endif
+    }
     if hasBulkMemoryInstruction && dataCount == nil {
       throw .dataCountRequired
     }
 
-    #if hasFeature(Embedded)
-      let module = WasmModule(
-        types: types, imports: imports, functions: functions,
-        tables: tables, memories: memories, globals: globals,
-        exports: exports, code: code,
-        start: start, elements: elements, data: data,
-        rawBytes: Array(buffer)
-      )
-    #else
-      let module = WasmModule(
-        types: types, imports: imports, functions: functions,
-        tables: tables, memories: memories, globals: globals,
-        exports: exports, code: code,
-        start: start, elements: elements, data: data
-      )
-    #endif
+    let module = WasmModule(
+      types: types, imports: imports, functions: functions,
+      tables: tables, memories: memories, globals: globals,
+      exports: exports, code: code,
+      start: start, elements: elements, data: data,
+      rawBytes: Array(buffer)
+    )
     #if !hasFeature(Embedded)
       try WasmValidator(module: module).validate()
     #endif
@@ -663,15 +635,16 @@ struct WasmParser {
     return try readU32()
   }
 
-  /// Code section (id=10): array of function bodies
+  /// Code section (id=10): records byte ranges with pre-computed jump tables.
   ///
-  /// Format: [count] ([body_size][local_decls][instructions... end])*
-  ///
-  /// local_decls are run-length encoded as (count, type) pairs.
-  /// Example: "3 i32s and 1 i64" → [(3, i32), (1, i64)]
-  private mutating func parseCodeSection() throws(WasmError) -> [FunctionBody] {
+  /// For each function body: reads local declarations, records the byte offset of the instruction
+  /// stream, advances the stream by calling parseFlatBodyTracked (which builds both the flat
+  /// [Instruction] array and the jump table), then stores the byte range, local types, bulk-memory
+  /// flag, and jump table in a FunctionHandle.
+  // TODO: Phase 5 — replace parseFlatBodyTracked call with a zero-allocation byte skipper.
+  private mutating func parseFunctionHandles() throws(WasmError) -> [FunctionHandle] {
     let count = try readU32()
-    var bodies: [FunctionBody] = []
+    var handles: [FunctionHandle] = []
     for _ in 0..<count {
       let bodySize = try readU32()
 
@@ -680,674 +653,60 @@ struct WasmParser {
       for _ in 0..<localDeclCount {
         let n = try readU32()
         let vt = try readValueType()
-        // Reject malformed files claiming more locals than the body_size can encode.
-        // body_size is an upper bound on bytes in this function body.
         guard n <= bodySize else { throw .unexpectedEnd }
         for _ in 0..<n { locals.append(vt) }
       }
 
-      var instructions: [Instruction] = []
-      _ = try parseFlatBody(into: &instructions)
-      bodies.append(FunctionBody(locals: locals, instructions: instructions))
+      let codeStart = UInt32(stream.offset)
+      var tempInstructions: [Instruction] = []
+      var jumpTable: [JumpEntry] = []
+      try parseFlatBodyTracked(into: &tempInstructions, jumpTable: &jumpTable)
+      let codeEnd = UInt32(stream.offset)
+
+      var hasBulkMemory = false
+      for instr in tempInstructions {
+        switch instr {
+        case .memoryInit: hasBulkMemory = true
+        case .dataDrop: hasBulkMemory = true
+        default: break
+        }
+        if hasBulkMemory { break }
+      }
+
+      handles.append(
+        FunctionHandle(
+          codeOffset: codeStart,
+          codeSize: codeEnd - codeStart,
+          locals: locals,
+          hasBulkMemoryInstruction: hasBulkMemory,
+          jumpTable: jumpTable
+        ))
     }
-    return bodies
+    return handles
   }
 
-  /// Code section (id=10) — Embedded builds: records byte ranges instead of expanding instructions.
+  /// Parses instructions into a flat array, tracking control-flow byte offsets for the jump table.
   ///
-  /// For each function body: reads local declarations, records the byte offset of the instruction
-  /// stream, advances the stream by calling parseFlatBodyTracked (which builds both the flat
-  /// [Instruction] array and the jump table), then stores the byte range, local types, bulk-memory
-  /// flag, and jump table in a FunctionHandle.
-  // TODO: Embedded Phase 4 — replace parseFlatBodyTracked call with a zero-allocation byte skipper.
-  #if hasFeature(Embedded)
-    private mutating func parseFunctionHandles() throws(WasmError) -> [FunctionHandle] {
-      let count = try readU32()
-      var handles: [FunctionHandle] = []
-      for _ in 0..<count {
-        let bodySize = try readU32()
-
-        let localDeclCount = try readU32()
-        var locals: [ValueType] = []
-        for _ in 0..<localDeclCount {
-          let n = try readU32()
-          let vt = try readValueType()
-          guard n <= bodySize else { throw .unexpectedEnd }
-          for _ in 0..<n { locals.append(vt) }
-        }
-
-        let codeStart = UInt32(stream.offset)
-        var tempInstructions: [Instruction] = []
-        var jumpTable: [JumpEntry] = []
-        _ = try parseFlatBodyTracked(into: &tempInstructions, jumpTable: &jumpTable)
-        let codeEnd = UInt32(stream.offset)
-
-        var hasBulkMemory = false
-        for instr in tempInstructions {
-          switch instr {
-          case .memoryInit: hasBulkMemory = true
-          case .dataDrop: hasBulkMemory = true
-          default: break
-          }
-          if hasBulkMemory { break }
-        }
-
-        handles.append(
-          FunctionHandle(
-            codeOffset: codeStart,
-            codeSize: codeEnd - codeStart,
-            locals: locals,
-            hasBulkMemoryInstruction: hasBulkMemory,
-            jumpTable: jumpTable
-          ))
-      }
-      return handles
-    }
-
-    /// Jump-table-tracking variant of parseFlatBody (Embedded only).
-    ///
-    /// Identical to parseFlatBody except:
-    ///   1. The absolute byte offset of each opcode is captured before consuming it.
-    ///   2. Recursive calls use parseFlatBodyTracked so nested control flow is also tracked.
-    ///   3. block / loop / if append a JumpEntry to `jumpTable` with absolute byte targets.
-    ///
-    /// All `instrOffset`, `target1`, and `target2` values are absolute positions within the
-    /// original buffer passed to WasmParser.init — the same coordinate space as the Phase 4
-    /// on-the-fly decoder's `ip`.
-    ///
-    /// Returns true if parsing stopped at `else` (0x05), false if stopped at `end` (0x0B).
-    private mutating func parseFlatBodyTracked(
-      into instructions: inout [Instruction],
-      jumpTable: inout [JumpEntry]
-    ) throws(WasmError) -> Bool {
-      while true {
-        // Capture the absolute byte offset of this opcode BEFORE consuming it.
-        // This is the instrOffset stored in JumpEntry for block/loop/if opcodes.
-        let opcodeByteOffset = UInt32(stream.offset)
-        let opcode = try readByte()
-        switch opcode {
-
-        case 0x02:  // block
-          let bt = try readBlockType()
-          let (brArity, paramCount) = try blockArityForBlock(bt)
-          let blockPc = instructions.count
-          // Placeholder; endPc backpatched below.
-          instructions.append(.block(bt, brArity: brArity, paramCount: paramCount, endPc: 0))
-          // Pre-append placeholder so outer block's entry precedes inner blocks' entries
-          // (pre-order). Phase 4's monotonically-advancing cursor requires this ordering.
-          let jumpEntryIdx = jumpTable.count
-          jumpTable.append(JumpEntry(instrOffset: opcodeByteOffset, target1: 0, target2: 0))
-          _ = try parseFlatBodyTracked(into: &instructions, jumpTable: &jumpTable)
-          let blockEndPc = instructions.count
-          instructions.append(.blockEnd)
-          // stream.offset now sits just past the 0x0B end opcode.
-          let endByteOffset = UInt32(stream.offset)
-          instructions[blockPc] = .block(
-            bt, brArity: brArity, paramCount: paramCount, endPc: blockEndPc + 1)
-          // Backpatch: target1 is now known (byte just after the end opcode).
-          jumpTable[jumpEntryIdx] = JumpEntry(
-            instrOffset: opcodeByteOffset, target1: endByteOffset, target2: 0)
-
-        case 0x03:  // loop
-          let bt = try readBlockType()
-          let loopBrArity = try loopBrArityFromBlockType(bt)
-          // stream.offset now points at the first byte of the loop body.
-          // Phase 4 decoder will restart here on a br targeting this loop.
-          let startByteOffset = UInt32(stream.offset)
-          let startPc = instructions.count + 1  // first body instruction follows the loop instr
-          instructions.append(.loop(bt, brArity: loopBrArity, startPc: startPc))
-          // target1 (startByteOffset) is already known before recursion, so the entry can be
-          // fully appended here — no backpatch needed. Placing it before the recursive call
-          // ensures pre-order: this loop's entry precedes any inner blocks' entries.
-          jumpTable.append(
-            JumpEntry(instrOffset: opcodeByteOffset, target1: startByteOffset, target2: 0))
-          _ = try parseFlatBodyTracked(into: &instructions, jumpTable: &jumpTable)
-          instructions.append(.blockEnd)
-
-        case 0x04:  // if [else] end
-          let bt = try readBlockType()
-          let (brArity, paramCount) = try blockArityForBlock(bt)
-          let ifPc = instructions.count
-          // Placeholder; both PCs backpatched below.
-          instructions.append(
-            .ifElse(bt, brArity: brArity, paramCount: paramCount, elsePc: 0, endPc: 0))
-          // Pre-append placeholder BEFORE the first recursive call (then-body) so that
-          // this if's entry precedes any inner blocks in both then-body and else-body (pre-order).
-          let jumpEntryIdx = jumpTable.count
-          jumpTable.append(JumpEntry(instrOffset: opcodeByteOffset, target1: 0, target2: 0))
-
-          let stoppedAtElse = try parseFlatBodyTracked(into: &instructions, jumpTable: &jumpTable)
-
-          if stoppedAtElse {
-            // Has else clause:
-            //   then path: blockEnd pops if label, then jump skips else body
-            //   else path: jumps to elsePc, falls through to elseBlockEnd which pops if label
-            let thenEndPc = instructions.count
-            instructions.append(.blockEnd)
-            _ = thenEndPc  // unused after backpatch; compiler hint only
-            let jumpPc = instructions.count
-            instructions.append(.jump(0))  // placeholder; target backpatched below
-
-            let elsePc = instructions.count
-            // stream.offset is now just after the 0x05 else opcode — first byte of else body.
-            let elseByteOffset = UInt32(stream.offset)
-
-            _ = try parseFlatBodyTracked(into: &instructions, jumpTable: &jumpTable)
-
-            let elseEndPc = instructions.count
-            instructions.append(.blockEnd)
-            // stream.offset is now just after the 0x0B end opcode.
-            let endByteOffset = UInt32(stream.offset)
-            let endPc = instructions.count  // both paths converge here
-
-            instructions[ifPc] = .ifElse(
-              bt, brArity: brArity, paramCount: paramCount, elsePc: elsePc, endPc: endPc)
-            instructions[jumpPc] = .jump(endPc)
-            _ = elseEndPc  // consumed above
-
-            // Backpatch: both elseByteOffset and endByteOffset are now known.
-            // if/else: condition-false → else body; br-continuation → past end.
-            jumpTable[jumpEntryIdx] = JumpEntry(
-              instrOffset: opcodeByteOffset, target1: elseByteOffset, target2: endByteOffset)
-
-          } else {
-            // No else clause: condition-false and br-continuation both land past the end.
-            let blockEndPc = instructions.count
-            instructions.append(.blockEnd)
-            // stream.offset is now just after the 0x0B end opcode.
-            let endByteOffset = UInt32(stream.offset)
-            let endPc = instructions.count  // past blockEnd; br-continuation
-
-            instructions[ifPc] = .ifElse(
-              bt, brArity: brArity, paramCount: paramCount, elsePc: blockEndPc, endPc: endPc)
-            // Backpatch: no else; condition-false jumps directly to endPc byte position.
-            jumpTable[jumpEntryIdx] = JumpEntry(
-              instrOffset: opcodeByteOffset, target1: endByteOffset, target2: endByteOffset)
-          }
-
-        // ── All remaining cases are identical to parseFlatBody ────────────────────────────
-        // The opcodeByteOffset captured above is not used for non-control-flow instructions.
-
-        case 0x00:  // unreachable
-          instructions.append(.unreachable)
-
-        case 0x01:  // nop
-          instructions.append(.nop)
-
-        case 0x05:  // else: terminates the then-body
-          return true
-
-        case 0x0B:  // end: terminates a block or function body
-          return false
-
-        case 0x0C:  // br
-          instructions.append(.br(try readU32()))
-
-        case 0x0D:  // br_if
-          instructions.append(.brIf(try readU32()))
-
-        case 0x0E:  // br_table
-          let count = try readU32()
-          let headerPc = instructions.count
-          instructions.append(.brTable(count: count, default_: 0))  // placeholder; backpatched below
-          for _ in 0..<count {
-            instructions.append(.brTableEntry(try readU32()))
-          }
-          let default_ = try readU32()
-          instructions[headerPc] = .brTable(count: count, default_: default_)  // backpatch
-
-        case 0x0F:  // return
-          instructions.append(.return_)
-
-        case 0x10:  // call
-          instructions.append(.call(try readU32()))
-
-        case 0x11:  // call_indirect: type_idx, table_idx
-          let typeIdx = try readU32()
-          let tableIdx = try readU32()
-          instructions.append(.callIndirect(typeIdx, tableIdx))
-
-        case 0x1A:  // drop
-          instructions.append(.drop)
-
-        case 0x1B:  // select
-          instructions.append(.select)
-
-        case 0x20:  // local.get
-          instructions.append(.localGet(try readU32()))
-
-        case 0x21:  // local.set
-          instructions.append(.localSet(try readU32()))
-
-        case 0x22:  // local.tee
-          instructions.append(.localTee(try readU32()))
-
-        case 0x23:  // global.get
-          instructions.append(.globalGet(try readU32()))
-
-        case 0x24:  // global.set
-          instructions.append(.globalSet(try readU32()))
-
-        case 0x25:  // table.get
-          instructions.append(.tableGet(try readU32()))
-
-        case 0x26:  // table.set
-          instructions.append(.tableSet(try readU32()))
-
-        case 0x28:  // i32.load
-          instructions.append(.i32Load(try readU32(), try readU32()))
-
-        case 0x29:  // i64.load
-          instructions.append(.i64Load(try readU32(), try readU32()))
-
-        case 0x2A:  // f32.load
-          instructions.append(.f32Load(try readU32(), try readU32()))
-
-        case 0x2B:  // f64.load
-          instructions.append(.f64Load(try readU32(), try readU32()))
-
-        case 0x2C:  // i32.load8_s
-          instructions.append(.i32Load8S(try readU32(), try readU32()))
-
-        case 0x2D:  // i32.load8_u
-          instructions.append(.i32Load8U(try readU32(), try readU32()))
-
-        case 0x2E:  // i32.load16_s
-          instructions.append(.i32Load16S(try readU32(), try readU32()))
-
-        case 0x2F:  // i32.load16_u
-          instructions.append(.i32Load16U(try readU32(), try readU32()))
-
-        case 0x30:  // i64.load8_s
-          instructions.append(.i64Load8S(try readU32(), try readU32()))
-
-        case 0x31:  // i64.load8_u
-          instructions.append(.i64Load8U(try readU32(), try readU32()))
-
-        case 0x32:  // i64.load16_s
-          instructions.append(.i64Load16S(try readU32(), try readU32()))
-
-        case 0x33:  // i64.load16_u
-          instructions.append(.i64Load16U(try readU32(), try readU32()))
-
-        case 0x34:  // i64.load32_s
-          instructions.append(.i64Load32S(try readU32(), try readU32()))
-
-        case 0x35:  // i64.load32_u
-          instructions.append(.i64Load32U(try readU32(), try readU32()))
-
-        case 0x36:  // i32.store
-          instructions.append(.i32Store(try readU32(), try readU32()))
-
-        case 0x37:  // i64.store
-          instructions.append(.i64Store(try readU32(), try readU32()))
-
-        case 0x38:  // f32.store
-          instructions.append(.f32Store(try readU32(), try readU32()))
-
-        case 0x39:  // f64.store
-          instructions.append(.f64Store(try readU32(), try readU32()))
-
-        case 0x3A:  // i32.store8
-          instructions.append(.i32Store8(try readU32(), try readU32()))
-
-        case 0x3B:  // i32.store16
-          instructions.append(.i32Store16(try readU32(), try readU32()))
-
-        case 0x3C:  // i64.store8
-          instructions.append(.i64Store8(try readU32(), try readU32()))
-
-        case 0x3D:  // i64.store16
-          instructions.append(.i64Store16(try readU32(), try readU32()))
-
-        case 0x3E:  // i64.store32
-          instructions.append(.i64Store32(try readU32(), try readU32()))
-
-        case 0x3F:  // memory.size (1-byte reserved operand = 0x00)
-          _ = try readByte()
-          instructions.append(.memorySize)
-
-        case 0x40:  // memory.grow (1-byte reserved operand = 0x00)
-          _ = try readByte()
-          instructions.append(.memoryGrow)
-
-        case 0xFC:  // bulk memory / SIMD-saturating-truncate prefix
-          let subOp = try readByte()
-          switch subOp {
-          case 0x00: instructions.append(.i32TruncSatF32S)
-          case 0x01: instructions.append(.i32TruncSatF32U)
-          case 0x02: instructions.append(.i32TruncSatF64S)
-          case 0x03: instructions.append(.i32TruncSatF64U)
-          case 0x04: instructions.append(.i64TruncSatF32S)
-          case 0x05: instructions.append(.i64TruncSatF32U)
-          case 0x06: instructions.append(.i64TruncSatF64S)
-          case 0x07: instructions.append(.i64TruncSatF64U)
-          case 0x08:
-            let segIdx = try readU32()
-            _ = try readByte()  // mem_idx: always 0x00 in MVP (single memory)
-            instructions.append(.memoryInit(segIdx))
-          case 0x09:
-            instructions.append(.dataDrop(try readU32()))
-          case 0x0A:
-            _ = try readByte()  // dst memory index (always 0x00 in MVP)
-            _ = try readByte()  // src memory index (always 0x00 in MVP)
-            instructions.append(.memoryCopy)
-          case 0x0B:
-            _ = try readByte()  // memory index (always 0x00 in MVP)
-            instructions.append(.memoryFill)
-          case 0x0C:
-            let elemIdx = try readU32()
-            let tableIdx = try readU32()
-            instructions.append(.tableInit(elemIdx, tableIdx))
-          case 0x0D:
-            instructions.append(.elemDrop(try readU32()))
-          case 0x0E:
-            let dstTable = try readU32()
-            let srcTable = try readU32()
-            instructions.append(.tableCopy(dstTable, srcTable))
-          case 0x0F:
-            instructions.append(.tableGrow(try readU32()))
-          case 0x10:
-            instructions.append(.tableSize(try readU32()))
-          case 0x11:
-            instructions.append(.tableFill(try readU32()))
-          default:
-            throw .invalidInstruction(0xFC)
-          }
-
-        case 0x41:  // i32.const (signed LEB128)
-          instructions.append(.i32Const(try readI32()))
-
-        case 0x42:  // i64.const (signed LEB128, 64-bit)
-          instructions.append(.i64Const(try readI64()))
-
-        case 0x43:  // f32.const (4 bytes, little-endian IEEE 754)
-          instructions.append(.f32Const(try readF32()))
-
-        case 0x44:  // f64.const (8 bytes, little-endian IEEE 754)
-          instructions.append(.f64Const(try readF64()))
-
-        // f32 comparisons (return i32)
-        case 0x5B: instructions.append(.f32Eq)
-        case 0x5C: instructions.append(.f32Ne)
-        case 0x5D: instructions.append(.f32Lt)
-        case 0x5E: instructions.append(.f32Gt)
-        case 0x5F: instructions.append(.f32Le)
-        case 0x60: instructions.append(.f32Ge)
-
-        // i32 unary
-        case 0x45: instructions.append(.i32Eqz)
-        case 0x67: instructions.append(.i32Clz)
-        case 0x68: instructions.append(.i32Ctz)
-        case 0x69: instructions.append(.i32Popcnt)
-        case 0xC0: instructions.append(.i32Extend8S)
-        case 0xC1: instructions.append(.i32Extend16S)
-
-        // i32 comparisons
-        case 0x46: instructions.append(.i32Eq)
-        case 0x47: instructions.append(.i32Ne)
-        case 0x48: instructions.append(.i32LtS)
-        case 0x49: instructions.append(.i32LtU)
-        case 0x4A: instructions.append(.i32GtS)
-        case 0x4B: instructions.append(.i32GtU)
-        case 0x4C: instructions.append(.i32LeS)
-        case 0x4D: instructions.append(.i32LeU)
-        case 0x4E: instructions.append(.i32GeS)
-        case 0x4F: instructions.append(.i32GeU)
-
-        // i32 arithmetic
-        case 0x6A: instructions.append(.i32Add)
-        case 0x6B: instructions.append(.i32Sub)
-        case 0x6C: instructions.append(.i32Mul)
-        case 0x6D: instructions.append(.i32DivS)
-        case 0x6E: instructions.append(.i32DivU)
-        case 0x6F: instructions.append(.i32RemS)
-        case 0x70: instructions.append(.i32RemU)
-
-        // i32 bitwise
-        case 0x71: instructions.append(.i32And)
-        case 0x72: instructions.append(.i32Or)
-        case 0x73: instructions.append(.i32Xor)
-        case 0x74: instructions.append(.i32Shl)
-        case 0x75: instructions.append(.i32ShrS)
-        case 0x76: instructions.append(.i32ShrU)
-        case 0x77: instructions.append(.i32Rotl)
-        case 0x78: instructions.append(.i32Rotr)
-
-        // f32 unary
-        case 0x8B: instructions.append(.f32Abs)
-        case 0x8C: instructions.append(.f32Neg)
-        case 0x8D: instructions.append(.f32Ceil)
-        case 0x8E: instructions.append(.f32Floor)
-        case 0x8F: instructions.append(.f32Trunc)
-        case 0x90: instructions.append(.f32Nearest)
-        case 0x91: instructions.append(.f32Sqrt)
-
-        // f32 binary arithmetic
-        case 0x92: instructions.append(.f32Add)
-        case 0x93: instructions.append(.f32Sub)
-        case 0x94: instructions.append(.f32Mul)
-        case 0x95: instructions.append(.f32Div)
-        case 0x96: instructions.append(.f32Min)
-        case 0x97: instructions.append(.f32Max)
-        case 0x98: instructions.append(.f32Copysign)
-
-        // i64 unary
-        case 0x50: instructions.append(.i64Eqz)
-        case 0x79: instructions.append(.i64Clz)
-        case 0x7A: instructions.append(.i64Ctz)
-        case 0x7B: instructions.append(.i64Popcnt)
-        case 0xC2: instructions.append(.i64Extend8S)
-        case 0xC3: instructions.append(.i64Extend16S)
-        case 0xC4: instructions.append(.i64Extend32S)
-
-        // i64 comparisons (return i32)
-        case 0x51: instructions.append(.i64Eq)
-        case 0x52: instructions.append(.i64Ne)
-        case 0x53: instructions.append(.i64LtS)
-        case 0x54: instructions.append(.i64LtU)
-        case 0x55: instructions.append(.i64GtS)
-        case 0x56: instructions.append(.i64GtU)
-        case 0x57: instructions.append(.i64LeS)
-        case 0x58: instructions.append(.i64LeU)
-        case 0x59: instructions.append(.i64GeS)
-        case 0x5A: instructions.append(.i64GeU)
-
-        // i64 arithmetic
-        case 0x7C: instructions.append(.i64Add)
-        case 0x7D: instructions.append(.i64Sub)
-        case 0x7E: instructions.append(.i64Mul)
-        case 0x7F: instructions.append(.i64DivS)
-        case 0x80: instructions.append(.i64DivU)
-        case 0x81: instructions.append(.i64RemS)
-        case 0x82: instructions.append(.i64RemU)
-
-        // i64 bitwise
-        case 0x83: instructions.append(.i64And)
-        case 0x84: instructions.append(.i64Or)
-        case 0x85: instructions.append(.i64Xor)
-        case 0x86: instructions.append(.i64Shl)
-        case 0x87: instructions.append(.i64ShrS)
-        case 0x88: instructions.append(.i64ShrU)
-        case 0x89: instructions.append(.i64Rotl)
-        case 0x8A: instructions.append(.i64Rotr)
-
-        case 0xA7: instructions.append(.i32WrapI64)
-        case 0xA8: instructions.append(.i32TruncF32S)
-        case 0xA9: instructions.append(.i32TruncF32U)
-        case 0xAA: instructions.append(.i32TruncF64S)
-        case 0xAB: instructions.append(.i32TruncF64U)
-        case 0xAC: instructions.append(.i64ExtendI32S)
-        case 0xAD: instructions.append(.i64ExtendI32U)
-        case 0xAE: instructions.append(.i64TruncF32S)
-        case 0xAF: instructions.append(.i64TruncF32U)
-        case 0xB0: instructions.append(.i64TruncF64S)
-        case 0xB1: instructions.append(.i64TruncF64U)
-        case 0xB2: instructions.append(.f32ConvertI32S)
-        case 0xB3: instructions.append(.f32ConvertI32U)
-        case 0xB4: instructions.append(.f32ConvertI64S)
-        case 0xB5: instructions.append(.f32ConvertI64U)
-        case 0xB6: instructions.append(.f32DemoteF64)
-        case 0xB7: instructions.append(.f64ConvertI32S)
-        case 0xB8: instructions.append(.f64ConvertI32U)
-        case 0xB9: instructions.append(.f64ConvertI64S)
-        case 0xBA: instructions.append(.f64ConvertI64U)
-        case 0xBB: instructions.append(.f64PromoteF32)
-        case 0xBC: instructions.append(.i32ReinterpretF32)
-        case 0xBD: instructions.append(.i64ReinterpretF64)
-        case 0xBE: instructions.append(.f32ReinterpretI32)
-        case 0xBF: instructions.append(.f64ReinterpretI64)
-
-        // f64 comparisons (return i32)
-        case 0x61: instructions.append(.f64Eq)
-        case 0x62: instructions.append(.f64Ne)
-        case 0x63: instructions.append(.f64Lt)
-        case 0x64: instructions.append(.f64Gt)
-        case 0x65: instructions.append(.f64Le)
-        case 0x66: instructions.append(.f64Ge)
-
-        // f64 unary
-        case 0x99: instructions.append(.f64Abs)
-        case 0x9A: instructions.append(.f64Neg)
-        case 0x9B: instructions.append(.f64Ceil)
-        case 0x9C: instructions.append(.f64Floor)
-        case 0x9D: instructions.append(.f64Trunc)
-        case 0x9E: instructions.append(.f64Nearest)
-        case 0x9F: instructions.append(.f64Sqrt)
-
-        // f64 binary arithmetic
-        case 0xA0: instructions.append(.f64Add)
-        case 0xA1: instructions.append(.f64Sub)
-        case 0xA2: instructions.append(.f64Mul)
-        case 0xA3: instructions.append(.f64Div)
-        case 0xA4: instructions.append(.f64Min)
-        case 0xA5: instructions.append(.f64Max)
-        case 0xA6: instructions.append(.f64Copysign)
-
-        // ref instructions
-        case 0xD0:  // ref.null reftype: [] → [funcref | externref]
-          let reftypeByte = try readByte()
-          guard let refType = RefType(rawValue: reftypeByte) else {
-            throw .invalidRefType(reftypeByte)
-          }
-          instructions.append(.refNull(refType))
-
-        case 0xD1:  // ref.is_null: [funcref] → [i32]
-          instructions.append(.refIsNull)
-
-        case 0xD2:  // ref.func funcIdx: [] → [funcref]
-          instructions.append(.refFunc(try readU32()))
-
-        default:
-          throw .invalidInstruction(opcode)
-        }
-      }
-    }
-  #endif
-
-  /// Data section (id=11): array of initial data segments for linear memory
+  /// Captures the absolute byte offset of each opcode before consuming it, and appends a
+  /// JumpEntry to `jumpTable` for every block/loop/if with the pre-computed byte targets.
   ///
-  /// Supported flags:
-  ///   0 — active, memory 0, i32.const offset expression, data bytes
-  ///   1 — passive: no offset expression; segment is not applied at instantiation
-  ///   2 — active with explicit memory index, i32.const offset expression, data bytes
-  private mutating func parseDataSection() throws(WasmError) -> [DataSegment] {
-    let count = try readU32()
-    var segments: [DataSegment] = []
-    for _ in 0..<count {
-      let flags = try readU32()
-      switch flags {
-      case 0:
-        // Active segment: memory 0 (implicit), constant offset expression, then data bytes.
-        let constOp = try readByte()
-        guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
-        let offset = try readI32()
-        let endOp = try readByte()
-        guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
-        let byteLen = try readU32()
-        var bytes: [UInt8] = []
-        for _ in 0..<byteLen { bytes.append(try readByte()) }
-        segments.append(DataSegment(offset: offset, bytes: bytes))
-      case 1:
-        // Passive segment: no memory index, no offset expression; just raw data bytes.
-        // Not applied at instantiation; used by memory.init / data.drop at runtime.
-        let byteLen = try readU32()
-        var bytes: [UInt8] = []
-        for _ in 0..<byteLen { bytes.append(try readByte()) }
-        segments.append(DataSegment(offset: nil, bytes: bytes))
-      case 2:
-        // Active segment with explicit memory index.
-        _ = try readU32()  // memory index (always 0 in MVP; multi-memory is not supported here)
-        let constOp = try readByte()
-        guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
-        let offset = try readI32()
-        let endOp = try readByte()
-        guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
-        let byteLen = try readU32()
-        var bytes: [UInt8] = []
-        for _ in 0..<byteLen { bytes.append(try readByte()) }
-        segments.append(DataSegment(offset: offset, bytes: bytes))
-      default:
-        throw .unsupportedElementSegment
-      }
-    }
-    return segments
-  }
-
-  // MARK: - Instruction Parsing
-
-  /// Parses instructions into a flat array until `end` (0x0B) or `else` (0x05).
-  /// Returns true if parsing stopped at `else`, false if stopped at `end`.
+  /// All `instrOffset`, `target1`, and `target2` values are absolute positions within the
+  /// original buffer passed to WasmParser.init — the same coordinate space as the
+  /// on-the-fly decoder's `ip`.
   ///
-  /// block/loop/if jump offsets are backpatched into the array once the end positions
-  /// are known, so the entire function body is one contiguous flat [Instruction].
-  ///
-  /// Flat bytecode layout for each construct:
-  ///
-  ///   block:
-  ///     [blockPc] block(bt, endPc)   ← endPc = blockEndPc + 1
-  ///     ... body ...
-  ///     [blockEndPc] blockEnd
-  ///
-  ///   loop:
-  ///     [loopPc] loop(bt, loopPc+1)  ← startPc = first body instruction
-  ///     ... body ...
-  ///     [blockEndPc] blockEnd
-  ///
-  ///   if (no else):
-  ///     [ifPc] ifElse(bt, blockEndPc, blockEndPc+1)
-  ///     ... then body ...
-  ///     [blockEndPc] blockEnd
-  ///
-  ///   if/else:
-  ///     [ifPc] ifElse(bt, elsePc, endPc)
-  ///     ... then body ...
-  ///     [thenEndPc] blockEnd          ← pops if label for then path
-  ///     [jumpPc]    jump(endPc)       ← skips else body
-  ///     [elsePc]    ... else body ...
-  ///     [elseEndPc] blockEnd          ← pops if label for else path
-  ///     [endPc]     ...               ← both paths converge here
-  mutating func parseFlatBody(into instructions: inout [Instruction]) throws(WasmError)
-    -> Bool
-  {
-    // Iterative replacement for the former recursive implementation.
-    //
-    // The old design called parseFlatBody recursively for each block/loop/if body,
-    // which exhausted the Swift call stack on deeply-nested Wasm spec test modules
-    // (SIGBUS / signal 10).  This version maintains an explicit `pending` stack of
-    // PendingBlock entries so that every opcode is handled in a single flat loop.
-    //
-    // Protocol:
-    //   • `case 0x0B` (end) with an empty `pending` stack → function body is done → return false
-    //   • `case 0x05` (else) with an empty `pending` stack → should not occur in a well-formed
-    //     module when called from parseFlatBody at the outermost level; returns true to preserve
-    //     the original caller contract (the Embedded parseFlatBodyTracked still uses that protocol).
-    //
-    // TODO: Embedded — [PendingBlock] is a heap-allocated Array; replace with a fixed-size ring
-    // buffer when targeting Pico (max nesting depth in practice is small).
+  /// Iterative: uses an explicit `pending` stack instead of recursion to avoid Swift call-stack
+  /// overflow on deeply nested control structures (e.g. the `deep` function in block.0.wasm).
+  private mutating func parseFlatBodyTracked(
+    into instructions: inout [Instruction],
+    jumpTable: inout [JumpEntry]
+  ) throws(WasmError) {
+    // TODO: Embedded Phase 5 — replace with a fixed-capacity buffer to avoid heap allocation.
     var pending: [PendingBlock] = []
 
     while true {
+      // Capture the absolute byte offset of this opcode BEFORE consuming it.
+      // This is the instrOffset stored in JumpEntry for block/loop/if opcodes.
+      let opcodeByteOffset = UInt32(stream.offset)
       let opcode = try readByte()
       switch opcode {
 
@@ -1355,94 +714,118 @@ struct WasmParser {
         let bt = try readBlockType()
         let (brArity, paramCount) = try blockArityForBlock(bt)
         let headerPc = instructions.count
-        // Placeholder; endPc is backpatched when matching `end` is processed below.
+        // Placeholder; endPc backpatched on matching `end`.
         instructions.append(.block(bt, brArity: brArity, paramCount: paramCount, endPc: 0))
-        pending.append(.block(headerPc: headerPc, bt: bt, brArity: brArity, paramCount: paramCount))
+        // Pre-append placeholder so outer block's entry precedes inner blocks' entries
+        // (pre-order). Phase 4's monotonically-advancing cursor requires this ordering.
+        let jumpEntryIdx = jumpTable.count
+        jumpTable.append(JumpEntry(instrOffset: opcodeByteOffset, target1: 0, target2: 0))
+        pending.append(
+          .block(
+            headerPc: headerPc, bt: bt, brArity: brArity, paramCount: paramCount,
+            jumpEntryIdx: jumpEntryIdx, opcodeByteOffset: opcodeByteOffset))
 
       case 0x03:  // loop
         let bt = try readBlockType()
         let loopBrArity = try loopBrArityFromBlockType(bt)
-        // startPc is the index of the first instruction *after* the loop header,
-        // i.e. the first body instruction.  Baked in at emit time; no backpatch needed.
-        let startPc = instructions.count + 1
+        // stream.offset now points at the first byte of the loop body.
+        // Phase 4 decoder will restart here on a br targeting this loop.
+        let startByteOffset = UInt32(stream.offset)
+        let startPc = instructions.count + 1  // first body instruction follows the loop instr
         instructions.append(.loop(bt, brArity: loopBrArity, startPc: startPc))
+        // target1 (startByteOffset) is already known; the entry is fully written here — no
+        // backpatch needed. Pre-order: this loop's entry precedes any inner blocks' entries.
+        jumpTable.append(
+          JumpEntry(instrOffset: opcodeByteOffset, target1: startByteOffset, target2: 0))
         pending.append(.loop)
 
       case 0x04:  // if [else] end
         let bt = try readBlockType()
         let (brArity, paramCount) = try blockArityForBlock(bt)
         let headerPc = instructions.count
-        // Placeholder; elsePc and endPc are backpatched at `else` / `end` below.
+        // Placeholder; both PCs backpatched on matching `else`/`end`.
         instructions.append(
           .ifElse(bt, brArity: brArity, paramCount: paramCount, elsePc: 0, endPc: 0))
+        // Pre-append placeholder BEFORE the then-body so that this if's entry precedes
+        // any inner blocks in both then-body and else-body (pre-order).
+        let jumpEntryIdx = jumpTable.count
+        jumpTable.append(JumpEntry(instrOffset: opcodeByteOffset, target1: 0, target2: 0))
         pending.append(
-          .ifThen(headerPc: headerPc, bt: bt, brArity: brArity, paramCount: paramCount))
+          .ifThen(
+            headerPc: headerPc, bt: bt, brArity: brArity, paramCount: paramCount,
+            jumpEntryIdx: jumpEntryIdx, opcodeByteOffset: opcodeByteOffset))
 
-      case 0x05:  // else — terminates the then-body, begins the else-body
-        if pending.isEmpty {
-          // Top-level `else` with no open block on our pending stack.
-          // This can only happen when parseFlatBody is called from the outer
-          // recursive protocol (parseFlatBodyTracked still uses that), so we
-          // preserve the original return-true convention here.
-          return true
-        }
-        // Pop the matching ifThen entry.
-        guard case .ifThen(let headerPc, let bt, let brArity, let paramCount) = pending.removeLast()
-        else {
-          // `else` can only legitimately close an `if`; any other pending entry is malformed.
-          throw WasmError.invalidInstruction(0x05)
-        }
-        // Emit blockEnd to close the then-path label, then a jump placeholder that will
-        // skip over the else body once both paths are known.
-        let thenEndPc = instructions.count
-        instructions.append(.blockEnd)
-        _ = thenEndPc  // label for readability; endPc is computed from instructions.count below
+      case 0x05:  // else: closes then-body, opens else-body
+        guard !pending.isEmpty else { throw WasmError.invalidInstruction(0x05) }
+        let top = pending.removeLast()
+        guard
+          case .ifThen(
+            let headerPc, let bt, let brArity, let paramCount,
+            let jumpEntryIdx, let outerByteOffset) = top
+        else { throw WasmError.invalidInstruction(0x05) }
+        _ = headerPc  // used below in ifElse push
+        instructions.append(.blockEnd)  // ends the then-path
         let jumpPc = instructions.count
-        instructions.append(.jump(0))  // placeholder; backpatched when matching `end` is seen
-        let elsePc = instructions.count  // first instruction of the else body
+        instructions.append(.jump(0))  // placeholder; backpatched at matching `end`
+        let elsePc = instructions.count
+        // stream.offset is now just after the 0x05 else opcode — first byte of else body.
+        let elseByteOffset = UInt32(stream.offset)
         pending.append(
           .ifElse(
             headerPc: headerPc, jumpPc: jumpPc, elsePc: elsePc,
-            bt: bt, brArity: brArity, paramCount: paramCount))
+            bt: bt, brArity: brArity, paramCount: paramCount,
+            jumpEntryIdx: jumpEntryIdx, opcodeByteOffset: outerByteOffset,
+            elseByteOffset: elseByteOffset))
 
-      case 0x0B:  // end — terminates the innermost open scope, or the function body
-        if pending.isEmpty {
-          // No open block/loop/if: this `end` terminates the function body.
-          return false
-        }
-        switch pending.removeLast() {
-        case .block(let headerPc, let bt, let brArity, let paramCount):
-          // Backpatch the block header with the pc *past* blockEnd (= br continuation).
+      case 0x0B:  // end: closes a block/loop/if body or the function body
+        guard let top = pending.popLast() else { return }  // function body end
+        switch top {
+        case .block(
+          let headerPc, let bt, let brArity, let paramCount,
+          let jumpEntryIdx, let outerByteOffset):
           let blockEndPc = instructions.count
           instructions.append(.blockEnd)
+          // stream.offset now sits just past the 0x0B end opcode.
+          let endByteOffset = UInt32(stream.offset)
           instructions[headerPc] = .block(
             bt, brArity: brArity, paramCount: paramCount, endPc: blockEndPc + 1)
-
+          jumpTable[jumpEntryIdx] = JumpEntry(
+            instrOffset: outerByteOffset, target1: endByteOffset, target2: 0)
         case .loop:
-          // startPc was baked in at emit time; just close the body.
           instructions.append(.blockEnd)
-
-        case .ifThen(let headerPc, let bt, let brArity, let paramCount):
-          // if without else: the else path jumps directly to blockEnd,
-          // and endPc (br continuation) is one past blockEnd.
+        case .ifThen(
+          let headerPc, let bt, let brArity, let paramCount,
+          let jumpEntryIdx, let outerByteOffset):
+          // No else clause.
+          // target1 = opcodeByteOffset (the `end` byte itself): condition-false jumps here
+          //   so the interpreter executes `end` which pops the if label naturally.
+          // target2 = stream.offset (byte after `end`): br-continuation; handleEmbeddedBranch
+          //   already pops the label, so ip must land past the `end`, not on it.
           let blockEndPc = instructions.count
           instructions.append(.blockEnd)
           let endPc = instructions.count
           instructions[headerPc] = .ifElse(
-            bt, brArity: brArity, paramCount: paramCount,
-            elsePc: blockEndPc, endPc: endPc)
-
-        case .ifElse(let headerPc, let jumpPc, let elsePc, let bt, let brArity, let paramCount):
-          // if/else: close the else body, backpatch both the if header and the then-path jump.
-          let elseEndPc = instructions.count
+            bt, brArity: brArity, paramCount: paramCount, elsePc: blockEndPc, endPc: endPc)
+          jumpTable[jumpEntryIdx] = JumpEntry(
+            instrOffset: outerByteOffset,
+            target1: opcodeByteOffset,
+            target2: UInt32(stream.offset))
+        case .ifElse(
+          let headerPc, let jumpPc, let elsePc, let bt, let brArity, let paramCount,
+          let jumpEntryIdx, let outerByteOffset, let elseByteOffset):
+          // Has else clause: then-path jumps past end; else-path falls through to here.
           instructions.append(.blockEnd)
-          _ = elseEndPc  // consumed; endPc is one past
+          let endByteOffset = UInt32(stream.offset)
           let endPc = instructions.count
           instructions[headerPc] = .ifElse(
-            bt, brArity: brArity, paramCount: paramCount,
-            elsePc: elsePc, endPc: endPc)
+            bt, brArity: brArity, paramCount: paramCount, elsePc: elsePc, endPc: endPc)
           instructions[jumpPc] = .jump(endPc)
+          jumpTable[jumpEntryIdx] = JumpEntry(
+            instrOffset: outerByteOffset, target1: elseByteOffset, target2: endByteOffset)
         }
+
+      // ── All remaining cases (non-control-flow) ───────────────────────────────────────
+      // The opcodeByteOffset captured above is not used for non-control-flow instructions.
 
       case 0x00:  // unreachable
         instructions.append(.unreachable)
@@ -1457,12 +840,6 @@ struct WasmParser {
         instructions.append(.brIf(try readU32()))
 
       case 0x0E:  // br_table
-        // Binary format: count t_0 t_1 ... t_{count-1} default
-        // We must read all count non-default targets before reading default_.
-        // Use backpatching to avoid a temporary [UInt32] allocation:
-        //   1. Emit the header with placeholder default_=0
-        //   2. Emit each brTableEntry as we decode it
-        //   3. Read default_ and backpatch the header
         let count = try readU32()
         let headerPc = instructions.count
         instructions.append(.brTable(count: count, default_: 0))  // placeholder; backpatched below
@@ -1599,45 +976,33 @@ struct WasmParser {
         case 0x06: instructions.append(.i64TruncSatF64S)
         case 0x07: instructions.append(.i64TruncSatF64U)
         case 0x08:
-          // memory.init seg_idx mem_idx
-          // Copies n bytes from a passive data segment into linear memory.
           let segIdx = try readU32()
           _ = try readByte()  // mem_idx: always 0x00 in MVP (single memory)
           instructions.append(.memoryInit(segIdx))
         case 0x09:
-          // data.drop seg_idx
-          // Marks a data segment as dropped (idempotent; frees its bytes per the spec).
           instructions.append(.dataDrop(try readU32()))
         case 0x0A:
-          // memory.copy dst_mem src_mem
           _ = try readByte()  // dst memory index (always 0x00 in MVP)
           _ = try readByte()  // src memory index (always 0x00 in MVP)
           instructions.append(.memoryCopy)
         case 0x0B:
-          // memory.fill dst val n: [dst: i32, val: i32, n: i32] → []
           _ = try readByte()  // memory index (always 0x00 in MVP)
           instructions.append(.memoryFill)
         case 0x0C:
-          // table.init elem_idx table_idx: [dst: i32, src: i32, n: i32] → []
           let elemIdx = try readU32()
           let tableIdx = try readU32()
           instructions.append(.tableInit(elemIdx, tableIdx))
         case 0x0D:
-          // elem.drop elem_idx: [] → []
           instructions.append(.elemDrop(try readU32()))
         case 0x0E:
-          // table.copy dst_table src_table: [dst: i32, src: i32, n: i32] → []
           let dstTable = try readU32()
           let srcTable = try readU32()
           instructions.append(.tableCopy(dstTable, srcTable))
         case 0x0F:
-          // table.grow table_idx: [funcref, i32] → [i32]
           instructions.append(.tableGrow(try readU32()))
         case 0x10:
-          // table.size table_idx: [] → [i32]
           instructions.append(.tableSize(try readU32()))
         case 0x11:
-          // table.fill table_idx: [i32, funcref, i32] → []
           instructions.append(.tableFill(try readU32()))
         default:
           throw .invalidInstruction(0xFC)
@@ -1831,6 +1196,90 @@ struct WasmParser {
       }
     }
   }
+
+  /// Data section (id=11): array of initial data segments for linear memory
+  ///
+  /// Supported flags:
+  ///   0 — active, memory 0, i32.const offset expression, data bytes
+  ///   1 — passive: no offset expression; segment is not applied at instantiation
+  ///   2 — active with explicit memory index, i32.const offset expression, data bytes
+  private mutating func parseDataSection() throws(WasmError) -> [DataSegment] {
+    let count = try readU32()
+    var segments: [DataSegment] = []
+    for _ in 0..<count {
+      let flags = try readU32()
+      switch flags {
+      case 0:
+        // Active segment: memory 0 (implicit), constant offset expression, then data bytes.
+        let constOp = try readByte()
+        guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
+        let offset = try readI32()
+        let endOp = try readByte()
+        guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
+        let byteLen = try readU32()
+        var bytes: [UInt8] = []
+        for _ in 0..<byteLen { bytes.append(try readByte()) }
+        segments.append(DataSegment(offset: offset, bytes: bytes))
+      case 1:
+        // Passive segment: no memory index, no offset expression; just raw data bytes.
+        // Not applied at instantiation; used by memory.init / data.drop at runtime.
+        let byteLen = try readU32()
+        var bytes: [UInt8] = []
+        for _ in 0..<byteLen { bytes.append(try readByte()) }
+        segments.append(DataSegment(offset: nil, bytes: bytes))
+      case 2:
+        // Active segment with explicit memory index.
+        _ = try readU32()  // memory index (always 0 in MVP; multi-memory is not supported here)
+        let constOp = try readByte()
+        guard constOp == 0x41 else { throw .invalidInstruction(constOp) }
+        let offset = try readI32()
+        let endOp = try readByte()
+        guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
+        let byteLen = try readU32()
+        var bytes: [UInt8] = []
+        for _ in 0..<byteLen { bytes.append(try readByte()) }
+        segments.append(DataSegment(offset: offset, bytes: bytes))
+      default:
+        throw .unsupportedElementSegment
+      }
+    }
+    return segments
+  }
+
+  // MARK: - Validation helper (non-Embedded only)
+
+  #if !hasFeature(Embedded)
+    /// Decodes a FunctionHandle's instruction bytes into a flat [Instruction] array.
+    ///
+    /// Used by WasmValidator to iterate instructions for type-checking without storing
+    /// decoded instructions in FunctionHandle (which would double memory usage).
+    ///
+    /// Creates a temporary WasmParser positioned at handle.codeOffset within rawBytes,
+    /// pre-populating the types table needed for block-arity computation.
+    static func decodeInstructions(
+      handle: FunctionHandle,
+      rawBytes: [UInt8],
+      types: [FunctionType]
+    ) throws(WasmError) -> [Instruction] {
+      var instructions: [Instruction] = []
+      var jumpTable: [JumpEntry] = []
+      // withUnsafeBufferPointer is rethrows; catch and rethrow as typed WasmError
+      // to satisfy the typed-throws function signature.
+      do {
+        try rawBytes.withUnsafeBufferPointer { buf in
+          var parser = WasmParser(buf)
+          parser.stream = BufferStream(buf, offset: Int(handle.codeOffset))
+          parser.types = types
+          try parser.parseFlatBodyTracked(into: &instructions, jumpTable: &jumpTable)
+        }
+      } catch let e as WasmError {
+        throw e
+      } catch {
+        fatalError("unexpected error from parseFlatBodyTracked: \(error)")
+      }
+      return instructions
+    }
+  #endif
 
   private mutating func readBlockType() throws(WasmError) -> BlockType {
     // Block types are encoded as signed LEB128 (s33):

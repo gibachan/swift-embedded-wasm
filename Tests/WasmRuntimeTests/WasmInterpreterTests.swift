@@ -32,7 +32,9 @@ struct WasmParserTests {
     #expect(module.code.count == 1)
     #expect(module.code[0].locals.isEmpty)
     // end is a parser terminator and is not stored as an instruction
-    #expect(module.code[0].instructions.count == 3)
+    let instructions = try WasmParser.decodeInstructions(
+      handle: module.code[0], rawBytes: module.rawBytes, types: module.types)
+    #expect(instructions.count == 3)
   }
 
   @Test func parsesMemorySection() throws {
@@ -68,32 +70,34 @@ struct WasmParserTests {
     //  [12] br 1
     //  [13] blockEnd  (end of block)
     //  [14] blockEnd  (end of loop)
-    #expect(body.instructions.count == 15)
-    guard case .loop(_, _, let startPc) = body.instructions[2] else {
+    let instrs = try WasmParser.decodeInstructions(
+      handle: body, rawBytes: module.rawBytes, types: module.types)
+    #expect(instrs.count == 15)
+    guard case .loop(_, _, let startPc) = instrs[2] else {
       Issue.record("Expected loop instruction at index 2")
       return
     }
     #expect(startPc == 3)
-    guard case .block(_, _, _, let endPc) = body.instructions[3] else {
+    guard case .block(_, _, _, let endPc) = instrs[3] else {
       Issue.record("Expected block instruction at index 3")
       return
     }
     #expect(endPc == 14)
-    guard case .brIf(let brIfDepth) = body.instructions[11] else {
+    guard case .brIf(let brIfDepth) = instrs[11] else {
       Issue.record("Expected br_if at index 11")
       return
     }
     #expect(brIfDepth == 0)
-    guard case .br(let brDepth) = body.instructions[12] else {
+    guard case .br(let brDepth) = instrs[12] else {
       Issue.record("Expected br at index 12")
       return
     }
     #expect(brDepth == 1)
-    guard case .blockEnd = body.instructions[13] else {
+    guard case .blockEnd = instrs[13] else {
       Issue.record("Expected blockEnd at index 13")
       return
     }
-    guard case .blockEnd = body.instructions[14] else {
+    guard case .blockEnd = instrs[14] else {
       Issue.record("Expected blockEnd at index 14")
       return
     }

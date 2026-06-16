@@ -32,9 +32,13 @@
           guard Int(fi.typeIndex) < module.types.count else { throw .typeMismatch }
         }
       }
-      for (i, body) in module.code.enumerated() {
+      for (i, handle) in module.code.enumerated() {
         let funcType = module.functionType(at: module.importedFunctionCount + i)
-        var checker = FunctionChecker(module: module, funcType: funcType, body: body)
+        let instructions = try WasmParser.decodeInstructions(
+          handle: handle, rawBytes: module.rawBytes, types: module.types)
+        var checker = FunctionChecker(
+          module: module, funcType: funcType,
+          locals: handle.locals, instructions: instructions)
         try checker.run()
       }
     }
@@ -71,10 +75,13 @@
     /// Populated when processing ifElse; consumed when the IP reaches elsePc.
     var pendingElseFrames: [Int: ControlFrame] = [:]
 
-    init(module: WasmModule, funcType: FunctionType, body: FunctionBody) {
+    init(
+      module: WasmModule, funcType: FunctionType,
+      locals: [ValueType], instructions: [Instruction]
+    ) {
       self.module = module
-      self.allLocals = funcType.params + body.locals
-      self.instructions = body.instructions
+      self.allLocals = funcType.params + locals
+      self.instructions = instructions
       // Implicit outer frame for the function body.
       // br to the function label = return, so labelTypes == resultTypes.
       self.frames = [
