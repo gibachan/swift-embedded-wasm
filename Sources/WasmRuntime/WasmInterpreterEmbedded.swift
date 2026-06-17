@@ -141,6 +141,181 @@ private struct EmbeddedFrame {
   var labels: [Label]  // TODO: Embedded Phase 5 — fixed buffer
 }
 
+// MARK: - WasmInteger generic helpers
+
+// These free functions are called from dispatchEmbedded case bodies.
+// Defining them at module scope (rather than as methods) avoids any `self`-capture
+// concern inside the non-mutating dispatchEmbedded.
+//
+// All functions take an explicit `_: T.Type` as their first parameter so Swift can always
+// infer the concrete type T at the call site without relying on closure-parameter types.
+// This eliminates ambiguity and removes any need to annotate operator closures.
+//
+// All functions are @inline(__always) so the compiler folds them into the call site via
+// monomorphization, keeping the generated code identical to the hand-written i32/i64
+// cases they replace.  No `@inlinable` is needed because all call sites are within the
+// same module.
+
+/// Pop two operands of type T, apply binary `op`, push result.
+///
+/// Used for: add, sub, mul, and, or, xor.
+/// `op` is a non-capturing closure (e.g. `{ a, b in a &+ b }`) so it compiles to a
+/// static function reference in Embedded Swift — no heap allocation.
+@inline(__always)
+func intBinaryOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value], _ op: (T, T) -> T)
+  throws(WasmError)
+{
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = try T.fromValue(stack.removeLast())
+  let a = try T.fromValue(stack.removeLast())
+  stack.append(op(a, b).toValue())
+}
+
+/// Pop two operands of type T, apply unsigned comparison `op`, push i32 result (0 or 1).
+///
+/// Used for: eq, ne, lt_u, gt_u, le_u, ge_u.
+@inline(__always)
+func intCmpOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value], _ op: (T, T) -> Bool)
+  throws(WasmError)
+{
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = try T.fromValue(stack.removeLast())
+  let a = try T.fromValue(stack.removeLast())
+  stack.append(.i32(op(a, b) ? 1 : 0))
+}
+
+/// Pop two operands, reinterpret as T.Signed, apply signed comparison `op`, push i32 (0/1).
+///
+/// Used for: lt_s, gt_s, le_s, ge_s.
+@inline(__always)
+func intSignedCmpOp<T: WasmInteger>(
+  _ type: T.Type, _ stack: inout [Value], _ op: (T.Signed, T.Signed) -> Bool
+) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = (try T.fromValue(stack.removeLast())).toSigned()
+  let a = (try T.fromValue(stack.removeLast())).toSigned()
+  stack.append(.i32(op(a, b) ? 1 : 0))
+}
+
+/// eqz: pop T, push i32 1 if zero, else 0.
+@inline(__always)
+func intEqzOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard !stack.isEmpty else { throw WasmError.stackUnderflow }
+  let a = try T.fromValue(stack.removeLast())
+  stack.append(.i32(a == 0 ? 1 : 0))
+}
+
+/// clz/ctz/popcnt: pop T, apply count op (returning Int), push T-width result.
+///
+/// Per Wasm spec, clz/ctz/popcnt on i32 return i32 and on i64 return i64.
+@inline(__always)
+func intCountOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value], _ op: (T) -> Int)
+  throws(WasmError)
+{
+  guard !stack.isEmpty else { throw WasmError.stackUnderflow }
+  let a = try T.fromValue(stack.removeLast())
+  stack.append(T(truncatingIfNeeded: op(a)).toValue())
+}
+
+/// div_s: signed division; traps on /0 and T.Signed.min / -1.
+@inline(__always)
+func intDivS<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = (try T.fromValue(stack.removeLast())).toSigned()
+  let a = (try T.fromValue(stack.removeLast())).toSigned()
+  guard b != 0 else { throw WasmError.divisionByZero }
+  guard !(a == T.Signed.min && b == -1) else { throw WasmError.integerOverflow }
+  stack.append(T.fromSigned(a / b).toValue())
+}
+
+/// div_u: unsigned division; traps on /0.
+@inline(__always)
+func intDivU<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = try T.fromValue(stack.removeLast())
+  let a = try T.fromValue(stack.removeLast())
+  guard b != 0 else { throw WasmError.divisionByZero }
+  stack.append((a / b).toValue())
+}
+
+/// rem_s: signed remainder; traps on /0; returns 0 for T.Signed.min % -1.
+@inline(__always)
+func intRemS<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = (try T.fromValue(stack.removeLast())).toSigned()
+  let a = (try T.fromValue(stack.removeLast())).toSigned()
+  guard b != 0 else { throw WasmError.divisionByZero }
+  let result: T.Signed = a == T.Signed.min && b == -1 ? 0 : a % b
+  stack.append(T.fromSigned(result).toValue())
+}
+
+/// rem_u: unsigned remainder; traps on /0.
+@inline(__always)
+func intRemU<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = try T.fromValue(stack.removeLast())
+  let a = try T.fromValue(stack.removeLast())
+  guard b != 0 else { throw WasmError.divisionByZero }
+  stack.append((a % b).toValue())
+}
+
+/// shl: left shift; shift amount is masked to the bit-width of T.
+@inline(__always)
+func intShl<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = try T.fromValue(stack.removeLast())
+  let a = try T.fromValue(stack.removeLast())
+  let shift = b & T(T.bitWidth - 1)
+  stack.append((a &<< shift).toValue())
+}
+
+/// shr_s: arithmetic (signed) right shift; shift amount masked to bit-width of T.
+@inline(__always)
+func intShrS<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = try T.fromValue(stack.removeLast())
+  let a = (try T.fromValue(stack.removeLast())).toSigned()
+  // T.Signed and T have the same bit-width; mask shift to that width.
+  let shiftU = b & T(T.bitWidth - 1)
+  // Convert the masked shift to T.Signed for the signed right-shift operator.
+  // T.Signed.init(exactly:) would be correct but may not exist; use truncatingIfNeeded
+  // which is safe because shiftU is already in [0, bitWidth-1].
+  let shift = T.Signed(truncatingIfNeeded: shiftU)
+  stack.append(T.fromSigned(a >> shift).toValue())
+}
+
+/// shr_u: logical (unsigned) right shift; shift amount masked to bit-width of T.
+@inline(__always)
+func intShrU<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = try T.fromValue(stack.removeLast())
+  let a = try T.fromValue(stack.removeLast())
+  let shift = b & T(T.bitWidth - 1)
+  stack.append((a &>> shift).toValue())
+}
+
+/// rotl: left rotation; rotation amount masked to bit-width of T.
+@inline(__always)
+func intRotl<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = try T.fromValue(stack.removeLast())
+  let a = try T.fromValue(stack.removeLast())
+  let shift = b & T(T.bitWidth - 1)
+  let result = shift == 0 ? a : (a << shift | a >> (T(T.bitWidth) - shift))
+  stack.append(result.toValue())
+}
+
+/// rotr: right rotation; rotation amount masked to bit-width of T.
+@inline(__always)
+func intRotr<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  let b = try T.fromValue(stack.removeLast())
+  let a = try T.fromValue(stack.removeLast())
+  let shift = b & T(T.bitWidth - 1)
+  let result = shift == 0 ? a : (a >> shift | a << (T(T.bitWidth) - shift))
+  stack.append(result.toValue())
+}
+
 // MARK: - WasmInterpreter Embedded extension
 
 extension WasmInterpreter {
@@ -1202,177 +1377,93 @@ extension WasmInterpreter {
     // MARK: i32 comparisons (0x45-0x4F)
 
     case 0x45:  // i32.eqz
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a == 0 ? 1 : 0))
+      try intEqzOp(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x46:  // i32.eq
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a == b ? 1 : 0))
+      try intCmpOp(UInt32.self, &valueStack) { a, b in a == b }
       frames[fi].ip = nextIp
 
     case 0x47:  // i32.ne
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a != b ? 1 : 0))
+      try intCmpOp(UInt32.self, &valueStack) { a, b in a != b }
       frames[fi].ip = nextIp
 
     case 0x48:  // i32.lt_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a < b ? 1 : 0))
+      try intSignedCmpOp(UInt32.self, &valueStack) { a, b in a < b }
       frames[fi].ip = nextIp
 
     case 0x49:  // i32.lt_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(UInt32(bitPattern: a) < UInt32(bitPattern: b) ? 1 : 0))
+      try intCmpOp(UInt32.self, &valueStack) { a, b in a < b }
       frames[fi].ip = nextIp
 
     case 0x4A:  // i32.gt_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a > b ? 1 : 0))
+      try intSignedCmpOp(UInt32.self, &valueStack) { a, b in a > b }
       frames[fi].ip = nextIp
 
     case 0x4B:  // i32.gt_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(UInt32(bitPattern: a) > UInt32(bitPattern: b) ? 1 : 0))
+      try intCmpOp(UInt32.self, &valueStack) { a, b in a > b }
       frames[fi].ip = nextIp
 
     case 0x4C:  // i32.le_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a <= b ? 1 : 0))
+      try intSignedCmpOp(UInt32.self, &valueStack) { a, b in a <= b }
       frames[fi].ip = nextIp
 
     case 0x4D:  // i32.le_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(UInt32(bitPattern: a) <= UInt32(bitPattern: b) ? 1 : 0))
+      try intCmpOp(UInt32.self, &valueStack) { a, b in a <= b }
       frames[fi].ip = nextIp
 
     case 0x4E:  // i32.ge_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a >= b ? 1 : 0))
+      try intSignedCmpOp(UInt32.self, &valueStack) { a, b in a >= b }
       frames[fi].ip = nextIp
 
     case 0x4F:  // i32.ge_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(UInt32(bitPattern: a) >= UInt32(bitPattern: b) ? 1 : 0))
+      try intCmpOp(UInt32.self, &valueStack) { a, b in a >= b }
       frames[fi].ip = nextIp
 
     // MARK: i64 comparisons (0x50-0x5A)
 
     case 0x50:  // i64.eqz
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a == 0 ? 1 : 0))
+      try intEqzOp(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x51:  // i64.eq
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a == b ? 1 : 0))
+      try intCmpOp(UInt64.self, &valueStack) { a, b in a == b }
       frames[fi].ip = nextIp
 
     case 0x52:  // i64.ne
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a != b ? 1 : 0))
+      try intCmpOp(UInt64.self, &valueStack) { a, b in a != b }
       frames[fi].ip = nextIp
 
     case 0x53:  // i64.lt_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a < b ? 1 : 0))
+      try intSignedCmpOp(UInt64.self, &valueStack) { a, b in a < b }
       frames[fi].ip = nextIp
 
     case 0x54:  // i64.lt_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(UInt64(bitPattern: a) < UInt64(bitPattern: b) ? 1 : 0))
+      try intCmpOp(UInt64.self, &valueStack) { a, b in a < b }
       frames[fi].ip = nextIp
 
     case 0x55:  // i64.gt_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a > b ? 1 : 0))
+      try intSignedCmpOp(UInt64.self, &valueStack) { a, b in a > b }
       frames[fi].ip = nextIp
 
     case 0x56:  // i64.gt_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(UInt64(bitPattern: a) > UInt64(bitPattern: b) ? 1 : 0))
+      try intCmpOp(UInt64.self, &valueStack) { a, b in a > b }
       frames[fi].ip = nextIp
 
     case 0x57:  // i64.le_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a <= b ? 1 : 0))
+      try intSignedCmpOp(UInt64.self, &valueStack) { a, b in a <= b }
       frames[fi].ip = nextIp
 
     case 0x58:  // i64.le_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(UInt64(bitPattern: a) <= UInt64(bitPattern: b) ? 1 : 0))
+      try intCmpOp(UInt64.self, &valueStack) { a, b in a <= b }
       frames[fi].ip = nextIp
 
     case 0x59:  // i64.ge_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a >= b ? 1 : 0))
+      try intSignedCmpOp(UInt64.self, &valueStack) { a, b in a >= b }
       frames[fi].ip = nextIp
 
     case 0x5A:  // i64.ge_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(UInt64(bitPattern: a) >= UInt64(bitPattern: b) ? 1 : 0))
+      try intCmpOp(UInt64.self, &valueStack) { a, b in a >= b }
       frames[fi].ip = nextIp
 
     // MARK: f32 comparisons (0x5B-0x60)
@@ -1478,309 +1569,149 @@ extension WasmInterpreter {
     // MARK: i32 unary / arithmetic / bitwise (0x67-0x78)
 
     case 0x67:  // i32.clz
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(Int32(UInt32(bitPattern: a).leadingZeroBitCount)))
+      try intCountOp(UInt32.self, &valueStack) { $0.leadingZeroBitCount }
       frames[fi].ip = nextIp
 
     case 0x68:  // i32.ctz
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(Int32(UInt32(bitPattern: a).trailingZeroBitCount)))
+      try intCountOp(UInt32.self, &valueStack) { $0.trailingZeroBitCount }
       frames[fi].ip = nextIp
 
     case 0x69:  // i32.popcnt
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(Int32(UInt32(bitPattern: a).nonzeroBitCount)))
+      try intCountOp(UInt32.self, &valueStack) { $0.nonzeroBitCount }
       frames[fi].ip = nextIp
 
     case 0x6A:  // i32.add
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a &+ b))
+      try intBinaryOp(UInt32.self, &valueStack) { a, b in a &+ b }
       frames[fi].ip = nextIp
 
     case 0x6B:  // i32.sub
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a &- b))
+      try intBinaryOp(UInt32.self, &valueStack) { a, b in a &- b }
       frames[fi].ip = nextIp
 
     case 0x6C:  // i32.mul
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a &* b))
+      try intBinaryOp(UInt32.self, &valueStack) { a, b in a &* b }
       frames[fi].ip = nextIp
 
     case 0x6D:  // i32.div_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      guard b != 0 else { throw WasmError.divisionByZero }
-      guard !(a == Int32.min && b == -1) else { throw WasmError.integerOverflow }
-      valueStack.append(.i32(a / b))
+      try intDivS(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x6E:  // i32.div_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      guard b != 0 else { throw WasmError.divisionByZero }
-      valueStack.append(.i32(Int32(bitPattern: UInt32(bitPattern: a) / UInt32(bitPattern: b))))
+      try intDivU(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x6F:  // i32.rem_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      guard b != 0 else { throw WasmError.divisionByZero }
-      valueStack.append(.i32(a == Int32.min && b == -1 ? 0 : a % b))
+      try intRemS(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x70:  // i32.rem_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      guard b != 0 else { throw WasmError.divisionByZero }
-      valueStack.append(.i32(Int32(bitPattern: UInt32(bitPattern: a) % UInt32(bitPattern: b))))
+      try intRemU(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x71:  // i32.and
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a & b))
+      try intBinaryOp(UInt32.self, &valueStack) { a, b in a & b }
       frames[fi].ip = nextIp
 
     case 0x72:  // i32.or
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a | b))
+      try intBinaryOp(UInt32.self, &valueStack) { a, b in a | b }
       frames[fi].ip = nextIp
 
     case 0x73:  // i32.xor
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i32(a ^ b))
+      try intBinaryOp(UInt32.self, &valueStack) { a, b in a ^ b }
       frames[fi].ip = nextIp
 
     case 0x74:  // i32.shl
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift74 = UInt32(bitPattern: b) & 31
-      valueStack.append(.i32(Int32(bitPattern: UInt32(bitPattern: a) << shift74)))
+      try intShl(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x75:  // i32.shr_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift75 = Int32(UInt32(bitPattern: b) & 31)
-      valueStack.append(.i32(a >> shift75))
+      try intShrS(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x76:  // i32.shr_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift76 = UInt32(bitPattern: b) & 31
-      valueStack.append(.i32(Int32(bitPattern: UInt32(bitPattern: a) >> shift76)))
+      try intShrU(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x77:  // i32.rotl
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift77 = UInt32(bitPattern: b) & 31
-      let ua77 = UInt32(bitPattern: a)
-      let result77 = shift77 == 0 ? ua77 : (ua77 << shift77 | ua77 >> (32 - shift77))
-      valueStack.append(.i32(Int32(bitPattern: result77)))
+      try intRotl(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x78:  // i32.rotr
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let b) = valueStack.removeLast(),
-        case .i32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift78 = UInt32(bitPattern: b) & 31
-      let ua78 = UInt32(bitPattern: a)
-      let result78 = shift78 == 0 ? ua78 : (ua78 >> shift78 | ua78 << (32 - shift78))
-      valueStack.append(.i32(Int32(bitPattern: result78)))
+      try intRotr(UInt32.self, &valueStack)
       frames[fi].ip = nextIp
 
     // MARK: i64 unary / arithmetic / bitwise (0x79-0x8A)
 
     case 0x79:  // i64.clz
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      valueStack.append(.i64(Int64(UInt64(bitPattern: a).leadingZeroBitCount)))
+      try intCountOp(UInt64.self, &valueStack) { $0.leadingZeroBitCount }
       frames[fi].ip = nextIp
 
     case 0x7A:  // i64.ctz
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      valueStack.append(.i64(Int64(UInt64(bitPattern: a).trailingZeroBitCount)))
+      try intCountOp(UInt64.self, &valueStack) { $0.trailingZeroBitCount }
       frames[fi].ip = nextIp
 
     case 0x7B:  // i64.popcnt
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      valueStack.append(.i64(Int64(UInt64(bitPattern: a).nonzeroBitCount)))
+      try intCountOp(UInt64.self, &valueStack) { $0.nonzeroBitCount }
       frames[fi].ip = nextIp
 
     case 0x7C:  // i64.add
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i64(a &+ b))
+      try intBinaryOp(UInt64.self, &valueStack) { a, b in a &+ b }
       frames[fi].ip = nextIp
 
     case 0x7D:  // i64.sub
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i64(a &- b))
+      try intBinaryOp(UInt64.self, &valueStack) { a, b in a &- b }
       frames[fi].ip = nextIp
 
     case 0x7E:  // i64.mul
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i64(a &* b))
+      try intBinaryOp(UInt64.self, &valueStack) { a, b in a &* b }
       frames[fi].ip = nextIp
 
     case 0x7F:  // i64.div_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      guard b != 0 else { throw WasmError.divisionByZero }
-      guard !(a == Int64.min && b == -1) else { throw WasmError.integerOverflow }
-      valueStack.append(.i64(a / b))
+      try intDivS(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x80:  // i64.div_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      guard b != 0 else { throw WasmError.divisionByZero }
-      valueStack.append(.i64(Int64(bitPattern: UInt64(bitPattern: a) / UInt64(bitPattern: b))))
+      try intDivU(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x81:  // i64.rem_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      guard b != 0 else { throw WasmError.divisionByZero }
-      valueStack.append(.i64(a == Int64.min && b == -1 ? 0 : a % b))
+      try intRemS(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x82:  // i64.rem_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      guard b != 0 else { throw WasmError.divisionByZero }
-      valueStack.append(.i64(Int64(bitPattern: UInt64(bitPattern: a) % UInt64(bitPattern: b))))
+      try intRemU(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x83:  // i64.and
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i64(a & b))
+      try intBinaryOp(UInt64.self, &valueStack) { a, b in a & b }
       frames[fi].ip = nextIp
 
     case 0x84:  // i64.or
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i64(a | b))
+      try intBinaryOp(UInt64.self, &valueStack) { a, b in a | b }
       frames[fi].ip = nextIp
 
     case 0x85:  // i64.xor
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      valueStack.append(.i64(a ^ b))
+      try intBinaryOp(UInt64.self, &valueStack) { a, b in a ^ b }
       frames[fi].ip = nextIp
 
     case 0x86:  // i64.shl
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift86 = UInt64(bitPattern: b) & 63
-      valueStack.append(.i64(Int64(bitPattern: UInt64(bitPattern: a) << shift86)))
+      try intShl(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x87:  // i64.shr_s
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift87 = Int64(UInt64(bitPattern: b) & 63)
-      valueStack.append(.i64(a >> shift87))
+      try intShrS(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x88:  // i64.shr_u
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift88 = UInt64(bitPattern: b) & 63
-      valueStack.append(.i64(Int64(bitPattern: UInt64(bitPattern: a) >> shift88)))
+      try intShrU(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x89:  // i64.rotl
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift89 = UInt64(bitPattern: b) & 63
-      let ua89 = UInt64(bitPattern: a)
-      let result89 = shift89 == 0 ? ua89 : (ua89 << shift89 | ua89 >> (64 - shift89))
-      valueStack.append(.i64(Int64(bitPattern: result89)))
+      try intRotl(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     case 0x8A:  // i64.rotr
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let b) = valueStack.removeLast(),
-        case .i64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
-      let shift8A = UInt64(bitPattern: b) & 63
-      let ua8A = UInt64(bitPattern: a)
-      let result8A = shift8A == 0 ? ua8A : (ua8A >> shift8A | ua8A << (64 - shift8A))
-      valueStack.append(.i64(Int64(bitPattern: result8A)))
+      try intRotr(UInt64.self, &valueStack)
       frames[fi].ip = nextIp
 
     // MARK: f32 unary / arithmetic (0x8B-0x98)

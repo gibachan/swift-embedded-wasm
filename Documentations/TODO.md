@@ -138,25 +138,40 @@ None of these affect macOS behavior, but they are design issues or potential Emb
   as targets are read, then overwrite the header with the real `default_`.
   All 31,925 spectests pass; Embedded Swift compilation (`armv7em`) succeeds.
 
-- [ ] **Implement `WasmInteger` protocol to unify i32/i64 arithmetic generically**
+- [x] **Implement `WasmInteger` protocol to unify i32/i64 arithmetic generically**
 
-  The adoption plan is documented in `SWIFT_VM_DESIGN.md` Section 9, but currently i32/i64
-  arithmetic, comparison, and bit operations are all implemented individually with near-duplicate code.
+  Implemented in `WasmModule.swift` (protocol + conformances) and `WasmInterpreterEmbedded.swift`
+  (14 generic helper functions).
 
-  Implementing a `WasmInteger` protocol inspired by WasmKit's `RawUnsignedInteger` would reduce
-  duplication and allow the compiler to catch missing cases when new instructions are added.
+  The protocol unifies `UInt32` (i32) and `UInt64` (i64) for generic arithmetic and bitwise
+  operations in the on-the-fly interpreter.  Protocol requirements beyond the original design
+  proposal include `fromValue(_:)` and `toValue()` to bridge between unsigned bit-pattern types
+  and the `Value` enum.
 
   ```swift
+  // Implemented in WasmModule.swift
   protocol WasmInteger: FixedWidthInteger & UnsignedInteger {
       associatedtype Signed: FixedWidthInteger & SignedInteger
       init(bitPattern: Signed)
+      func toSigned() -> Signed
+      static func fromSigned(_ s: Signed) -> Self
+      static func fromValue(_ v: Value) throws(WasmError) -> Self
+      func toValue() -> Value
   }
   extension UInt32: WasmInteger { typealias Signed = Int32 }
   extension UInt64: WasmInteger { typealias Signed = Int64 }
   ```
 
-  Generics use static dispatch (monomorphisation) in Embedded Swift, so this is compatible.
-  However, `@inlinable` is required for calls across module boundaries (see `SWIFT_VM_DESIGN.md` Section 9).
+  14 generic helper functions added to `WasmInterpreterEmbedded.swift`:
+  `intBinaryOp`, `intCmpOp`, `intSignedCmpOp`, `intEqzOp`, `intCountOp`,
+  `intDivS`, `intDivU`, `intRemS`, `intRemU`, `intShl`, `intShrS`, `intShrU`, `intRotl`, `intRotr`.
+
+  All helpers are `@inline(__always)` with non-capturing closures, giving zero allocation in
+  Embedded Swift builds.  44 i32/i64 opcode case bodies in `dispatchEmbedded()` were replaced with
+  generic helper calls; the `switch` cases themselves are retained for exhaustiveness checking.
+
+  `@inlinable` is not required because all call sites are within the same module.
+  If the module is ever split into separate targets, `@inlinable` will need to be added.
 
 ---
 

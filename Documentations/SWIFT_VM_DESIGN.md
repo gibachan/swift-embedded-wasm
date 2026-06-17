@@ -744,23 +744,41 @@ Swift traps on integer overflow and out-of-bounds array access in debug builds.
 In C, these are undefined behaviour that can silently corrupt execution.
 In the UART-only debug environment of the Pico, traps with a clear failure point are invaluable.
 
-### 12.6 Generic Arithmetic Unification via Protocol + Generics (design proposal)
+### 12.6 Generic Arithmetic Unification via `WasmInteger` Protocol (implemented)
 
 Wasm integer arithmetic (`i32`/`i64`) has identical semantics differing only in bit width.
-Inspired by WasmKit's `RawUnsignedInteger` protocol, a `WasmInteger` protocol could unify implementations.
+Inspired by WasmKit's `RawUnsignedInteger` protocol, the `WasmInteger` protocol unifies i32/i64
+arithmetic, comparison, and bit operations in the on-the-fly interpreter (`WasmInterpreterEmbedded.swift`).
 
 ```swift
-// Design proposal (not yet implemented)
+// Implemented in WasmModule.swift
 protocol WasmInteger: FixedWidthInteger & UnsignedInteger {
     associatedtype Signed: FixedWidthInteger & SignedInteger
     init(bitPattern: Signed)
+    func toSigned() -> Signed
+    static func fromSigned(_ s: Signed) -> Self
+    static func fromValue(_ v: Value) throws(WasmError) -> Self
+    func toValue() -> Value
 }
 extension UInt32: WasmInteger { typealias Signed = Int32 }
 extension UInt64: WasmInteger { typealias Signed = Int64 }
 ```
 
-Currently i32/i64 are implemented separately in each `switch` case.
-This will be considered if code size becomes a bottleneck on real Pico hardware.
+`fromValue` and `toValue` bridge between unsigned bit-pattern types and the `Value` enum
+(which stores i32/i64 as their signed counterparts following Wasm convention).
+
+14 generic helper functions in `WasmInterpreterEmbedded.swift` use the protocol:
+`intBinaryOp`, `intCmpOp`, `intSignedCmpOp`, `intEqzOp`, `intCountOp`,
+`intDivS`, `intDivU`, `intRemS`, `intRemU`, `intShl`, `intShrS`, `intShrU`, `intRotl`, `intRotr`.
+
+All helpers carry `@inline(__always)` and use non-capturing closures, so Embedded Swift
+monomorphises them into zero-allocation, zero-overhead call sites. 44 i32/i64 opcode case
+bodies in `dispatchEmbedded()` now delegate to these helpers; the `switch` cases themselves
+are retained for compiler exhaustiveness checking.
+
+`@inlinable` is not required because all call sites are within the same module.
+If the module is ever split into separate targets, `@inlinable` will need to be added to all
+conformances and the helper functions.
 
 ---
 
