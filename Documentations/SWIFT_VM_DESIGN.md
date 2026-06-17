@@ -171,9 +171,10 @@ Goal: catch bad Wasm binaries and implementation bugs early during development.
 
 ### Embedded Build (Pico)
 
-**Validation skipped.**
+**Type validation skipped; resource-limit checks always run.**
 
 - Magic number / version check (always performed in the parser)
+- `WasmLimits` section-count checks (always performed in the parser — throws `WasmError.resourceLimitExceeded` if any section's item count exceeds the fixed-buffer limits defined in `WasmLimits`)
 - No type stack tracking (saves RAM and load time)
 - Assumes trusted input (developer-controlled binaries)
 
@@ -282,10 +283,12 @@ The parser variant `parseFlatBodyTracked()` (Embedded-only, in `WasmParser.swift
 temporary `[Instruction]` array and the `[JumpEntry]` table in a single pass, using the same
 backpatch strategy as `parseFlatBody` for control-flow PCs.
 
-**Note on iterative vs recursive parsing:** `parseFlatBody` was rewritten from recursive to
-iterative (using an explicit `var pending: [PendingBlock]` stack) to prevent native stack overflow
-(SIGBUS / signal 10) on deeply nested Wasm binaries. `parseFlatBodyTracked()` still uses the
-original recursive approach and is a follow-up item for a future phase.
+**Note on iterative parsing:** Both `parseFlatBody` and `parseFlatBodyTracked` are iterative,
+using an explicit `var pending: [PendingBlock]` stack. The original recursive implementations
+caused native stack overflow (SIGBUS / signal 10) on deeply nested Wasm binaries and certain
+crashes on the Pico's 4 KB default stack. Both functions were rewritten iteratively in commit
+`22f7571`. `parseFlatBodyTracked` extends `PendingBlock` with `jumpEntryIdx` and
+`opcodeByteOffset` fields for jump-table backpatching.
 
 ### Phase 4 (implemented): True On-the-Fly Decode
 

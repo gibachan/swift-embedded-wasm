@@ -306,6 +306,7 @@ struct WasmParser {
   /// Format: [count] ([0x60][params][results])*
   private mutating func parseTypeSection() throws(WasmError) -> [FunctionType] {
     let count = try readU32()
+    guard count <= WasmLimits.maxTypes else { throw .resourceLimitExceeded }
     var types: [FunctionType] = []
     for _ in 0..<count {
       // 0x60 is the functype marker byte
@@ -331,6 +332,7 @@ struct WasmParser {
   /// local functions follow after them.
   private mutating func parseImportSection() throws(WasmError) -> [Import] {
     let count = try readU32()
+    guard count <= WasmLimits.maxImports else { throw .resourceLimitExceeded }
     var imports: [Import] = []
     for _ in 0..<count {
       let modLen = try readU32()
@@ -364,6 +366,7 @@ struct WasmParser {
   /// Format: [count] ([reftype][limits])*
   private mutating func parseTableSection() throws(WasmError) -> [TableType] {
     let count = try readU32()
+    guard count <= WasmLimits.maxTables else { throw .resourceLimitExceeded }
     var tables: [TableType] = []
     for _ in 0..<count {
       let refTypeByte = try readByte()
@@ -379,6 +382,7 @@ struct WasmParser {
   /// Memory section (id=5): linear memory definitions
   private mutating func parseMemorySection() throws(WasmError) -> [MemoryType] {
     let count = try readU32()
+    guard count <= WasmLimits.maxMemories else { throw .resourceLimitExceeded }
     var memories: [MemoryType] = []
     for _ in 0..<count {
       let (min, max) = try parseMemoryLimits()
@@ -404,6 +408,7 @@ struct WasmParser {
   /// init_expr is a constant expression followed by end (0x0B).
   private mutating func parseGlobalSection() throws(WasmError) -> [GlobalDef] {
     let count = try readU32()
+    guard count <= WasmLimits.maxGlobals else { throw .resourceLimitExceeded }
     var globals: [GlobalDef] = []
     for _ in 0..<count {
       let vt = try readValueType()
@@ -450,6 +455,7 @@ struct WasmParser {
   ///   7 — declarative, reftype byte, init_expr* list
   private mutating func parseElementSection() throws(WasmError) -> [ElementSegment] {
     let count = try readU32()
+    guard count <= WasmLimits.maxElements else { throw .resourceLimitExceeded }
     var segments: [ElementSegment] = []
     for _ in 0..<count {
       let flags = try readU32()
@@ -603,6 +609,7 @@ struct WasmParser {
   /// Function section (id=3): type index for each local function
   private mutating func parseFunctionSection() throws(WasmError) -> [UInt32] {
     let count = try readU32()
+    guard count <= WasmLimits.maxFunctions else { throw .resourceLimitExceeded }
     var indices: [UInt32] = []
     for _ in 0..<count { indices.append(try readU32()) }
     return indices
@@ -613,6 +620,7 @@ struct WasmParser {
   /// Format: [count] ([name_len][name_bytes][kind][index])*
   private mutating func parseExportSection() throws(WasmError) -> [Export] {
     let count = try readU32()
+    guard count <= WasmLimits.maxExports else { throw .resourceLimitExceeded }
     var exports: [Export] = []
     for _ in 0..<count {
       let nameLen = try readU32()
@@ -644,6 +652,8 @@ struct WasmParser {
   // TODO: Phase 5 — replace parseFlatBodyTracked call with a zero-allocation byte skipper.
   private mutating func parseFunctionHandles() throws(WasmError) -> [FunctionHandle] {
     let count = try readU32()
+    // Check before allocating any FunctionHandle entries to fail fast on oversized modules.
+    guard count <= WasmLimits.maxFunctions else { throw .resourceLimitExceeded }
     var handles: [FunctionHandle] = []
     for _ in 0..<count {
       let bodySize = try readU32()
@@ -1205,6 +1215,7 @@ struct WasmParser {
   ///   2 — active with explicit memory index, i32.const offset expression, data bytes
   private mutating func parseDataSection() throws(WasmError) -> [DataSegment] {
     let count = try readU32()
+    guard count <= WasmLimits.maxData else { throw .resourceLimitExceeded }
     var segments: [DataSegment] = []
     for _ in 0..<count {
       let flags = try readU32()

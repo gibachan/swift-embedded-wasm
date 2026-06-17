@@ -1,5 +1,36 @@
 // Core data types for the Wasm binary parser and interpreter
 
+// MARK: - Module Limits
+
+/// Fixed upper bounds for each section of a WasmModule.
+///
+/// These constants serve two purposes:
+///   1. Parser validation — the parser rejects binaries that exceed these counts with
+///      `WasmError.resourceLimitExceeded`, providing early detection of modules that
+///      cannot run on the Embedded target.
+///   2. Embedded phase migration — when dynamic `Array<T>` fields of `WasmModule` are
+///      replaced with fixed-size buffers (Phase 4 / 5), these constants determine the
+///      tuple or static-buffer dimensions.
+///
+/// Values are sized for typical Embedded use cases (small Wasm binaries of a few KB).
+/// They are intentionally conservative: any binary that fits within these limits will
+/// comfortably run on the RP2350's 520 KB SRAM budget.
+///
+/// Checks are enforced on both macOS and Embedded builds — a binary that exceeds a limit
+/// will not run on Embedded hardware regardless of the host OS, so early detection is
+/// always desirable.
+enum WasmLimits {
+  static let maxTypes: Int = 64  // max number of function signatures
+  static let maxFunctions: Int = 64  // max number of functions
+  static let maxImports: Int = 32  // max number of imports
+  static let maxExports: Int = 32  // max number of exports
+  static let maxGlobals: Int = 32  // max number of global variables
+  static let maxTables: Int = 4  // max number of tables
+  static let maxMemories: Int = 1  // Wasm MVP spec §5.5.8 allows at most 1 memory; also matches the Embedded fixed-buffer limit.
+  static let maxElements: Int = 16  // max number of element segments
+  static let maxData: Int = 16  // max number of data segments
+}
+
 // MARK: - Value Types
 
 enum ValueType: UInt8, Sendable {

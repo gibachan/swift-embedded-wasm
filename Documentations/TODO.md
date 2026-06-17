@@ -58,28 +58,37 @@ The goal is to eliminate dynamic allocation (`Array<T>`) and replace it with fix
   pre-append-then-backpatch strategy that maintains pre-order (parent block before children).
   This ordering allows Phase 4's decoder to advance its jump table cursor monotonically.
 
-- [ ] **Introduce `WasmLimits` fixed upper bounds to eliminate dynamic arrays**
+- [x] **Introduce `WasmLimits` fixed upper bounds to eliminate dynamic arrays**
 
   Currently each field of `WasmModule` is a dynamic array (`[FunctionType]`, `[UInt32]`, `[Export]`, etc.).
   In the Embedded phase, `malloc` is unavailable, so all must be replaced with fixed-size buffers.
 
   ```swift
-  // Example limit constants
+  // Implemented in WasmModule.swift
   enum WasmLimits {
-      static let maxTypes     = 64   // max number of function signatures
-      static let maxFunctions = 64   // max number of functions
-      static let maxImports   = 32   // max number of imports
-      static let maxExports   = 32   // max number of exports
-      static let maxGlobals   = 32   // max number of global variables
-      static let maxTables    = 4    // max number of tables
-      static let maxMemories  = 1    // max number of memories (Wasm MVP: 1 only)
-      static let maxElements  = 16   // max number of element segments
-      static let maxData      = 16   // max number of data segments
+      static let maxTypes: Int     = 64  // max number of function signatures
+      static let maxFunctions: Int = 64  // max number of functions
+      static let maxImports: Int   = 32  // max number of imports
+      static let maxExports: Int   = 32  // max number of exports
+      static let maxGlobals: Int   = 32  // max number of global variables
+      static let maxTables: Int    = 4   // max number of tables
+      static let maxMemories: Int  = 1   // Wasm MVP spec §5.5.8 allows at most 1 memory; also matches the Embedded fixed-buffer limit.
+      static let maxElements: Int  = 16  // max number of element segments
+      static let maxData: Int      = 16  // max number of data segments
   }
   ```
 
-  Change `[FunctionType]` to fixed-length tuples or static buffers via `UnsafeBufferPointer`.
-  Limit values should be tuned to typical Embedded use cases (small Wasm binaries of a few KB).
+  **Implemented (this task):** The `WasmLimits` enum is defined in `WasmModule.swift`.
+  All 10 section parsers in `WasmParser.swift` (Type, Import, Function, Table, Memory, Global,
+  Export, Element, Code, Data) now read the `count` field and immediately check it against the
+  corresponding limit, throwing `WasmError.resourceLimitExceeded` on violation.
+  This check runs on both macOS and Embedded builds, providing early detection of modules that
+  would exceed the Embedded target's fixed-buffer capacity.
+
+  **Not yet done (Phase 4):** The dynamic `Array<T>` fields of `WasmModule` (`types`, `functions`,
+  `imports`, `exports`, `globals`, `tables`, `memories`, `elements`, `data`) are still dynamic arrays.
+  Replacing them with fixed-length buffers using these constants is tracked separately under
+  "Replace `WasmModule` dynamic fields with fixed-length buffers" in Phase 4.
 
 ---
 
