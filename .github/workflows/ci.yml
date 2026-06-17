@@ -22,8 +22,10 @@ jobs:
         id: cache-toolchain
         uses: actions/cache@v5
         with:
-          path: ~/.swiftly
-          key: ${{ runner.os }}-swiftly-${{ env.SWIFT_VERSION }}
+          path: |
+            ~/.swiftly
+            ~/Library/Developer/Toolchains
+          key: ${{ runner.os }}-swiftly-${{ env.SWIFT_VERSION }}-v2
 
       - name: Install swiftly
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
@@ -96,8 +98,10 @@ jobs:
         id: cache-toolchain
         uses: actions/cache@v5
         with:
-          path: ~/.swiftly
-          key: ${{ runner.os }}-swiftly-${{ env.SWIFT_VERSION }}
+          path: |
+            ~/.swiftly
+            ~/Library/Developer/Toolchains
+          key: ${{ runner.os }}-swiftly-${{ env.SWIFT_VERSION }}-v2
 
       - name: Install swiftly
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
