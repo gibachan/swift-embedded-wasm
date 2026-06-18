@@ -59,7 +59,7 @@ Since Embedded Swift cannot heap-allocate closures, use `@convention(c)` functio
 
 ### Hardware Verification
 
-- [ ] **Execute `i32.add` from Wasm and print the result via UART**
+- [x] **Execute `i32.add` from Wasm and print the result via UART**
 
   Target a minimal Wasm function such as:
 

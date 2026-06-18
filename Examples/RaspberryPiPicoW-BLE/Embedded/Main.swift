@@ -176,39 +176,105 @@ func hostSleep(
   sleep_ms(UInt32(clamped))
 }
 
+// Write "result: <v>\n" to UART without using variadic printf.
+// printf is unavailable in Embedded Swift (C variadic functions are not supported).
+// putchar() from pico/stdlib.h is non-variadic and works in Embedded Swift.
+func uartWriteResult(_ v: Int32) {
+    // "result: " encoded as a stack-allocated tuple — no heap allocation.
+    var prefix: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+        (0x72, 0x65, 0x73, 0x75, 0x6C, 0x74, 0x3A, 0x20)  // "result: "
+    withUnsafeBytes(of: &prefix) { ptr in
+        for i in 0..<ptr.count { _ = putchar(Int32(ptr[i])) }
+    }
+    // Use UInt32 for digit extraction to handle Int32.min correctly.
+    // Int32.min negated as Int32 overflows; casting to UInt32 via bitPattern is exact.
+    var u: UInt32
+    if v < 0 {
+        _ = putchar(0x2D)  // '-'
+        u = ~UInt32(bitPattern: v) &+ 1  // two's complement negation, exact for all Int32
+    } else {
+        u = UInt32(bitPattern: v)
+    }
+    // Accumulate decimal digits into a 10-slot tuple (max 10 digits for UInt32).
+    var digits: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    var len = 0
+    if u == 0 {
+        _ = putchar(0x30)  // '0'
+    } else {
+        withUnsafeMutableBytes(of: &digits) { ptr in
+            while u > 0 {
+                ptr[len] = UInt8(u % 10) + 0x30  // '0' = 0x30
+                u /= 10
+                len += 1
+            }
+        }
+        // Print digits in reverse (most significant first).
+        withUnsafeBytes(of: digits) { ptr in
+            var i = len - 1
+            while i >= 0 {
+                _ = putchar(Int32(ptr[i]))
+                i -= 1
+            }
+        }
+    }
+    _ = putchar(0x0A)  // '\n'
+}
+
 // Execute the WASM binary that has been written into the static receive buffer.
-// The WASM module is expected to export a single entry-point function with no
-// parameters, located at the first local function index (after all imports).
-// Host import: env::blink — toggles the LED on for 300 ms then off for 300 ms.
+//
+// Dispatch strategy (in order):
+//   1. If the module exports "add" — call add(3, 4) and print the result via UART.
+//      This exercises the i32-add.wasm demo and verifies i32.add round-trip.
+//   2. If the module exports "run" — call run() with no arguments.
+//      This covers the existing blink/gpio demos.
+//   3. Neither export found — return silently.
+//
+// No String == comparisons: names are compared as [UInt8] via callExport(nameBytes:).
 func executeReceivedWasm() {
     guard wasmRecvLen > 0, let ptr = wasm_recv_buf_ptr() else { return }
     let wasmBuf = UnsafeBufferPointer<UInt8>(start: ptr, count: Int(wasmRecvLen))
     var parser = WasmParser(wasmBuf)
     do throws(WasmError) {
         let module = try parser.parse()
+        // TODO: Embedded Phase 5 — replace [HostImport] with a stack-allocated fixed buffer.
         let hostImports: [HostImport] = [
             .function("env", "blink", hostBlink),
             .function("env", "digitalWrite", hostDigitalWrite),
             .function("env", "digitalRead", hostDigitalRead),
             .function("env", "sleep", hostSleep),
         ]
-        // importedFunctionCount: number of imported functions.
-        // The first local function begins immediately after that index.
         var interp = try WasmInterpreter(module: module, hostImports: hostImports)
-        let runFuncIdx = module.importedFunctionCount
-        let runArgs: [Value] = module.functionType(at: runFuncIdx).params.map { vt in
-            switch vt {
-            case .i32: return .i32(0)
-            case .i64: return .i64(0)
-            case .f32: return .f32(0)
-            case .f64: return .f64(0)
-            case .funcref: return .funcref(nil)
-            case .externref: return .externref(nil)
+
+        // --- Try "add(3, 4)" first (i32-add.wasm) ---
+        // nameBytes literal: "add" = [0x61, 0x64, 0x64].
+        // No String == comparison — byte array passed directly to callExport(nameBytes:).
+        // TODO: Embedded Phase 5 — replace [UInt8] literals with stack-allocated byte tuples.
+        let addName: [UInt8] = [0x61, 0x64, 0x64]  // "add"
+        var calledAdd = false
+        do throws(WasmError) {
+            let result = try interp.callExport(nameBytes: addName, args: [.i32(3), .i32(4)])
+            calledAdd = true
+            if !result.isEmpty, case .i32(let v) = result[0] {
+                uartWriteResult(v)
+            }
+        } catch WasmError.functionNotFound {
+            // "add" export not present — fall through to "run" below.
+        }
+
+        if !calledAdd {
+            // --- Fall back to "run()" (blink/gpio demos) ---
+            // nameBytes literal: "run" = [0x72, 0x75, 0x6E].
+            // TODO: Embedded Phase 5 — replace [UInt8] literal with stack-allocated byte tuple.
+            let runName: [UInt8] = [0x72, 0x75, 0x6E]  // "run"
+            do throws(WasmError) {
+                _ = try interp.callExport(nameBytes: runName, args: [])
+            } catch {
+                // "run" not found or execution error — leave hardware unchanged.
             }
         }
-        _ = try interp.call(functionIndex: runFuncIdx, args: runArgs)
     } catch {
-        // On WASM error, leave the LED unchanged
+        // On WASM error, leave hardware state unchanged
     }
     // Reset transfer state so the next 0xF0 starts fresh
     wasmRecvLen = 0
@@ -218,6 +284,10 @@ func executeReceivedWasm() {
 @main
 struct Main {
     static func main() {
+        // Enable UART/USB stdio output — must be called before any printf().
+        // Declared in pico/stdlib.h (included via BridgingHeader.h).
+        stdio_init_all()
+
         guard cyw43_arch_init() == 0 else { return }
 
         // ── Build the GATT database at runtime ──────────────────────────────

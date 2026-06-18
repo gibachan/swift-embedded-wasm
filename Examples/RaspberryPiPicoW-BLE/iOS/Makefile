@@ -45,7 +45,7 @@ LDFLAGS := \
 
 .PHONY: all clean
 
-all: $(WASM_OUT_DIR)/gpio-blink-swift.wasm
+all: $(WASM_OUT_DIR)/gpio-blink-swift.wasm $(WASM_OUT_DIR)/i32-add.wasm
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -58,5 +58,13 @@ $(WASM_OUT_DIR)/gpio-blink-swift.wasm: $(BUILD_DIR)/gpio-blink-swift.o
 	$(WASM_LD) $(LDFLAGS) --export=run -o $@ $<
 	@echo "✓ $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+# i32-add.wasm
+$(BUILD_DIR)/i32-add.o: i32-add.swift | $(BUILD_DIR)
+	$(SWIFTC) $(SWIFTFLAGS) -module-name I32Add -emit-object -o $@ $<
+
+$(WASM_OUT_DIR)/i32-add.wasm: $(BUILD_DIR)/i32-add.o
+	$(WASM_LD) $(LDFLAGS) --export=add -o $@ $<
+	@echo "✓ $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
+
 clean:
-	rm -rf $(BUILD_DIR) $(WASM_OUT_DIR)/gpio-blink-swift.wasm
+	rm -rf $(BUILD_DIR) $(WASM_OUT_DIR)/gpio-blink-swift.wasm $(WASM_OUT_DIR)/i32-add.wasm

@@ -309,6 +309,49 @@ struct WasmInterpreterTests {
     #expect(r4 == [.i32(0)])
   }
 
+  // MARK: - Hardware Verification (Phase 4)
+  // These tests mirror the exact callExport invocation used in executeReceivedWasm()
+  // on the Pico: callExport("add", [.i32(3), .i32(4)]) should return [.i32(7)].
+  // The "add" export name matches the Swift-compiled i32-add.wasm (gpio-blink-swift iOS demo).
+
+  @Test func callsAddExport_3plus4_returns7() throws {
+    let module = try parseModule("add")
+    var interp = try WasmInterpreter(module: module)
+    let result = try interp.callExport(nameBytes: Array("add".utf8), args: [.i32(3), .i32(4)])
+    #expect(result == [.i32(7)])
+  }
+
+  @Test func addExportWithNegativeInputs() throws {
+    let module = try parseModule("add")
+    var interp = try WasmInterpreter(module: module)
+    #expect(
+      try interp.callExport(nameBytes: Array("add".utf8), args: [.i32(-5), .i32(-3)])
+        == [.i32(-8)])
+    #expect(
+      try interp.callExport(nameBytes: Array("add".utf8), args: [.i32(-10), .i32(3)])
+        == [.i32(-7)])
+  }
+
+  @Test func addExportWrapsOnOverflow() throws {
+    let module = try parseModule("add")
+    var interp = try WasmInterpreter(module: module)
+    // Wasm i32.add uses wrapping arithmetic
+    let result = try interp.callExport(
+      nameBytes: Array("add".utf8), args: [.i32(Int32.max), .i32(1)])
+    #expect(result == [.i32(Int32.min)])
+  }
+
+  @Test func callExportThrowsWhenAddExportAbsent() throws {
+    // A module without "add" export should throw functionNotFound.
+    // This corresponds to the fallback branch in executeReceivedWasm():
+    // when "add" is not found, dispatch falls through to "run".
+    let module = try parseModule("i32-add")  // exports "i32-add", not "add"
+    var interp = try WasmInterpreter(module: module)
+    #expect(throws: WasmError.functionNotFound) {
+      try interp.callExport(nameBytes: Array("add".utf8), args: [.i32(3), .i32(4)])
+    }
+  }
+
   @Test func forwardMutualRecursion() throws {
     // Tests even/odd mutual recursion from forward.0.wasm spectest
     let path = URL(fileURLWithPath: #filePath)
