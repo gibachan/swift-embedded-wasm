@@ -37,9 +37,12 @@
         let funcType = module.functionType(at: module.importedFunctionCount + i)
         let instructions = try WasmParser.decodeInstructions(
           handle: handle, rawBytes: module.rawBytes, types: module.types)
+        // Convert FixedLocals_ValueType to [ValueType] for the macOS-only validator.
+        var localsArr: [ValueType] = []
+        for li in 0..<handle.locals.count { localsArr.append(handle.locals[li]) }
         var checker = FunctionChecker(
           module: module, funcType: funcType,
-          locals: handle.locals, instructions: instructions)
+          locals: localsArr, instructions: instructions)
         try checker.run()
       }
     }

@@ -659,17 +659,26 @@ struct WasmParser {
       let bodySize = try readU32()
 
       let localDeclCount = try readU32()
-      var locals: [ValueType] = []
+      var locals = FixedLocals_ValueType()
       for _ in 0..<localDeclCount {
         let n = try readU32()
         let vt = try readValueType()
         guard n <= bodySize else { throw .unexpectedEnd }
+        // Guard n before Int(n) conversion: on 32-bit RP2350, Int is 32-bit and
+        // Int(n) would overflow if n is large (e.g. malformed UInt32.max).
+        guard n <= UInt32(WasmLimits.maxLocalsPerFunction) else { throw .resourceLimitExceeded }
+        guard locals.count + Int(n) <= WasmLimits.maxLocalsPerFunction else {
+          throw .resourceLimitExceeded
+        }
         for _ in 0..<n { locals.append(vt) }
       }
 
       let codeStart = UInt32(stream.offset)
+      // TODO: Embedded Phase 5 — tempInstructions is heap-allocated per function.
+      // Replace parseFlatBodyTracked with a byte-scanner that detects bulk-memory opcodes
+      // in-line without constructing [Instruction].
       var tempInstructions: [Instruction] = []
-      var jumpTable: [JumpEntry] = []
+      var jumpTable = FixedJumpTable_JumpEntry()
       try parseFlatBodyTracked(into: &tempInstructions, jumpTable: &jumpTable)
       let codeEnd = UInt32(stream.offset)
 
@@ -708,7 +717,7 @@ struct WasmParser {
   /// overflow on deeply nested control structures (e.g. the `deep` function in block.0.wasm).
   private mutating func parseFlatBodyTracked(
     into instructions: inout [Instruction],
-    jumpTable: inout [JumpEntry]
+    jumpTable: inout FixedJumpTable_JumpEntry
   ) throws(WasmError) {
     // TODO: Embedded Phase 5 — replace with a fixed-capacity buffer to avoid heap allocation.
     var pending: [PendingBlock] = []
@@ -728,6 +737,9 @@ struct WasmParser {
         instructions.append(.block(bt, brArity: brArity, paramCount: paramCount, endPc: 0))
         // Pre-append placeholder so outer block's entry precedes inner blocks' entries
         // (pre-order). Phase 4's monotonically-advancing cursor requires this ordering.
+        guard jumpTable.count < WasmLimits.maxJumpEntriesPerFunction else {
+          throw .resourceLimitExceeded
+        }
         let jumpEntryIdx = jumpTable.count
         jumpTable.append(JumpEntry(instrOffset: opcodeByteOffset, target1: 0, target2: 0))
         pending.append(
@@ -745,6 +757,9 @@ struct WasmParser {
         instructions.append(.loop(bt, brArity: loopBrArity, startPc: startPc))
         // target1 (startByteOffset) is already known; the entry is fully written here — no
         // backpatch needed. Pre-order: this loop's entry precedes any inner blocks' entries.
+        guard jumpTable.count < WasmLimits.maxJumpEntriesPerFunction else {
+          throw .resourceLimitExceeded
+        }
         jumpTable.append(
           JumpEntry(instrOffset: opcodeByteOffset, target1: startByteOffset, target2: 0))
         pending.append(.loop)
@@ -758,6 +773,9 @@ struct WasmParser {
           .ifElse(bt, brArity: brArity, paramCount: paramCount, elsePc: 0, endPc: 0))
         // Pre-append placeholder BEFORE the then-body so that this if's entry precedes
         // any inner blocks in both then-body and else-body (pre-order).
+        guard jumpTable.count < WasmLimits.maxJumpEntriesPerFunction else {
+          throw .resourceLimitExceeded
+        }
         let jumpEntryIdx = jumpTable.count
         jumpTable.append(JumpEntry(instrOffset: opcodeByteOffset, target1: 0, target2: 0))
         pending.append(
@@ -1279,7 +1297,7 @@ struct WasmParser {
       for i in 0..<types.count { typesArr.append(types[i]) }
 
       var instructions: [Instruction] = []
-      var jumpTable: [JumpEntry] = []
+      var jumpTable = FixedJumpTable_JumpEntry()
       // withUnsafeBufferPointer is rethrows; catch and rethrow as typed WasmError
       // to satisfy the typed-throws function signature.
       do {

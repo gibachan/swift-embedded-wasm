@@ -34,6 +34,8 @@ enum WasmLimits {
   static let maxValueStackDepth: Int = 256  // max operand stack depth
   static let maxCallDepth: Int = 64  // max call stack depth (call frames)
   static let maxLabelDepth: Int = 32  // max nested block/loop/if depth per frame
+  static let maxLocalsPerFunction: Int = 32  // max declared locals per function body
+  static let maxJumpEntriesPerFunction: Int = 64  // max block/loop/if instructions per function body
 }
 
 // MARK: - Value Types
@@ -154,6 +156,7 @@ struct ElementSegment: Sendable {
 /// performed on every execution of a block/loop/if instruction.
 ///   blockEnd                 — pops the top label (normal fall-through exit)
 ///   jump(pc)                 — unconditional jump (skips the else body in if/else)
+@frozen
 enum Instruction: Sendable {
   case unreachable  // 0x00
   case nop  // 0x01
@@ -427,8 +430,7 @@ struct FunctionHandle: Sendable {
   /// Byte length of the instruction stream (from codeOffset to 0x0B end opcode, inclusive).
   let codeSize: UInt32
   /// Local variable types declared in this function body (separate from parameters).
-  // TODO: Embedded Phase 4 — replace with fixed-size buffer when malloc is eliminated.
-  let locals: [ValueType]
+  let locals: FixedLocals_ValueType
   /// True if this function body contains a memory.init (0xFC 0x08) or data.drop (0xFC 0x09)
   /// instruction. Stored to support the data-count section requirement check without
   /// needing to fully decode the instruction stream at parse time.
@@ -436,8 +438,7 @@ struct FunctionHandle: Sendable {
   /// Jump table mapping each block/loop/if opcode's absolute byte offset to its target
   /// byte positions within rawBytes. Built at parse time; consumed by the Phase 4
   /// on-the-fly decoder to resolve br/br_if targets without re-scanning instructions.
-  // TODO: Embedded Phase 4 — replace [JumpEntry] with a fixed-size buffer.
-  let jumpTable: [JumpEntry]
+  let jumpTable: FixedJumpTable_JumpEntry
 }
 
 // MARK: - Memory
@@ -555,6 +556,16 @@ extension ElementSegment {
 extension DataSegment {
   /// Sentinel used to fill uninitialised slots in Fixed16_DataSegment.
   static var zero: DataSegment { DataSegment(offset: nil, bytes: []) }
+}
+
+extension ValueType {
+  /// Sentinel used to fill uninitialised slots in FixedLocals_ValueType.
+  static var zero: ValueType { .i32 }
+}
+
+extension JumpEntry {
+  /// Sentinel used to fill uninitialised slots in FixedJumpTable_JumpEntry.
+  static var zero: JumpEntry { JumpEntry(instrOffset: 0, target1: 0, target2: 0) }
 }
 
 // MARK: - Fixed-Buffer Types
@@ -1599,6 +1610,336 @@ struct Fixed16_DataSegment {
   #endif
 }
 
+// MARK: FixedLocals_ValueType
+
+/// 32-slot fixed buffer for declared locals in a function body (max WasmLimits.maxLocalsPerFunction = 32).
+///
+/// ValueType is a UInt8 enum — BitwiseCopyable — so we can use withUnsafeBytes for reads.
+/// Built incrementally via append(); no array initialiser because the parser builds it entry-by-entry.
+///
+/// Embedded: storage is 4 × 8-element sub-tuples of ValueType — no malloc.
+/// macOS:    storage is [ValueType] (heap) — keeps struct size manageable.
+struct FixedLocals_ValueType: Sendable {
+  #if hasFeature(Embedded)
+    // ValueType is a UInt8 enum — BitwiseCopyable — withUnsafeBytes is safe for reads.
+    // Direct tuple assignment is used for writes (via setElement).
+    private var s0, s1, s2,
+      s3: (ValueType, ValueType, ValueType, ValueType, ValueType, ValueType, ValueType, ValueType)
+    private var _count: Int
+
+    init() {
+      let z = ValueType.zero
+      let row = (z, z, z, z, z, z, z, z)
+      s0 = row
+      s1 = row
+      s2 = row
+      s3 = row
+      _count = 0
+    }
+
+    var count: Int { _count }
+
+    subscript(index: Int) -> ValueType {
+      precondition(index >= 0 && index < _count)
+      let row = index / 8
+      let col = index % 8
+      return withRow(row) { $0[col] }
+    }
+
+    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<ValueType>) -> R) -> R {
+      switch row {
+      case 0:
+        return withUnsafeBytes(of: s0) {
+          body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
+        }
+      case 1:
+        return withUnsafeBytes(of: s1) {
+          body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
+        }
+      case 2:
+        return withUnsafeBytes(of: s2) {
+          body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
+        }
+      default:
+        return withUnsafeBytes(of: s3) {
+          body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
+        }
+      }
+    }
+
+    // Direct inout assignment — ValueType is BitwiseCopyable (UInt8 enum) so direct
+    // tuple element assignment is correct and avoids any ARC overhead.
+    private mutating func setElement(row: Int, col: Int, value: ValueType) {
+      switch row {
+      case 0:
+        switch col {
+        case 0: s0.0 = value
+        case 1: s0.1 = value
+        case 2: s0.2 = value
+        case 3: s0.3 = value
+        case 4: s0.4 = value
+        case 5: s0.5 = value
+        case 6: s0.6 = value
+        default: s0.7 = value
+        }
+      case 1:
+        switch col {
+        case 0: s1.0 = value
+        case 1: s1.1 = value
+        case 2: s1.2 = value
+        case 3: s1.3 = value
+        case 4: s1.4 = value
+        case 5: s1.5 = value
+        case 6: s1.6 = value
+        default: s1.7 = value
+        }
+      case 2:
+        switch col {
+        case 0: s2.0 = value
+        case 1: s2.1 = value
+        case 2: s2.2 = value
+        case 3: s2.3 = value
+        case 4: s2.4 = value
+        case 5: s2.5 = value
+        case 6: s2.6 = value
+        default: s2.7 = value
+        }
+      default:
+        switch col {
+        case 0: s3.0 = value
+        case 1: s3.1 = value
+        case 2: s3.2 = value
+        case 3: s3.3 = value
+        case 4: s3.4 = value
+        case 5: s3.5 = value
+        case 6: s3.6 = value
+        default: s3.7 = value
+        }
+      }
+    }
+
+    mutating func append(_ e: ValueType) {
+      precondition(_count < 32, "FixedLocals_ValueType overflow")
+      let row = _count / 8
+      let col = _count % 8
+      setElement(row: row, col: col, value: e)
+      _count += 1
+    }
+  #else
+    // macOS: heap-allocated to keep struct size manageable.
+    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
+    private var storage: [ValueType]  // TODO: Embedded Phase 5 — replace with tuple storage
+
+    init() { storage = [] }
+    var count: Int { storage.count }
+    subscript(index: Int) -> ValueType { storage[index] }
+    mutating func append(_ e: ValueType) { storage.append(e) }
+  #endif
+}
+
+// MARK: FixedJumpTable_JumpEntry
+
+/// 64-slot fixed buffer for the jump table of a function body (max WasmLimits.maxJumpEntriesPerFunction = 64).
+///
+/// JumpEntry holds three UInt32 fields — BitwiseCopyable — so withUnsafeBytes is safe for reads.
+/// Needs a mutable subscript setter for backpatching: the parser writes jumpTable[jumpEntryIdx] = JumpEntry(...)
+/// after computing the final target addresses.
+///
+/// Embedded: storage is 8 × 8-element sub-tuples of JumpEntry — no malloc.
+/// macOS:    storage is [JumpEntry] (heap) — keeps struct size manageable.
+struct FixedJumpTable_JumpEntry: Sendable {
+  #if hasFeature(Embedded)
+    // JumpEntry is three UInt32 fields — BitwiseCopyable — withUnsafeBytes is safe for reads.
+    // Direct tuple assignment is used for writes (via setElement).
+    private var s0, s1, s2, s3, s4, s5, s6,
+      s7: (JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry)
+    private var _count: Int
+
+    init() {
+      let z = JumpEntry.zero
+      let row = (z, z, z, z, z, z, z, z)
+      s0 = row
+      s1 = row
+      s2 = row
+      s3 = row
+      s4 = row
+      s5 = row
+      s6 = row
+      s7 = row
+      _count = 0
+    }
+
+    var count: Int { _count }
+
+    subscript(index: Int) -> JumpEntry {
+      get {
+        precondition(index >= 0 && index < _count)
+        let row = index / 8
+        let col = index % 8
+        return withRow(row) { $0[col] }
+      }
+      set {
+        precondition(index >= 0 && index < _count)
+        let row = index / 8
+        let col = index % 8
+        setElement(row: row, col: col, value: newValue)
+      }
+    }
+
+    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<JumpEntry>) -> R) -> R {
+      switch row {
+      case 0:
+        return withUnsafeBytes(of: s0) {
+          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
+        }
+      case 1:
+        return withUnsafeBytes(of: s1) {
+          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
+        }
+      case 2:
+        return withUnsafeBytes(of: s2) {
+          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
+        }
+      case 3:
+        return withUnsafeBytes(of: s3) {
+          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
+        }
+      case 4:
+        return withUnsafeBytes(of: s4) {
+          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
+        }
+      case 5:
+        return withUnsafeBytes(of: s5) {
+          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
+        }
+      case 6:
+        return withUnsafeBytes(of: s6) {
+          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
+        }
+      default:
+        return withUnsafeBytes(of: s7) {
+          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
+        }
+      }
+    }
+
+    // Direct inout assignment — JumpEntry is BitwiseCopyable (three UInt32 fields) so direct
+    // tuple element assignment is correct.
+    private mutating func setElement(row: Int, col: Int, value: JumpEntry) {
+      switch row {
+      case 0:
+        switch col {
+        case 0: s0.0 = value
+        case 1: s0.1 = value
+        case 2: s0.2 = value
+        case 3: s0.3 = value
+        case 4: s0.4 = value
+        case 5: s0.5 = value
+        case 6: s0.6 = value
+        default: s0.7 = value
+        }
+      case 1:
+        switch col {
+        case 0: s1.0 = value
+        case 1: s1.1 = value
+        case 2: s1.2 = value
+        case 3: s1.3 = value
+        case 4: s1.4 = value
+        case 5: s1.5 = value
+        case 6: s1.6 = value
+        default: s1.7 = value
+        }
+      case 2:
+        switch col {
+        case 0: s2.0 = value
+        case 1: s2.1 = value
+        case 2: s2.2 = value
+        case 3: s2.3 = value
+        case 4: s2.4 = value
+        case 5: s2.5 = value
+        case 6: s2.6 = value
+        default: s2.7 = value
+        }
+      case 3:
+        switch col {
+        case 0: s3.0 = value
+        case 1: s3.1 = value
+        case 2: s3.2 = value
+        case 3: s3.3 = value
+        case 4: s3.4 = value
+        case 5: s3.5 = value
+        case 6: s3.6 = value
+        default: s3.7 = value
+        }
+      case 4:
+        switch col {
+        case 0: s4.0 = value
+        case 1: s4.1 = value
+        case 2: s4.2 = value
+        case 3: s4.3 = value
+        case 4: s4.4 = value
+        case 5: s4.5 = value
+        case 6: s4.6 = value
+        default: s4.7 = value
+        }
+      case 5:
+        switch col {
+        case 0: s5.0 = value
+        case 1: s5.1 = value
+        case 2: s5.2 = value
+        case 3: s5.3 = value
+        case 4: s5.4 = value
+        case 5: s5.5 = value
+        case 6: s5.6 = value
+        default: s5.7 = value
+        }
+      case 6:
+        switch col {
+        case 0: s6.0 = value
+        case 1: s6.1 = value
+        case 2: s6.2 = value
+        case 3: s6.3 = value
+        case 4: s6.4 = value
+        case 5: s6.5 = value
+        case 6: s6.6 = value
+        default: s6.7 = value
+        }
+      default:
+        switch col {
+        case 0: s7.0 = value
+        case 1: s7.1 = value
+        case 2: s7.2 = value
+        case 3: s7.3 = value
+        case 4: s7.4 = value
+        case 5: s7.5 = value
+        case 6: s7.6 = value
+        default: s7.7 = value
+        }
+      }
+    }
+
+    mutating func append(_ e: JumpEntry) {
+      precondition(_count < 64, "FixedJumpTable_JumpEntry overflow")
+      let row = _count / 8
+      let col = _count % 8
+      setElement(row: row, col: col, value: e)
+      _count += 1
+    }
+  #else
+    // macOS: heap-allocated to keep struct size manageable.
+    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
+    private var storage: [JumpEntry]  // TODO: Embedded Phase 5 — replace with tuple storage
+
+    init() { storage = [] }
+    var count: Int { storage.count }
+    subscript(index: Int) -> JumpEntry {
+      get { storage[index] }
+      set { storage[index] = newValue }
+    }
+    mutating func append(_ e: JumpEntry) { storage.append(e) }
+  #endif
+}
+
 // MARK: - Module
 
 /// A parsed Wasm module. Data is stored per section.
@@ -1682,6 +2023,7 @@ struct WasmModule: Sendable {
 // MARK: - Runtime Value
 
 /// A value held on the stack or in locals at runtime
+@frozen
 enum Value: Sendable, Equatable {
   case i32(Int32)
   case i64(Int64)

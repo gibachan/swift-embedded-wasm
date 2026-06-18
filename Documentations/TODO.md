@@ -2,293 +2,6 @@
 
 ---
 
-## Phase 1 — Embedded Swift Development Environment
-
-The build toolchain setup, Embedded Swift compilation, and BLE firmware linking have all been verified (`make compile` / `make build` pass).
-The only remaining item is hardware verification.
-
-- [x] **Verify log output over UART**
-
-  Use Pico SDK's `stdio_init_all()` + `printf()` to output a string such as `"Hello from Embedded Swift\n"` via UART (USB CDC) to a host PC.
-  Receiving it in a serial monitor (`screen` / `minicom` etc.) confirms success.
-  This would be the first proof that Embedded Swift code is actually executing on the Pico.
-
----
-
-## Phase 2 — Wasm Binary Parser (for Embedded)
-
-The macOS-phase parser is complete. The following work is needed when porting to an Embedded Swift environment (Pico).
-The goal is to eliminate dynamic allocation (`Array<T>`) and replace it with fixed-size data structures.
-
-- [x] **Zero-copy the Code Section**
-
-  The current implementation expands all instructions into an `Instruction` enum array at parse time, stored as `FunctionBody`.
-  In the Embedded phase, this array allocation becomes a problem; change it to a `FunctionHandle` that stores only the byte range.
-
-  ```swift
-  // Current (macOS phase)
-  struct FunctionBody {
-      let locals: [ValueType]
-      let instructions: [Instruction]  // all instructions expanded at parse time
-  }
-
-  // Implemented (Embedded phase — active in #if hasFeature(Embedded) builds)
-  struct FunctionHandle {
-      let codeOffset: UInt32           // byte offset of instruction stream within rawBytes
-      let codeSize: UInt32             // byte length of instruction stream
-      let locals: [ValueType]          // local variable types (TODO: fixed buffer in Phase 4)
-      let hasBulkMemoryInstruction: Bool
-      let jumpTable: [JumpEntry]       // pre-computed block/loop/if targets (TODO: fixed buffer in Phase 4)
-  }
-
-  struct JumpEntry {
-      let instrOffset: UInt32  // absolute byte position of block/loop/if opcode
-      let target1: UInt32      // block/if: byte after end; loop: first byte of body
-      let target2: UInt32      // ifElse: byte after end (br-continuation); others: 0
-  }
-  ```
-
-  In the current Embedded build, the interpreter lazy-decodes a `[Instruction]` array from the
-  stored byte range on each function call. The jump table is pre-built at parse time and will be
-  consumed by the Phase 4 on-the-fly decoder to resolve `br`/`br_if` targets in O(1) without
-  scanning forward through raw bytes at runtime.
-
-  The `parseFlatBodyTracked()` method in `WasmParser.swift` (Embedded-only) builds both the
-  temporary `[Instruction]` array and the `[JumpEntry]` table in a single pass, using a
-  pre-append-then-backpatch strategy that maintains pre-order (parent block before children).
-  This ordering allows Phase 4's decoder to advance its jump table cursor monotonically.
-
-- [x] **Introduce `WasmLimits` fixed upper bounds to eliminate dynamic arrays**
-
-  Currently each field of `WasmModule` is a dynamic array (`[FunctionType]`, `[UInt32]`, `[Export]`, etc.).
-  In the Embedded phase, `malloc` is unavailable, so all must be replaced with fixed-size buffers.
-
-  ```swift
-  // Implemented in WasmModule.swift
-  enum WasmLimits {
-      static let maxTypes: Int     = 64  // max number of function signatures
-      static let maxFunctions: Int = 64  // max number of functions
-      static let maxImports: Int   = 32  // max number of imports
-      static let maxExports: Int   = 32  // max number of exports
-      static let maxGlobals: Int   = 32  // max number of global variables
-      static let maxTables: Int    = 4   // max number of tables
-      static let maxMemories: Int  = 1   // Wasm MVP spec §5.5.8 allows at most 1 memory; also matches the Embedded fixed-buffer limit.
-      static let maxElements: Int  = 16  // max number of element segments
-      static let maxData: Int      = 16  // max number of data segments
-  }
-  ```
-
-  **Implemented (this task):** The `WasmLimits` enum is defined in `WasmModule.swift`.
-  All 10 section parsers in `WasmParser.swift` (Type, Import, Function, Table, Memory, Global,
-  Export, Element, Code, Data) now read the `count` field and immediately check it against the
-  corresponding limit, throwing `WasmError.resourceLimitExceeded` on violation.
-  This check runs on both macOS and Embedded builds, providing early detection of modules that
-  would exceed the Embedded target's fixed-buffer capacity.
-
-  **Not yet done (Phase 4):** The dynamic `Array<T>` fields of `WasmModule` (`types`, `functions`,
-  `imports`, `exports`, `globals`, `tables`, `memories`, `elements`, `data`) are still dynamic arrays.
-  Replacing them with fixed-length buffers using these constants is tracked separately under
-  "Replace `WasmModule` dynamic fields with fixed-length buffers" in Phase 4.
-
----
-
-## Phase 2.5 — Design Improvements Before Embedded Migration
-
-Items to fix before the Embedded-phase migration, to reduce the migration cost.
-None of these affect macOS behavior, but they are design issues or potential Embedded link errors.
-
-- [x] **Pre-compute `block`/`loop`/`if` arity in the parser and embed in instructions**
-
-  `brArity` and `paramCount` are now pre-computed at parse time by `blockArityForBlock()` and
-  `loopBrArityFromBlockType()` in `WasmParser.swift` and embedded directly in the instruction.
-  The interpreter no longer calls `blockArity()` / `loopBrArity()` or accesses `module.types` at runtime.
-
-  `BlockType` is retained in the enum cases for use by the macOS validator (`WasmValidator`).
-  Parser helpers now throw `WasmError.typeMismatch` for out-of-range type indices instead of
-  returning a silent fallback.
-
-  ```swift
-  // Before: arity computed at runtime on every execution
-  case block(BlockType, Int)              // endPc only
-  case loop(BlockType, Int)              // startPc only
-  case ifElse(BlockType, Int, Int)       // elsePc, endPc only
-
-  // After: parser embeds pre-computed values
-  case block(BlockType, brArity: Int, paramCount: Int, endPc: Int)
-  case loop(BlockType, brArity: Int, startPc: Int)
-  case ifElse(BlockType, brArity: Int, paramCount: Int, elsePc: Int, endPc: Int)
-  ```
-
-  Change is localised to `WasmModule.swift` (Instruction enum), `WasmParser.swift`, and `WasmInterpreter.swift`.
-
-- [x] **Inline `brTable` target array into the flat instruction stream**
-
-  The previous implementation stored `case brTable([UInt32], UInt32)` with a heap-allocated `[UInt32]`.
-  This was replaced with a flat-bytecode scheme:
-
-  ```swift
-  // Current implementation (no malloc required)
-  case brTable(count: UInt32, default_: UInt32)  // followed by count brTableEntry instructions
-  case brTableEntry(UInt32)                       // each target depth
-
-  // At runtime: access targets via instructions[ip + i] instead of labels[i]
-  ```
-
-  The parser uses a backpatch strategy: emit the header with `default_=0`, emit each `brTableEntry`
-  as targets are read, then overwrite the header with the real `default_`.
-  All 31,925 spectests pass; Embedded Swift compilation (`armv7em`) succeeds.
-
-- [x] **Implement `WasmInteger` protocol to unify i32/i64 arithmetic generically**
-
-  Implemented in `WasmModule.swift` (protocol + conformances) and `WasmInterpreterEmbedded.swift`
-  (14 generic helper functions).
-
-  The protocol unifies `UInt32` (i32) and `UInt64` (i64) for generic arithmetic and bitwise
-  operations in the on-the-fly interpreter.  Protocol requirements beyond the original design
-  proposal include `fromValue(_:)` and `toValue()` to bridge between unsigned bit-pattern types
-  and the `Value` enum.
-
-  ```swift
-  // Implemented in WasmModule.swift
-  protocol WasmInteger: FixedWidthInteger & UnsignedInteger {
-      associatedtype Signed: FixedWidthInteger & SignedInteger
-      init(bitPattern: Signed)
-      func toSigned() -> Signed
-      static func fromSigned(_ s: Signed) -> Self
-      static func fromValue(_ v: Value) throws(WasmError) -> Self
-      func toValue() -> Value
-  }
-  extension UInt32: WasmInteger { typealias Signed = Int32 }
-  extension UInt64: WasmInteger { typealias Signed = Int64 }
-  ```
-
-  14 generic helper functions added to `WasmInterpreterEmbedded.swift`:
-  `intBinaryOp`, `intCmpOp`, `intSignedCmpOp`, `intEqzOp`, `intCountOp`,
-  `intDivS`, `intDivU`, `intRemS`, `intRemU`, `intShl`, `intShrS`, `intShrU`, `intRotl`, `intRotr`.
-
-  All helpers are `@inline(__always)` with non-capturing closures, giving zero allocation in
-  Embedded Swift builds.  44 i32/i64 opcode case bodies in `dispatchEmbedded()` were replaced with
-  generic helper calls; the `switch` cases themselves are retained for exhaustiveness checking.
-
-  `@inlinable` is not required because all call sites are within the same module.
-  If the module is ever split into separate targets, `@inlinable` will need to be added.
-
----
-
-## Phase 3 — Wasm Interpreter (for Embedded)
-
-The macOS-phase interpreter is complete (spectest 31,925 pass / 0 fail).
-The following changes are needed when migrating to the Embedded phase.
-
-- [x] **Fix effective address computation for 32-bit targets**
-
-  All 23 memory load/store instruction handlers in `WasmInterpreter.swift` have been updated.
-
-  ```swift
-  // Before (works on macOS but silent wraparound on 32-bit)
-  let ea = Int(UInt32(bitPattern: addr)) &+ Int(offset)
-  guard ea + N <= memory.count else { throw .memoryAccessOutOfBounds }
-
-  // After (correct on 32-bit RP2350 where Int is 32 bits)
-  let ea = UInt64(UInt32(bitPattern: addr)) + UInt64(offset)
-  guard ea + UInt64(N) <= UInt64(memory.count) else { throw .memoryAccessOutOfBounds }
-  let eaInt = Int(ea)
-  ```
-
-  Using `UInt64` for intermediate computation prevents silent wraparound on 32-bit targets.
-
-  Note: bulk memory ops (`memoryFill` / `memoryCopy` / `memoryInit`) still use the old `Int &+`
-  pattern and are marked `[macOS-phase-OK, Embedded-TODO]`. They will be fixed in Phase 5.
-
-- [x] **Fix `parseFlatBody` stack overflow on deeply nested Wasm (SIGBUS / signal 10)**
-
-  The original `parseFlatBody` in `WasmParser.swift` was recursive: each `block` / `loop` / `if`
-  opcode called `parseFlatBody` again for the nested body.  On deeply nested Wasm binaries this
-  caused a native stack overflow (SIGBUS / signal 10 on macOS; certain crash on the Pico's
-  4 KB default stack).
-
-  The fix rewrites `parseFlatBody` as a single-pass iterative loop using an explicit
-  `var pending: [PendingBlock]` stack:
-
-  - Open scopes (`block`, `loop`, `if`) push a `PendingBlock` entry that records the backpatch
-    sites (endPc slot, elsePc slot for `if`).
-  - The outer `while true` loop processes opcodes without any native stack growth.
-  - The `end` opcode pops the top `PendingBlock` and fills in the stored backpatch slots,
-    exactly as the recursive version did before returning.
-
-  `parseFlatBodyTracked` (Embedded-only, builds `[JumpEntry]` alongside) was also rewritten
-  iteratively in the same commit (`22f7571`), using the same `[PendingBlock]` approach extended
-  to carry `jumpEntryIdx` and `opcodeByteOffset` for jump-table backpatching.
-
-  ```swift
-  // Before: recursive — deep nesting → stack overflow
-  case .block:
-      let stoppedAtEnd = try parseFlatBody(into: &instructions) // recursive call
-
-  // After: iterative — pending[] holds open scopes
-  var pending: [PendingBlock] = []
-  while true {
-      let opcode = try stream.consume()
-      switch opcode {
-      case 0x02: // block
-          pending.append(.block(endPcSlot: instructions.count))
-      case 0x0B: // end
-          if pending.isEmpty { return false }  // end of outermost scope
-          let top = pending.removeLast()
-          // backpatch endPc into the recorded slot
-      }
-  }
-  ```
-
-- [x] **Replace `Array<T>` with fixed-size buffers**
-
-  Replace the dynamic arrays used at runtime with fixed-length buffers.
-
-  | Field | Location | Current (Embedded) | Status |
-  |-------|----------|--------------------|--------|
-  | `valueStack` | `WasmInterpreter.swift` | `ValueStack` (256-slot tuple-based) | Complete (Embedded) |
-  | `callStack` | `WasmInterpreter.swift` | `CallStack` (64-slot tuple-based) | Complete (Embedded) |
-  | `EmbeddedFrame.labels` | `WasmInterpreter.swift` | `LabelStack` (32-slot tuple-based) | Complete (Embedded) |
-  | `CallFrame.locals` | `WasmInterpreter.swift` | `[Value]` | macOS path only; Phase 5 |
-  | `tables` | `WasmInterpreter.swift` | `[[Value]]` | Phase 5 (`FlatTableStorage` defined, not yet connected) |
-
-  Note: `droppedDataSegments` and `droppedElementSegments` were `[Bool]` and are now `UInt64` bitmaps (completed).
-
-  **Implemented (Phase 3/4):** Three fixed-size buffer types were added to `WasmInterpreter.swift`:
-
-  - `LabelStack` — unified label stack for `EmbeddedFrame.labels` on both platforms. Embedded
-    stores labels in a 32-element tuple (no malloc); macOS uses `[Label]` (heap) internally.
-    The `#if hasFeature(Embedded)` is encapsulated inside `LabelStack`; call sites are unconditional.
-  - `ValueStack` — 256-slot buffer replacing the Embedded `valueStack: [Value]`
-  - `CallStack` — 64-slot buffer replacing the Embedded `frames: [EmbeddedFrame]`
-  - `FlatTableStorage` — defined only; connection to `tables: [[Value]]` is tracked as `// TODO: Embedded Phase 5`
-
-  Four runtime limit constants were added to `WasmLimits` in `WasmModule.swift`:
-
-  ```swift
-  static let maxTableElements: Int = 256  // max elements per table
-  static let maxValueStackDepth: Int = 256 // max operand stack depth
-  static let maxCallDepth: Int = 64        // max call stack depth (call frames)
-  static let maxLabelDepth: Int = 32       // max nested block/loop/if depth per frame
-  ```
-
-  Overflow is currently caught by `precondition` (traps); `WasmError.stackOverflow` is reserved
-  for future explicit `throw` on overflow. All Embedded dispatch function signatures were updated
-  to use `EmbeddedValueStack` / `EmbeddedCallStack` type aliases. The macOS path retains
-  `[Value]` / `[EmbeddedFrame]` with `// TODO: Embedded Phase 5` markers.
-
-- [x] **Eliminate argument copy in `call` / `call_indirect`**
-
-  Changed `pushFrame` signature from `callArgs: [Value]` to `argCount: Int`;
-  arguments are now read directly from `valueStack` without an intermediate copy.
-  The `Array(valueStack.suffix(argCount))` allocation is eliminated.
-
-  One copy remains at the host-function boundary (intentional; avoids changing the host API).
-  `CallFrame.locals` still uses `[Value]` — fixed-buffer replacement is part of the Phase 5 work.
-  (Marked with `// TODO: Embedded Phase 5` comment in source.)
-
----
-
 ## Phase 4 — Porting to Raspberry Pi Pico
 
 Embedded Swift compilation (`armv7em-none-none-eabi`) and linking (BLE firmware generation) are verified.
@@ -296,118 +9,17 @@ The following work is needed to reach a state where Wasm runs on real hardware.
 
 ### Eliminate Dynamic Allocation
 
-Apply the Phase 2–3 work (`FunctionHandle`, `WasmLimits`, fixed buffers) to the real hardware build.
-On Pico, `malloc` must not be used (even though `pico_stdlib` provides it, the Embedded-phase policy
-is to eliminate all dynamic allocation), so all dynamic allocations must be replaced with
-compile-time fixed-size buffers.
+- [ ] **Remaining dynamic allocations (deferred to Phase 5)**
 
-- [x] **Pre-compute jump table in `FunctionHandle` (Phase 4 preparation)**
+  The following fields are still heap-allocated and will be addressed in Phase 5:
 
-  `FunctionHandle.jumpTable: [JumpEntry]` is built at parse time by `parseFlatBodyTracked()`.
-  Each entry maps the absolute byte position of a `block`/`loop`/`if` opcode to its target
-  byte positions within `WasmModule.rawBytes`.
-  Entries are in pre-order (parent before children), enabling Phase 4's on-the-fly decoder
-  to advance a monotonic cursor — one step per control-flow opcode — for O(1) target lookup.
-
-  Remaining Phase 4 work: replace `[JumpEntry]` with a fixed-size buffer to eliminate the
-  `malloc` dependency (marked `// TODO: Embedded Phase 4` in source).
-
-- [x] **Replace lazy decode with true on-the-fly decode (primary Phase 4 goal)**
-
-  Implemented in `WasmInterpreterEmbedded.swift` (~2700 lines, Embedded-only).
-  The per-call `[Instruction]` array allocation is eliminated.  Opcodes are now decoded
-  directly from `module.rawBytes` as execution proceeds.
-
-  Key components:
-  - `runIterativeEmbedded()` — Embedded execution entry point (replaces lazy-decode path)
-  - `dispatchEmbedded()` — non-mutating; receives mutable state as `inout` arguments;
-    uses a local `BinaryReader` cursor to decode opcodes and immediates directly from `rawBytes`
-  - `EmbeddedFrame` — per-call frame tracking `ip: UInt32` (absolute byte offset in `rawBytes`),
-    `jumpCursor: Int` (monotonic index into `jumpTable`), `localBase: Int` (index of first
-    local on `valueStack`), `resultCount: Int`, and `labels: LabelStack`
-  - `BinaryReader` — zero-allocation byte reader over `UnsafeBufferPointer<UInt8>`;
-    handles LEB128, floats, and block types inline
-  - `jumpCursorForIp()` — binary search fallback that re-synchronises `jumpCursor` after a
-    non-sequential IP change (taken branch, function return, etc.)
-
-  Local variables are stored on the shared value stack at
-  `valueStack[localBase ..< localBase + localCount]`, eliminating per-frame `[Value]` allocation.
-  Mutable interpreter state (`memory`, `globals`, `tables`, `droppedDataSegments`,
-  `droppedElementSegments`) is extracted into local variables at the top of
-  `runIterativeEmbedded()` and passed to `dispatchEmbedded()` as `inout`, avoiding
-  overlapping-access (exclusivity) violations.
-
-  All opcodes (0x00–0xFC) are implemented.
-
-  Prerequisites completed: `FunctionHandle` zero-copy byte range (Phase 2), `brTable` flat
-  inline (Phase 2.5②), jump table pre-computation (above).
-
-- [x] **Replace `ValueStack` with a fixed-size buffer + index management**
-
-  Implemented in `WasmInterpreter.swift` inside `#if hasFeature(Embedded)`.
-  `ValueStack` is a 256-slot tuple-based fixed buffer; overflow is caught by `precondition`.
-  `WasmError.stackOverflow` is reserved for future explicit `throw`.
-
-  In `WasmInterpreterEmbedded.swift`, the Embedded execution path uses:
-  ```swift
-  var valueStack = ValueStack()   // #if hasFeature(Embedded)
-  ```
-  The macOS path retains `var valueStack: [Value] = []` with `// TODO: Embedded Phase 5`.
-
-- [ ] **Replace `CallStack` / `CallFrame.locals` with fixed arrays on the stack** (Embedded path complete; macOS `locals` deferred to Phase 5)
-
-  **Embedded `CallStack` — complete:** `CallStack` is a 64-slot tuple-based fixed buffer in
-  `WasmInterpreter.swift` (`#if hasFeature(Embedded)`). The Embedded execution path uses:
-  ```swift
-  var frames = CallStack()    // #if hasFeature(Embedded)
-  ```
-
-  **`EmbeddedFrame.locals` — complete (shared value stack):** In the Embedded path, locals are
-  stored at the base of the shared `ValueStack` (no per-frame `[Value]` allocation). This was
-  already the design from Phase 4; no additional change was needed.
-
-  **macOS `[EmbeddedFrame]` / `CallFrame.locals` — deferred to Phase 5:** The macOS path retains
-  `var frames: [EmbeddedFrame] = []` and `CallFrame.locals: [Value]`
-  with `// TODO: Embedded Phase 5` markers.
-
-- [x] **Replace `WasmModule` dynamic fields with fixed-length buffers**
-
-  Use `WasmLimits` (defined in Phase 2) to change `types` / `functions` / `exports` / `imports` /
-  `globals` / `tables` / `memories` / `elements` / `data` fields to fixed-length.
-
-  **Implemented (Phase 3/4):** Nine fixed-buffer types were added inside `#if hasFeature(Embedded)`
-  in `WasmModule.swift`, each backed by nested 8-element sub-tuples to work around the Swift
-  compiler's tuple-size limit:
-
-  | Type | Capacity | Used for |
-  |------|----------|---------|
-  | `Fixed64_FunctionType` | 64 | `types` (Type section) |
-  | `Fixed64_UInt32` | 64 | `functions` (Function section type-index array) |
-  | `Fixed32_Import` | 32 | `imports` (Import section) |
-  | `Fixed32_Export` | 32 | `exports` (Export section) |
-  | `Fixed32_GlobalDef` | 32 | `globals` (Global section) |
-  | `Fixed32_UInt32` | 32 | `importedFunctionTypeIndices` |
-  | `Fixed4_TableType` | 4 | `tables` (Table section) |
-  | `Fixed1_MemoryType` | 1 | `memories` (Memory section, Optional-based) |
-  | `Fixed16_ElementSegment` | 16 | `elements` (Element section) |
-  | `Fixed16_DataSegment` | 16 | `data` (Data section) |
-
-  Each fixed-buffer type exposes `count`, subscript access, and an `append` method; overflow is
-  caught by `precondition`. A `static var zero` sentinel property was added to each element type
-  (`FunctionType`, `Import`, `Export`, `GlobalDef`, `TableType`, `ElementSegment`, `DataSegment`)
-  to fill uninitialised tuple slots without dynamic heap allocation.
-
-  `importedFunctionTypeIndices` is built directly into a `Fixed32_UInt32` during `init`, avoiding
-  an intermediate `[UInt32]` heap allocation.
-
-  In `WasmInterpreter.swift`, `callExport` uses an index-based loop over `exports` in Embedded
-  builds because `Fixed32_Export` does not conform to `Sequence`.
-
-  **Still dynamic (deferred):**
-  - `code: [FunctionHandle]` — byte ranges with pre-computed jump tables (marked `// TODO: Embedded Phase 5`)
-  - `rawBytes: [UInt8]` — original Wasm binary buffer (marked `// TODO: Embedded Phase 5`)
-  - `FunctionHandle.jumpTable: [JumpEntry]` — per-function jump table (marked `// TODO: Embedded Phase 4`)
-  - `FunctionHandle.locals: [ValueType]` — per-function local variable types (marked `// TODO: Embedded Phase 4`)
+  | Field | Location | Note |
+  |-------|----------|------|
+  | `code: [FunctionHandle]` | `WasmModule` | byte ranges + pre-computed jump tables |
+  | `rawBytes: [UInt8]` | `WasmModule` | original Wasm binary buffer |
+  | `var tempInstructions: [Instruction]` | `parseFunctionHandles()` | per-function heap alloc during parse; needs a zero-allocation byte scanner to eliminate |
+  | `var frames: [EmbeddedFrame]` | macOS path | `CallStack` already fixed on Embedded; macOS uses `[EmbeddedFrame]` |
+  | `CallFrame.locals: [Value]` | macOS path | Embedded stores locals on shared `ValueStack`; macOS uses `[Value]` |
 
 - [ ] **Introduce an Arena Allocator to reduce allocations during module load**
 
@@ -423,15 +35,6 @@ compile-time fixed-size buffers.
 
 Implement host functions for Wasm to control Pico peripherals.
 Since Embedded Swift cannot heap-allocate closures, use `@convention(c)` function pointers + a static table.
-
-- [x] **Migrate `HostFunction` closure to `@convention(c)` function pointer**
-
-  `HostFunctionPtr` type alias and `HostImport` enum are now conditionally compiled with
-  `#if hasFeature(Embedded)`. In Embedded builds, host functions are registered as
-  `@convention(c)` function pointers (no heap-captured closures).
-  `pushFrame` uses `withUnsafeTemporaryAllocation` + `UnsafeRawPointer` for argument passing.
-  The `hostBlink` function in `Examples/RaspberryPiPicoW-BLE/Embedded/Main.swift` is implemented
-  as a `@_cdecl("hostBlink")` function (closure eliminated).
 
 - [ ] **`digitalWrite(pin: i32, val: i32) -> void` — GPIO output**
 
@@ -487,18 +90,6 @@ Since Embedded Swift cannot heap-allocate closures, use `@convention(c)` functio
   Re-evaluate when migrating to a bare-metal environment that does not rely on `--wrap` for
   standard library interception.
 
-- [ ] **Add `@frozen` to the `Instruction` enum to reduce type metadata**
-
-  ```swift
-  // WasmModule.swift
-  @frozen
-  enum Instruction: Sendable { ... }
-  ```
-
-  `@frozen` tells the compiler the enum's cases are exhaustive and stable, enabling exhaustive
-  `switch` optimization and reducing Embedded Swift type metadata overhead.
-  No effect on macOS behavior; beneficial in Embedded builds.
-
 - [ ] **Measure RAM usage on real hardware and confirm it fits in SRAM**
 
   RP2350 SRAM: 520 KB; RP2040: 264 KB.
@@ -527,70 +118,24 @@ The iOS app is implemented in SwiftUI + CoreBluetooth.
 
 ### BLE Protocol Design
 
-- [x] **Design BLE GATT service and characteristic for Wasm binary transfer**
-
-  Adopted a state-machine approach using a single writable characteristic (UUID: `...def1`) with a command byte prefix.
-  Unlike the original two-characteristic design (WasmBinary + Control), all protocol is consolidated into one characteristic.
-
-  ```
-  Service UUID: 12345678-1234-5678-1234-56789abcdef0
-    Characteristic UUID: 12345678-1234-5678-1234-56789abcdef1 (Write, Dynamic)
-      → Command byte protocol:
-          0xF0 [size_lo] [size_hi]              — Transfer start / buffer reset
-          0xF1 [offset_lo] [offset_hi] [data…]  — Write chunk data
-          0xF2                                   — Confirm full receipt and execute
-  ```
-
-  Uses `withResponse` writes; the next packet is sent only after receiving a `didWriteValueFor` completion (ordering guaranteed).
-
-- [ ] **Design a Notification characteristic for log output** (not implemented)
+- [ ] **Design a Notification characteristic for log output**
 
   Forward UART log output from Pico to iOS as BLE Notifications.
   Implement as UART → ring buffer → BLE Notification.
   Split and reassemble log lines to fit MTU size (20–512 bytes).
 
-- [ ] **Strengthen the transfer-complete / execution-start handshake protocol** (not implemented)
+- [ ] **Strengthen the transfer-complete / execution-start handshake protocol**
 
   Currently completion is determined solely by matching received byte count.
   Include a CRC checksum in the final packet to detect corruption or interruption during transfer.
 
 ### Required Features (iOS App)
 
-- [x] **Select a Wasm file from the iOS app and send it to Pico via BLE**
-
-  Tap to select from a preset `.wasm` file list (`WasmEntry.all`) bundled in the app,
-  then transfer to Pico via CoreBluetooth in the order: 0xF0 → 0xF1 chunks → 0xF2.
-  A `ProgressView` shows transfer progress.
-  (The original `UIDocumentPickerViewController` Files app integration is not implemented.)
-
-- [x] **The transferred Wasm executes immediately on Pico**
-
-  After receiving 0xF2, the Pico calls `executeReceivedWasm()`, loads the module with
-  `WasmInterpreter`, and executes it via `call(functionIndex: module.importedFunctionCount, args: [])`.
-  An execution-start Status Notification is not yet implemented.
-
-- [ ] **Display Pico execution logs in real time in the iOS app** (not implemented)
+- [ ] **Display Pico execution logs in real time in the iOS app**
 
   Append text to a SwiftUI `ScrollView` each time a Log Notification is received.
   Receive via the CoreBluetooth `centralManager(_:didUpdateValueFor:)` delegate
   and forward to a `@MainActor`-bound ViewModel.
-
-- [x] **Re-transfer a different Wasm and switch Pico behaviour**
-
-  After 0xF2 execution, `wasmRecvLen` / `wasmRecvExpected` are reset to zero,
-  so the next 0xF0 immediately starts receiving the next binary.
-  An explicit RESET command to the interpreter is not implemented.
-
-### Preset Wasm Files
-
-The iOS app bundle includes three Wasm files.
-Each has a no-argument `(export "run")` entry point and imports `env::blink`.
-
-| File | Description |
-|------|-------------|
-| `blink-loop.wasm` | Blink LED 3 times |
-| `blink-loop2.wasm` | Blink LED 5 times |
-| `blink-loop3.wasm` | Blink LED 10 times (loop) |
 
 ### Extensions (Optional)
 

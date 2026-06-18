@@ -402,7 +402,7 @@ extension WasmInterpreter {
 
   /// Binary search: first index in jumpTable where entry.instrOffset >= ip.
   /// Called when ip changes non-sequentially (branch taken, function return, etc.).
-  private func jumpCursorForIp(_ ip: UInt32, in jumpTable: [JumpEntry]) -> Int {
+  private func jumpCursorForIp(_ ip: UInt32, in jumpTable: FixedJumpTable_JumpEntry) -> Int {
     var lo = 0
     var hi = jumpTable.count
     while lo < hi {
@@ -622,7 +622,9 @@ extension WasmInterpreter {
 
     let localBase = valueStack.count - argCount
 
-    for vt in handle.locals {
+    // FixedLocals_ValueType does not conform to Sequence; iterate with index.
+    for i in 0..<handle.locals.count {
+      let vt = handle.locals[i]
       switch vt {
       case .i32: valueStack.append(.i32(0))
       case .i64: valueStack.append(.i64(0))

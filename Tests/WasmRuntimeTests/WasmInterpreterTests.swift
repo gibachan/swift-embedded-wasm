@@ -30,7 +30,7 @@ struct WasmParserTests {
   @Test func parsesCodeSection() throws {
     let module = try parseModule("i32-add")
     #expect(module.code.count == 1)
-    #expect(module.code[0].locals.isEmpty)
+    #expect(module.code[0].locals.count == 0)
     // end is a parser terminator and is not stored as an instruction
     let instructions = try WasmParser.decodeInstructions(
       handle: module.code[0], rawBytes: module.rawBytes, types: module.types)
@@ -53,7 +53,7 @@ struct WasmParserTests {
     let module = try parseModule("loop")
     let body = module.code[0]
     // Locals: one i32
-    #expect(body.locals == [.i32])
+    #expect(body.locals.count == 1 && body.locals[0] == .i32)
     // Flat bytecode layout (15 instructions total):
     //  [0]  i32.const 0
     //  [1]  local.set
