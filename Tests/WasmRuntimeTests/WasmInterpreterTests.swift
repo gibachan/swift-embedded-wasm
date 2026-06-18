@@ -16,7 +16,7 @@ struct WasmParserTests {
 
   @Test func parsesFunctionSection() throws {
     let module = try parseModule("i32-add")
-    #expect(module.functions == [0])
+    #expect(module.functions.count == 1 && module.functions[0] == 0)
   }
 
   @Test func parsesExportSection() throws {

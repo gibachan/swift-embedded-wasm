@@ -24,11 +24,12 @@
     func validate() throws(WasmError) {
       guard module.code.count == module.functions.count else { throw .typeMismatch }
       // All function type indices (local + imported) must reference existing types.
-      for typeIdx in module.functions {
-        guard Int(typeIdx) < module.types.count else { throw .typeMismatch }
+      // Index-based loops work on both Fixed64_UInt32 (Embedded) and [UInt32] (macOS).
+      for fi in 0..<module.functions.count {
+        guard Int(module.functions[fi]) < module.types.count else { throw .typeMismatch }
       }
-      for imp in module.imports {
-        if case .function(let fi) = imp {
+      for ii in 0..<module.imports.count {
+        if case .function(let fi) = module.imports[ii] {
           guard Int(fi.typeIndex) < module.types.count else { throw .typeMismatch }
         }
       }

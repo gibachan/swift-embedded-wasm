@@ -1043,8 +1043,10 @@ struct WasmInterpreter {
     // zero-copy byte comparison without Unicode normalisation.
     #if hasFeature(Embedded)
       // Embedded path: host functions are @convention(c) pointers — no heap-captured closures.
+      // Use an index loop for Embedded compatibility (Fixed32_Import is the Embedded-path type; see WasmModule.swift).
       var funcs: [HostFunctionPtr] = []
-      for imp in module.imports {
+      for impIdx2 in 0..<module.imports.count {
+        let imp = module.imports[impIdx2]
         guard case .function(let fi) = imp else { continue }
         var found = false
         for hi in hostImports {
@@ -1068,7 +1070,9 @@ struct WasmInterpreter {
       self.hostFunctions = funcs
     #else
       var funcs: [HostFunction] = []
-      for imp in module.imports {
+      // Index-based loop: Fixed32_Import does not conform to Sequence.
+      for impIdx in 0..<module.imports.count {
+        let imp = module.imports[impIdx]
         guard case .function(let fi) = imp else { continue }
         var found = false
         for hi in hostImports {
@@ -1093,18 +1097,29 @@ struct WasmInterpreter {
       }
       self.hostFunctions = funcs
     #endif
-    self.globals = module.globals.map { $0.initValue }
+    // Initialise globals from module.globals.initValue.
+    // Index-based loop works on both Fixed32_GlobalDef (Embedded) and [GlobalDef] (macOS)
+    // now that Fixed32_GlobalDef exposes count + subscript on both platforms.
+    var globalsArr: [Value] = []
+    for gi in 0..<module.globals.count { globalsArr.append(module.globals[gi].initValue) }
+    self.globals = globalsArr
 
     // Build per-table arrays from the Table section; one entry per declared table.
     // Each table slot holds a Value (.funcref or .externref) matching the table's declared refType.
     // Only active segments are applied at instantiation; passive segments are skipped
     // and remain available for use by table.init / elem.drop at runtime.
+    // Index-based loop works on both Fixed4_TableType (Embedded) and [TableType] (macOS)
+    // now that Fixed4_TableType exposes count + subscript on both platforms.
     // TODO: Embedded Phase 5 — replace [[Value]] initialisation with FlatTableStorage.initTable.
-    var tbls: [[Value]] = module.tables.map { tbl in
+    var tbls: [[Value]] = []
+    for ti2 in 0..<module.tables.count {
+      let tbl = module.tables[ti2]
       let nullVal: Value = tbl.refType == .externRef ? .externref(nil) : .funcref(nil)
-      return [Value](repeating: nullVal, count: Int(tbl.min))
+      tbls.append([Value](repeating: nullVal, count: Int(tbl.min)))
     }
-    for seg in module.elements {
+    // Apply active element segments; index-based loop works on both Fixed16_ElementSegment and [ElementSegment].
+    for segi in 0..<module.elements.count {
+      let seg = module.elements[segi]
       guard !seg.isPassive else { continue }  // passive segments are not applied at instantiation
       let ti = Int(seg.tableIndex)
       guard ti < tbls.count else { throw .memoryAccessOutOfBounds }
@@ -1119,9 +1134,11 @@ struct WasmInterpreter {
     }
     self.tables = tbls
 
-    // Determine memory size: prefer imported memory, fall back to local memory definition
+    // Determine memory size: prefer imported memory, fall back to local memory definition.
+    // Use an index loop for Embedded compatibility (Fixed32_Import is the Embedded-path type; see WasmModule.swift).
     var memPageCount: UInt32 = 0
-    for imp in module.imports {
+    for impIdx in 0..<module.imports.count {
+      let imp = module.imports[impIdx]
       guard case .memory(let mi) = imp else { continue }
       var found = false
       for hi in hostImports {
@@ -1155,8 +1172,10 @@ struct WasmInterpreter {
     // Allocate memory and initialize it from active data segments only (1 page = 64 KiB).
     // Passive segments (offset == nil) are retained in module.data for use by memory.init
     // at runtime; they are not applied at instantiation.
+    // Use an index loop for Embedded compatibility (Fixed16_DataSegment is the Embedded-path type; see WasmModule.swift).
     var mem = [UInt8](repeating: 0, count: Int(memPageCount) * 65536)
-    for seg in module.data {
+    for di in 0..<module.data.count {
+      let seg = module.data[di]
       guard let offset = seg.offset else { continue }  // skip passive segments
       let start = Int(offset)
       let end = start + seg.bytes.count
@@ -1175,10 +1194,12 @@ struct WasmInterpreter {
     // Only true passive segments (isPassive==true, isDeclarative==false) remain available
     // for table.init at runtime.
     // UInt64 bitmap supports at most 64 element segments.
+    // Use an index loop for Embedded compatibility (Fixed16_ElementSegment is the Embedded-path type; see WasmModule.swift).
     guard module.elements.count <= 64 else { throw .resourceLimitExceeded }
     var droppedElems: UInt64 = 0
-    for (i, seg) in module.elements.enumerated() {
-      if !seg.isPassive || seg.isDeclarative { droppedElems |= UInt64(1) << i }
+    for ei in 0..<module.elements.count {
+      let seg = module.elements[ei]
+      if !seg.isPassive || seg.isDeclarative { droppedElems |= UInt64(1) << ei }
     }
     self.droppedElementSegments = droppedElems
 
@@ -1192,14 +1213,15 @@ struct WasmInterpreter {
 
   /// Calls an exported function by name (UTF-8 bytes)
   mutating func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value] {
-    guard
-      let export = module.exports.first(where: {
-        $0.nameBytes.elementsEqual(nameBytes) && $0.kind == .function
-      })
-    else {
-      throw .functionNotFound
+    // Index-based loop works on both Fixed32_Export (Embedded) and [Export] (macOS)
+    // now that Fixed32_Export exposes count + subscript on both platforms.
+    for i in 0..<module.exports.count {
+      let exp = module.exports[i]
+      if exp.nameBytes.elementsEqual(nameBytes) && exp.kind == .function {
+        return try call(functionIndex: Int(exp.index), args: args)
+      }
     }
-    return try call(functionIndex: Int(export.index), args: args)
+    throw WasmError.functionNotFound
   }
 
   /// Calls a function by its unified function index (including imports)

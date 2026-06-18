@@ -370,10 +370,44 @@ compile-time fixed-size buffers.
   `var frames: [EmbeddedFrame] = []` and `CallFrame.locals: [Value]`
   with `// TODO: Embedded Phase 5` markers.
 
-- [ ] **Replace `WasmModule` dynamic fields with fixed-length buffers**
+- [x] **Replace `WasmModule` dynamic fields with fixed-length buffers**
 
   Use `WasmLimits` (defined in Phase 2) to change `types` / `functions` / `exports` / `imports` /
   `globals` / `tables` / `memories` / `elements` / `data` fields to fixed-length.
+
+  **Implemented (Phase 3/4):** Nine fixed-buffer types were added inside `#if hasFeature(Embedded)`
+  in `WasmModule.swift`, each backed by nested 8-element sub-tuples to work around the Swift
+  compiler's tuple-size limit:
+
+  | Type | Capacity | Used for |
+  |------|----------|---------|
+  | `Fixed64_FunctionType` | 64 | `types` (Type section) |
+  | `Fixed64_UInt32` | 64 | `functions` (Function section type-index array) |
+  | `Fixed32_Import` | 32 | `imports` (Import section) |
+  | `Fixed32_Export` | 32 | `exports` (Export section) |
+  | `Fixed32_GlobalDef` | 32 | `globals` (Global section) |
+  | `Fixed32_UInt32` | 32 | `importedFunctionTypeIndices` |
+  | `Fixed4_TableType` | 4 | `tables` (Table section) |
+  | `Fixed1_MemoryType` | 1 | `memories` (Memory section, Optional-based) |
+  | `Fixed16_ElementSegment` | 16 | `elements` (Element section) |
+  | `Fixed16_DataSegment` | 16 | `data` (Data section) |
+
+  Each fixed-buffer type exposes `count`, subscript access, and an `append` method; overflow is
+  caught by `precondition`. A `static var zero` sentinel property was added to each element type
+  (`FunctionType`, `Import`, `Export`, `GlobalDef`, `TableType`, `ElementSegment`, `DataSegment`)
+  to fill uninitialised tuple slots without dynamic heap allocation.
+
+  `importedFunctionTypeIndices` is built directly into a `Fixed32_UInt32` during `init`, avoiding
+  an intermediate `[UInt32]` heap allocation.
+
+  In `WasmInterpreter.swift`, `callExport` uses an index-based loop over `exports` in Embedded
+  builds because `Fixed32_Export` does not conform to `Sequence`.
+
+  **Still dynamic (deferred):**
+  - `code: [FunctionHandle]` — byte ranges with pre-computed jump tables (marked `// TODO: Embedded Phase 5`)
+  - `rawBytes: [UInt8]` — original Wasm binary buffer (marked `// TODO: Embedded Phase 5`)
+  - `FunctionHandle.jumpTable: [JumpEntry]` — per-function jump table (marked `// TODO: Embedded Phase 4`)
+  - `FunctionHandle.locals: [ValueType]` — per-function local variable types (marked `// TODO: Embedded Phase 4`)
 
 - [ ] **Introduce an Arena Allocator to reduce allocations during module load**
 

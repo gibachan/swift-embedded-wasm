@@ -206,7 +206,8 @@ private struct ConformanceRunner {
   // state, so a value copy is safe and avoids shared-mutable state.
   private func crossModuleImports(for module: WasmModule) -> [HostImport] {
     var result: [HostImport] = []
-    for imp in module.imports {
+    for i in 0..<module.imports.count {
+      let imp = module.imports[i]
       guard case .function(let fi) = imp else { continue }
       let modName = String(bytes: fi.module, encoding: .utf8) ?? ""
       guard let regInterp = registeredModules[modName] else { continue }

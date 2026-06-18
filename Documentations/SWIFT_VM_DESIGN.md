@@ -384,6 +384,7 @@ private func jumpCursorForIp(_ ip: UInt32, in jumpTable: [JumpEntry]) -> Int {
 - `LabelStack` (32 entries): **complete** — both macOS and Embedded use `LabelStack` for `EmbeddedFrame.labels`. Embedded uses a 32-element tuple internally; macOS uses `[Label]` (heap) to keep `EmbeddedFrame` small. The `#if` is encapsulated inside `LabelStack`; no call-site branching required.
 - `ValueStack` (256 entries): **complete** — replaces `valueStack: [Value]` in Embedded builds.
 - `CallStack` (64 entries): **complete** — replaces `frames: [EmbeddedFrame]` in Embedded builds.
+- `WasmModule` section fields: **complete (Embedded)** — `types`, `functions`, `imports`, `exports`, `globals`, `tables`, `memories`, `elements`, `data`, and `importedFunctionTypeIndices` use fixed-buffer types (`Fixed64_FunctionType`, `Fixed64_UInt32`, `Fixed32_Import`, etc.) in Embedded builds. `code: [FunctionHandle]` and `rawBytes: [UInt8]` remain dynamic in both builds (marked `// TODO: Embedded Phase 5`).
 - `FlatTableStorage`: **defined, not yet connected** — `tables: [[Value]]` replacement is tracked as `// TODO: Embedded Phase 5`.
 - `[JumpEntry]` fixed buffer: **not yet done** — `FunctionHandle.jumpTable` remains `[JumpEntry]`; fixed-buffer replacement is tracked as `// TODO: Embedded Phase 4` in source.
 

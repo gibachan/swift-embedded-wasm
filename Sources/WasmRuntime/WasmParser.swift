@@ -1270,8 +1270,14 @@ struct WasmParser {
     static func decodeInstructions(
       handle: FunctionHandle,
       rawBytes: [UInt8],
-      types: [FunctionType]
+      types: Fixed64_FunctionType
     ) throws(WasmError) -> [Instruction] {
+      // Convert Fixed64_FunctionType to [FunctionType] for the internal parser types field.
+      // This is a macOS-only path (wrapped in #if !hasFeature(Embedded)) and module loading
+      // is a one-time cost, so the allocation is acceptable here.
+      var typesArr: [FunctionType] = []
+      for i in 0..<types.count { typesArr.append(types[i]) }
+
       var instructions: [Instruction] = []
       var jumpTable: [JumpEntry] = []
       // withUnsafeBufferPointer is rethrows; catch and rethrow as typed WasmError
@@ -1280,7 +1286,7 @@ struct WasmParser {
         try rawBytes.withUnsafeBufferPointer { buf in
           var parser = WasmParser(buf)
           parser.stream = BufferStream(buf, offset: Int(handle.codeOffset))
-          parser.types = types
+          parser.types = typesArr
           try parser.parseFlatBodyTracked(into: &instructions, jumpTable: &jumpTable)
         }
       } catch let e as WasmError {
