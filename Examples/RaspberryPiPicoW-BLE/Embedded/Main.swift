@@ -109,6 +109,73 @@ func hostBlink(
   sleep_ms(300)
 }
 
+// Host function for "env::digitalWrite" — GPIO output.
+// Wasm signature: (import "env" "digitalWrite" (func (param i32 i32)))
+//   param[0]: pin  — GPIO pin number (0–29)
+//   param[1]: val  — 0 = LOW, 1 = HIGH
+// pico/stdlib.h (already included via BridgingHeader.h) declares:
+//   gpio_init(), gpio_set_dir(), gpio_put()
+@_cdecl("hostDigitalWrite")
+func hostDigitalWrite(
+  _ args: UnsafeRawPointer?, _ argsCount: Int32,
+  _ memory: UnsafeMutablePointer<UInt8>?, _ memorySize: Int32,
+  _ results: UnsafeMutableRawPointer?
+) {
+  guard argsCount >= 2 else { return }
+  let args32 = args?.assumingMemoryBound(to: Value.self)
+  guard case .i32(let pin) = args32?[0],
+    case .i32(let val) = args32?[1]
+  else { return }
+  guard pin >= 0 && pin <= 29 else { return }
+  let gpioPin = UInt32(pin)
+  gpio_init(gpioPin)
+  gpio_set_dir(gpioPin, true)  // true = GPIO_OUT
+  gpio_put(gpioPin, val != 0)
+}
+
+// Host function for "env::digitalRead" — GPIO input.
+// Wasm signature: (import "env" "digitalRead" (func (param i32) (result i32)))
+//   param[0]: pin  — GPIO pin number (0–29)
+//   result[0]: pin state — 0 (LOW) or 1 (HIGH)
+// pico/stdlib.h declares gpio_get().
+@_cdecl("hostDigitalRead")
+func hostDigitalRead(
+  _ args: UnsafeRawPointer?, _ argsCount: Int32,
+  _ memory: UnsafeMutablePointer<UInt8>?, _ memorySize: Int32,
+  _ results: UnsafeMutableRawPointer?
+) {
+  guard argsCount >= 1 else { return }
+  let args32 = args?.assumingMemoryBound(to: Value.self)
+  guard case .i32(let pin) = args32?[0] else { return }
+  guard pin >= 0 && pin <= 29 else { return }
+  let gpioPin = UInt32(pin)
+  // Always reconfigures the pin as input. If a WASM program mixes
+  // digitalRead and digitalWrite on the same pin, digitalRead wins.
+  gpio_init(gpioPin)
+  gpio_set_dir(gpioPin, false)  // false = GPIO_IN
+  let level = gpio_get(gpioPin)  // gpio_get returns Bool in Swift bridging
+  let results32 = results?.assumingMemoryBound(to: Value.self)
+  results32?[0] = .i32(level ? 1 : 0)
+}
+
+// Host function for "env::sleep" — millisecond delay.
+// Wasm signature: (import "env" "sleep" (func (param i32)))
+//   param[0]: ms — delay in milliseconds
+// pico/stdlib.h declares sleep_ms().
+@_cdecl("hostSleep")
+func hostSleep(
+  _ args: UnsafeRawPointer?, _ argsCount: Int32,
+  _ memory: UnsafeMutablePointer<UInt8>?, _ memorySize: Int32,
+  _ results: UnsafeMutableRawPointer?
+) {
+  guard argsCount >= 1 else { return }
+  let args32 = args?.assumingMemoryBound(to: Value.self)
+  guard case .i32(let ms) = args32?[0] else { return }
+  // Clamp to [0, 60_000] ms to prevent BLE disconnection due to very long sleeps.
+  let clamped = max(0, min(ms, 60_000))
+  sleep_ms(UInt32(clamped))
+}
+
 // Execute the WASM binary that has been written into the static receive buffer.
 // The WASM module is expected to export a single entry-point function with no
 // parameters, located at the first local function index (after all imports).
@@ -121,6 +188,9 @@ func executeReceivedWasm() {
         let module = try parser.parse()
         let hostImports: [HostImport] = [
             .function("env", "blink", hostBlink),
+            .function("env", "digitalWrite", hostDigitalWrite),
+            .function("env", "digitalRead", hostDigitalRead),
+            .function("env", "sleep", hostSleep),
         ]
         // importedFunctionCount: number of imported functions.
         // The first local function begins immediately after that index.

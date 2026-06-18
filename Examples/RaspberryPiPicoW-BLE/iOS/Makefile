@@ -4,7 +4,7 @@
 #
 # Usage:
 #   make                  build all .wasm files from Swift sources
-#   make blink-loop-swift.wasm
+#   make gpio-blink-swift.wasm
 #   make clean            delete build artifacts
 #
 # =============================================================================
@@ -45,18 +45,18 @@ LDFLAGS := \
 
 .PHONY: all clean
 
-all: $(WASM_OUT_DIR)/blink-loop-swift.wasm
+all: $(WASM_OUT_DIR)/gpio-blink-swift.wasm
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-# blink-loop-swift.wasm
-$(BUILD_DIR)/blink-loop-swift.o: blink-loop-swift.swift | $(BUILD_DIR)
-	$(SWIFTC) $(SWIFTFLAGS) -module-name BlinkLoopSwift -emit-object -o $@ $<
+# gpio-blink-swift.wasm
+$(BUILD_DIR)/gpio-blink-swift.o: gpio-blink-swift.swift | $(BUILD_DIR)
+	$(SWIFTC) $(SWIFTFLAGS) -module-name GpioBlink -emit-object -o $@ $<
 
-$(WASM_OUT_DIR)/blink-loop-swift.wasm: $(BUILD_DIR)/blink-loop-swift.o
+$(WASM_OUT_DIR)/gpio-blink-swift.wasm: $(BUILD_DIR)/gpio-blink-swift.o
 	$(WASM_LD) $(LDFLAGS) --export=run -o $@ $<
 	@echo "✓ $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 clean:
-	rm -rf $(BUILD_DIR) $(WASM_OUT_DIR)/blink-loop-swift.wasm
+	rm -rf $(BUILD_DIR) $(WASM_OUT_DIR)/gpio-blink-swift.wasm

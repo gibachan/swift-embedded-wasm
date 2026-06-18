@@ -36,18 +36,18 @@ The following work is needed to reach a state where Wasm runs on real hardware.
 Implement host functions for Wasm to control Pico peripherals.
 Since Embedded Swift cannot heap-allocate closures, use `@convention(c)` function pointers + a static table.
 
-- [ ] **`digitalWrite(pin: i32, val: i32) -> void` — GPIO output**
+- [x] **`digitalWrite(pin: i32, val: i32) -> void` — GPIO output**
 
   Calls Pico SDK's `gpio_init()` + `gpio_set_dir()` + `gpio_put()`.
   `pin` is the GPIO pin number (0–29); `val` is 0 (LOW) / 1 (HIGH).
   Wasm imports it as `(import "env" "digitalWrite" (func (param i32 i32)))`.
 
-- [ ] **`digitalRead(pin: i32) -> i32` — GPIO input**
+- [x] **`digitalRead(pin: i32) -> i32` — GPIO input**
 
   Calls Pico SDK's `gpio_get()` and returns the pin state as i32.
   Wasm imports it as `(import "env" "digitalRead" (func (param i32) (result i32)))`.
 
-- [ ] **`sleep(ms: i32) -> void` — delay**
+- [x] **`sleep(ms: i32) -> void` — delay**
 
   Calls Pico SDK's `sleep_ms()`.
   Calling `sleep(1000)` from Wasm waits 1 second.
