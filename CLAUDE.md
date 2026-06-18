@@ -80,7 +80,7 @@ Even in the macOS phase, implement to match Embedded Swift constraints from the 
 - Always use typed throws: `throws(WasmError)`
 - Mark locations where dynamic `Array<T>` allocation is structurally unavoidable with `// TODO: Embedded Phase 5`
   - Frame `locals`: in the Embedded path (`WasmInterpreterEmbedded.swift`), locals are stored on the shared `valueStack` (no per-frame `[Value]` allocation). The macOS path still uses `[Value]` locals.
-  - Frame `labels` (`EmbeddedFrame.labels: [Label]`): still `[Label]` in the Embedded path — fixed-buffer replacement is a Phase 5 item.
+  - Frame `labels` (`EmbeddedFrame.labels: LabelStack`): both macOS and Embedded now use `LabelStack`. Internally, Embedded uses a 32-element tuple (stack-allocated), macOS uses `[Label]` (heap) — the difference is encapsulated inside `LabelStack` with a single `#if hasFeature(Embedded)`. Call sites in `dispatchEmbedded` / `handleEmbeddedBranch` / `pushEmbeddedFrame` require no conditional compilation.
 - Validation should be omitted in Embedded builds and implemented only for non-Embedded (macOS) via `#if !hasFeature(Embedded)`
 
 ---

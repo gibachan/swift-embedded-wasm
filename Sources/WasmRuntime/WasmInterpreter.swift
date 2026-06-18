@@ -108,11 +108,899 @@ struct Label {
   let continuationPc: Int  // where br to this label jumps:
   //   block/if: past blockEnd (= blockEndPc + 1)
   //   loop:     first body instruction (restart)
+
+  /// Zero-value sentinel used to fill uninitialised slots in the fixed-size label buffer.
+  /// Never used as a live label; only serves as a default to satisfy Swift's requirement
+  /// that tuple elements are initialised at construction time.
+  static let zero = Label(kind: .block, stackBase: 0, brArity: 0, continuationPc: 0)
 }
 
 // block/loop/if arity is now pre-computed at parse time and stored directly in each
 // Instruction case (brArity, paramCount fields). The blockArity() / loopBrArity()
 // helpers that previously looked up module.types at runtime have been removed.
+
+// MARK: - Fixed-size buffer types
+
+// These types are shared across macOS and Embedded builds.
+// On macOS, EmbeddedValueStack / EmbeddedCallStack are type-aliased to these types
+// (see WasmInterpreterEmbedded.swift), so the same dispatchEmbedded implementation
+// compiles for both targets without conditional compilation.
+
+// MARK: LabelStack
+
+/// Label stack used in EmbeddedFrame on both macOS and Embedded builds.
+///
+/// Provides the same public API on both platforms so that call sites in
+/// dispatchEmbedded / handleEmbeddedBranch / pushEmbeddedFrame require no conditional
+/// compilation beyond the single #if inside this struct.
+///
+/// Embedded builds: storage is a 32-element homogeneous tuple on the C stack — no malloc.
+/// macOS builds:    storage is a [Label] array (heap-allocated) to keep EmbeddedFrame
+///                  small (~56 bytes) so that CallStack (64 frames) fits on the call stack.
+///
+/// The single #if hasFeature(Embedded) inside this struct is Approach A from the
+/// design notes: one conditional at the boundary between stack and heap storage, with a
+/// uniform API exposed to all callers.
+struct LabelStack {
+  #if hasFeature(Embedded)
+    // 32-element tuple; all slots initialised to Label.zero (a sentinel, never accessed
+    // at indices >= count).
+    private var storage:
+      (
+        Label, Label, Label, Label, Label, Label, Label, Label,  // 0-7
+        Label, Label, Label, Label, Label, Label, Label, Label,  // 8-15
+        Label, Label, Label, Label, Label, Label, Label, Label,  // 16-23
+        Label, Label, Label, Label, Label, Label, Label, Label  // 24-31
+      )
+    private var _count: Int
+
+    init() {
+      let z = Label.zero
+      storage = (
+        z, z, z, z, z, z, z, z,
+        z, z, z, z, z, z, z, z,
+        z, z, z, z, z, z, z, z,
+        z, z, z, z, z, z, z, z
+      )
+      _count = 0
+    }
+
+    var count: Int { _count }
+
+    var isEmpty: Bool { _count == 0 }
+
+    @inline(__always)
+    mutating func append(_ label: Label) {
+      precondition(_count < WasmLimits.maxLabelDepth, "LabelStack overflow")
+      withUnsafeMutableBytes(of: &storage) { buf in
+        let ptr = buf.baseAddress!.assumingMemoryBound(to: Label.self)
+        ptr[_count] = label
+      }
+      _count &+= 1
+    }
+
+    @inline(__always)
+    subscript(index: Int) -> Label {
+      get {
+        withUnsafeBytes(of: storage) { buf in
+          let ptr = buf.baseAddress!.assumingMemoryBound(to: Label.self)
+          return ptr[index]
+        }
+      }
+      set {
+        withUnsafeMutableBytes(of: &storage) { buf in
+          let ptr = buf.baseAddress!.assumingMemoryBound(to: Label.self)
+          ptr[index] = newValue
+        }
+      }
+    }
+
+    @inline(__always)
+    mutating func removeSubrange(_ startIndex: Int) {
+      guard startIndex < _count else { return }
+      _count = startIndex
+    }
+
+    @inline(__always)
+    mutating func removeSubrange(_ range: PartialRangeFrom<Int>) {
+      removeSubrange(range.lowerBound)
+    }
+
+    @inline(__always)
+    mutating func removeAll() {
+      _count = 0
+    }
+
+    @inline(__always)
+    @discardableResult
+    mutating func removeLast() -> Label {
+      let val = self[_count - 1]
+      _count &-= 1
+      return val
+    }
+
+    var last: Label { self[_count - 1] }
+
+  #else
+    // macOS: heap-allocated to keep EmbeddedFrame small so CallStack fits on the stack.
+    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
+    private var storage: [Label]  // TODO: Embedded Phase 5 — replace with tuple storage
+
+    init() { storage = [] }
+
+    var count: Int { storage.count }
+    var isEmpty: Bool { storage.isEmpty }
+
+    @inline(__always)
+    mutating func append(_ label: Label) {
+      precondition(storage.count < WasmLimits.maxLabelDepth, "LabelStack overflow")
+      storage.append(label)
+    }
+
+    @inline(__always)
+    subscript(index: Int) -> Label {
+      get { storage[index] }
+      set { storage[index] = newValue }
+    }
+
+    @inline(__always)
+    mutating func removeSubrange(_ startIndex: Int) {
+      guard startIndex < storage.count else { return }
+      storage.removeSubrange(startIndex...)
+    }
+
+    @inline(__always)
+    mutating func removeSubrange(_ range: PartialRangeFrom<Int>) {
+      guard range.lowerBound < storage.count else { return }
+      storage.removeSubrange(range)
+    }
+
+    @inline(__always)
+    mutating func removeAll() { storage.removeAll() }
+
+    @inline(__always)
+    @discardableResult
+    mutating func removeLast() -> Label { storage.removeLast() }
+
+    var last: Label { storage[storage.count - 1] }
+  #endif
+}
+
+// MARK: ValueStack
+
+/// Fixed-size value (operand) stack shared across macOS and Embedded builds
+/// (max WasmLimits.maxValueStackDepth = 256 entries).
+///
+/// Stores elements in a 256-element contiguous tuple on (or close to) the C stack.
+/// The same homogeneous-tuple layout guarantee applies as for LabelStack.
+struct ValueStack {
+  // 256-element storage packed as 32 × 8-element sub-tuples to keep the struct
+  // declaration manageable.  The overall layout is identical to a 256-element tuple.
+  private var s0: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s1: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s2: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s3: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s4: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s5: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s6: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s7: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s8: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s9: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s10: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s11: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s12: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s13: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s14: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s15: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s16: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s17: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s18: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s19: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s20: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s21: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s22: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s23: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s24: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s25: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s26: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s27: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s28: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s29: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s30: (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var s31: (Value, Value, Value, Value, Value, Value, Value, Value)
+
+  private var _count: Int
+
+  init() {
+    let z = Value.i32(0)
+    let row = (z, z, z, z, z, z, z, z)
+    s0 = row
+    s1 = row
+    s2 = row
+    s3 = row
+    s4 = row
+    s5 = row
+    s6 = row
+    s7 = row
+    s8 = row
+    s9 = row
+    s10 = row
+    s11 = row
+    s12 = row
+    s13 = row
+    s14 = row
+    s15 = row
+    s16 = row
+    s17 = row
+    s18 = row
+    s19 = row
+    s20 = row
+    s21 = row
+    s22 = row
+    s23 = row
+    s24 = row
+    s25 = row
+    s26 = row
+    s27 = row
+    s28 = row
+    s29 = row
+    s30 = row
+    s31 = row
+    _count = 0
+  }
+
+  var count: Int { _count }
+
+  var isEmpty: Bool { _count == 0 }
+
+  // Indexed access: routes to the correct sub-tuple.
+  // Accessing via withUnsafeMutableBytes on the individual sub-tuple avoids any
+  // cross-field-alignment assumption.
+  @inline(__always)
+  subscript(index: Int) -> Value {
+    get {
+      let row = index / 8
+      let col = index % 8
+      return withRow(row) { ptr in ptr[col] }
+    }
+    set {
+      let row = index / 8
+      let col = index % 8
+      withMutableRow(row) { ptr in ptr[col] = newValue }
+    }
+  }
+
+  @inline(__always)
+  private func withRow<R>(_ row: Int, _ body: (UnsafePointer<Value>) -> R) -> R {
+    switch row {
+    case 0:
+      return withUnsafeBytes(of: s0) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 1:
+      return withUnsafeBytes(of: s1) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 2:
+      return withUnsafeBytes(of: s2) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 3:
+      return withUnsafeBytes(of: s3) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 4:
+      return withUnsafeBytes(of: s4) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 5:
+      return withUnsafeBytes(of: s5) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 6:
+      return withUnsafeBytes(of: s6) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 7:
+      return withUnsafeBytes(of: s7) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 8:
+      return withUnsafeBytes(of: s8) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 9:
+      return withUnsafeBytes(of: s9) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 10:
+      return withUnsafeBytes(of: s10) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 11:
+      return withUnsafeBytes(of: s11) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 12:
+      return withUnsafeBytes(of: s12) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 13:
+      return withUnsafeBytes(of: s13) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 14:
+      return withUnsafeBytes(of: s14) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 15:
+      return withUnsafeBytes(of: s15) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 16:
+      return withUnsafeBytes(of: s16) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 17:
+      return withUnsafeBytes(of: s17) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 18:
+      return withUnsafeBytes(of: s18) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 19:
+      return withUnsafeBytes(of: s19) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 20:
+      return withUnsafeBytes(of: s20) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 21:
+      return withUnsafeBytes(of: s21) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 22:
+      return withUnsafeBytes(of: s22) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 23:
+      return withUnsafeBytes(of: s23) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 24:
+      return withUnsafeBytes(of: s24) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 25:
+      return withUnsafeBytes(of: s25) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 26:
+      return withUnsafeBytes(of: s26) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 27:
+      return withUnsafeBytes(of: s27) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 28:
+      return withUnsafeBytes(of: s28) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 29:
+      return withUnsafeBytes(of: s29) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 30:
+      return withUnsafeBytes(of: s30) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    default:
+      return withUnsafeBytes(of: s31) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    }
+  }
+
+  @inline(__always)
+  private mutating func withMutableRow<R>(_ row: Int, _ body: (UnsafeMutablePointer<Value>) -> R)
+    -> R
+  {
+    switch row {
+    case 0:
+      return withUnsafeMutableBytes(of: &s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 1:
+      return withUnsafeMutableBytes(of: &s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 2:
+      return withUnsafeMutableBytes(of: &s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 3:
+      return withUnsafeMutableBytes(of: &s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 4:
+      return withUnsafeMutableBytes(of: &s4) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 5:
+      return withUnsafeMutableBytes(of: &s5) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 6:
+      return withUnsafeMutableBytes(of: &s6) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 7:
+      return withUnsafeMutableBytes(of: &s7) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 8:
+      return withUnsafeMutableBytes(of: &s8) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 9:
+      return withUnsafeMutableBytes(of: &s9) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 10:
+      return withUnsafeMutableBytes(of: &s10) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 11:
+      return withUnsafeMutableBytes(of: &s11) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 12:
+      return withUnsafeMutableBytes(of: &s12) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 13:
+      return withUnsafeMutableBytes(of: &s13) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 14:
+      return withUnsafeMutableBytes(of: &s14) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 15:
+      return withUnsafeMutableBytes(of: &s15) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 16:
+      return withUnsafeMutableBytes(of: &s16) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 17:
+      return withUnsafeMutableBytes(of: &s17) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 18:
+      return withUnsafeMutableBytes(of: &s18) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 19:
+      return withUnsafeMutableBytes(of: &s19) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 20:
+      return withUnsafeMutableBytes(of: &s20) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 21:
+      return withUnsafeMutableBytes(of: &s21) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 22:
+      return withUnsafeMutableBytes(of: &s22) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 23:
+      return withUnsafeMutableBytes(of: &s23) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 24:
+      return withUnsafeMutableBytes(of: &s24) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 25:
+      return withUnsafeMutableBytes(of: &s25) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 26:
+      return withUnsafeMutableBytes(of: &s26) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 27:
+      return withUnsafeMutableBytes(of: &s27) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 28:
+      return withUnsafeMutableBytes(of: &s28) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 29:
+      return withUnsafeMutableBytes(of: &s29) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    case 30:
+      return withUnsafeMutableBytes(of: &s30) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    default:
+      return withUnsafeMutableBytes(of: &s31) {
+        body($0.baseAddress!.assumingMemoryBound(to: Value.self))
+      }
+    }
+  }
+
+  /// Append a value.  Traps (preconditionFailure) when the 256-entry limit is reached.
+  ///
+  /// Non-throwing to maintain API compatibility with [Value].append(_:).
+  /// Overflow is a programming error; the 256-slot limit is deliberately large enough
+  /// for any well-behaved Wasm module targeting the RP2350.
+  @inline(__always)
+  mutating func append(_ value: Value) {
+    precondition(_count < WasmLimits.maxValueStackDepth, "ValueStack overflow")
+    self[_count] = value
+    _count &+= 1
+  }
+
+  /// Pop and return the top value.
+  ///
+  /// Non-throwing to maintain API compatibility with [Value].removeLast().
+  /// Callers that pop from the stack should guard count > 0 before calling (matching
+  /// the guard...throw .stackUnderflow pattern used throughout dispatchEmbedded).
+  @inline(__always)
+  @discardableResult
+  mutating func removeLast() -> Value {
+    _count &-= 1
+    return self[_count]
+  }
+
+  /// Remove the top `k` values without returning them.
+  @inline(__always)
+  mutating func removeLast(_ k: Int) {
+    precondition(k >= 0 && k <= _count, "ValueStack removeLast underflow")
+    _count -= k
+  }
+
+  /// Remove all entries from `startIndex` onwards (Int overload).
+  @inline(__always)
+  mutating func removeSubrange(_ startIndex: Int) {
+    guard startIndex < _count else { return }
+    _count = startIndex
+  }
+
+  /// Remove all entries from `range.lowerBound` onwards (PartialRangeFrom<Int> overload).
+  /// Matches [Value].removeSubrange(_:) when called as removeSubrange(n...).
+  @inline(__always)
+  mutating func removeSubrange(_ range: PartialRangeFrom<Int>) {
+    removeSubrange(range.lowerBound)
+  }
+
+  /// The top value (last pushed).  Caller must ensure count > 0.
+  var last: Value { self[_count - 1] }
+
+  /// The value at `offset` positions below the top (0 = top).
+  @inline(__always)
+  func peekFromTop(_ offset: Int) -> Value { self[_count - 1 - offset] }
+
+  /// Append the contents of an array (used for seeding args at call site).
+  @inline(__always)
+  mutating func append(contentsOf arr: [Value]) {
+    for v in arr { append(v) }
+  }
+
+  /// Collect all values into a [Value] result array (used for returning results).
+  func toArray() -> [Value] {
+    var out: [Value] = []
+    for i in 0..<_count { out.append(self[i]) }
+    return out
+  }
+}
+
+// MARK: CallStack
+
+/// Fixed-size call stack shared across macOS and Embedded builds (max WasmLimits.maxCallDepth = 64 frames).
+///
+/// Holds EmbeddedFrame values in a 64-element tuple.  Same layout guarantee as LabelStack.
+///
+/// On macOS, LabelStack uses heap-allocated [Label] storage, so EmbeddedFrame is ~56 bytes
+/// and 64 frames occupy ~3.5 KB on the call stack — well within macOS thread stack limits.
+/// On Embedded, LabelStack uses a 32-element tuple (~1 KB per frame), so CallStack is ~67 KB —
+/// acceptable for the RP2350 but requires the interpreter entry point to run on a thread
+/// with adequate stack space.
+struct CallStack {
+  private var s0:
+    (
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame,
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame
+    )
+  private var s1:
+    (
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame,
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame
+    )
+  private var s2:
+    (
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame,
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame
+    )
+  private var s3:
+    (
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame,
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame
+    )
+  private var s4:
+    (
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame,
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame
+    )
+  private var s5:
+    (
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame,
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame
+    )
+  private var s6:
+    (
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame,
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame
+    )
+  private var s7:
+    (
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame,
+      EmbeddedFrame, EmbeddedFrame, EmbeddedFrame, EmbeddedFrame
+    )
+  private var _count: Int
+
+  init() {
+    let z = EmbeddedFrame.zero
+    let row = (z, z, z, z, z, z, z, z)
+    s0 = row
+    s1 = row
+    s2 = row
+    s3 = row
+    s4 = row
+    s5 = row
+    s6 = row
+    s7 = row
+    _count = 0
+  }
+
+  var count: Int { _count }
+
+  var isEmpty: Bool { _count == 0 }
+
+  @inline(__always)
+  subscript(index: Int) -> EmbeddedFrame {
+    get {
+      let row = index / 8
+      let col = index % 8
+      return withRow(row) { ptr in ptr[col] }
+    }
+    set {
+      let row = index / 8
+      let col = index % 8
+      withMutableRow(row) { ptr in ptr[col] = newValue }
+    }
+  }
+
+  @inline(__always)
+  private func withRow<R>(_ row: Int, _ body: (UnsafePointer<EmbeddedFrame>) -> R) -> R {
+    switch row {
+    case 0:
+      return withUnsafeBytes(of: s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 1:
+      return withUnsafeBytes(of: s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 2:
+      return withUnsafeBytes(of: s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 3:
+      return withUnsafeBytes(of: s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 4:
+      return withUnsafeBytes(of: s4) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 5:
+      return withUnsafeBytes(of: s5) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 6:
+      return withUnsafeBytes(of: s6) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    default:
+      return withUnsafeBytes(of: s7) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    }
+  }
+
+  @inline(__always)
+  private mutating func withMutableRow<R>(
+    _ row: Int, _ body: (UnsafeMutablePointer<EmbeddedFrame>) -> R
+  ) -> R {
+    switch row {
+    case 0:
+      return withUnsafeMutableBytes(of: &s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 1:
+      return withUnsafeMutableBytes(of: &s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 2:
+      return withUnsafeMutableBytes(of: &s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 3:
+      return withUnsafeMutableBytes(of: &s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 4:
+      return withUnsafeMutableBytes(of: &s4) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 5:
+      return withUnsafeMutableBytes(of: &s5) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    case 6:
+      return withUnsafeMutableBytes(of: &s6) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    default:
+      return withUnsafeMutableBytes(of: &s7) {
+        body($0.baseAddress!.assumingMemoryBound(to: EmbeddedFrame.self))
+      }
+    }
+  }
+
+  /// Append a frame.  Traps (preconditionFailure) when the 64-entry limit is reached.
+  ///
+  /// Non-throwing to maintain API compatibility with [EmbeddedFrame].append(_:).
+  @inline(__always)
+  mutating func append(_ frame: EmbeddedFrame) {
+    precondition(_count < WasmLimits.maxCallDepth, "CallStack overflow")
+    self[_count] = frame
+    _count &+= 1
+  }
+
+  /// Remove and discard the top frame.
+  @inline(__always)
+  mutating func removeLast() {
+    _count &-= 1
+  }
+
+  /// Top frame index (frames.count - 1).
+  var topIndex: Int { _count - 1 }
+}
+
+// MARK: FlatTableStorage
+
+/// Fixed-size flat table storage (shared type; not yet wired to WasmInterpreter.tables — TODO: Embedded Phase 5).
+///
+/// The Wasm table is a sequence of reference values (funcref/externref).
+/// All elements are packed into a single flat array of
+/// WasmLimits.maxTables * WasmLimits.maxTableElements slots, with per-table
+/// offsets and counts tracked separately.
+///
+/// Layout: tableSlot 0 occupies indices [0, maxTableElements),
+///          tableSlot 1 occupies indices [maxTableElements, 2*maxTableElements), etc.
+struct FlatTableStorage {
+  // Total capacity: maxTables (4) × maxTableElements (256) = 1024 Value slots.
+  // Packed as 128 × 8-element sub-tuples.
+  private typealias Row = (Value, Value, Value, Value, Value, Value, Value, Value)
+  private var storage:
+    (
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 0-7
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 8-15
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 16-23
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 24-31
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 32-39
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 40-47
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 48-55
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 56-63
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 64-71
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 72-79
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 80-87
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 88-95
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 96-103
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 104-111
+      Row, Row, Row, Row, Row, Row, Row, Row,  // 112-119
+      Row, Row, Row, Row, Row, Row, Row, Row  // 120-127
+    )
+  // Per-table element counts (allocated sizes, not slot capacities).
+  var tableCounts: (Int, Int, Int, Int)
+  var tableCount: Int  // number of live tables (0..<tableCount are valid)
+
+  init() {
+    let z = Value.i32(0)
+    let emptyRow: Row = (z, z, z, z, z, z, z, z)
+    // Initialise all 128 rows to the empty row sentinel.
+    storage = (
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow,
+      emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow, emptyRow
+    )
+    tableCounts = (0, 0, 0, 0)
+    tableCount = 0
+  }
+
+  /// Element count for table `ti`.
+  @inline(__always)
+  func count(ofTable ti: Int) -> Int {
+    switch ti {
+    case 0: return tableCounts.0
+    case 1: return tableCounts.1
+    case 2: return tableCounts.2
+    default: return tableCounts.3
+    }
+  }
+
+  @inline(__always)
+  private mutating func setCount(_ n: Int, ofTable ti: Int) {
+    switch ti {
+    case 0: tableCounts.0 = n
+    case 1: tableCounts.1 = n
+    case 2: tableCounts.2 = n
+    default: tableCounts.3 = n
+    }
+  }
+
+  /// Flat index into storage for table `ti`, element `ei`.
+  @inline(__always)
+  private func flatIndex(_ ti: Int, _ ei: Int) -> Int {
+    ti * WasmLimits.maxTableElements + ei
+  }
+
+  @inline(__always)
+  subscript(ti: Int, ei: Int) -> Value {
+    get {
+      let idx = flatIndex(ti, ei)
+      let row = idx / 8
+      let col = idx % 8
+      return withUnsafeBytes(of: storage) { buf in
+        buf.baseAddress!.assumingMemoryBound(to: Value.self)[row * 8 + col]
+      }
+    }
+    set {
+      let idx = flatIndex(ti, ei)
+      withUnsafeMutableBytes(of: &storage) { buf in
+        buf.baseAddress!.assumingMemoryBound(to: Value.self)[idx] = newValue
+      }
+    }
+  }
+
+  /// Initialise a table with `size` null-reference slots.
+  @inline(__always)
+  mutating func initTable(_ ti: Int, size: Int, nullValue: Value) throws(WasmError) {
+    guard size <= WasmLimits.maxTableElements else { throw WasmError.resourceLimitExceeded }
+    for i in 0..<size { self[ti, i] = nullValue }
+    setCount(size, ofTable: ti)
+    if ti >= tableCount { tableCount = ti + 1 }
+  }
+
+  /// Grow table `ti` by `delta` slots filled with `fillValue`.
+  /// Returns the previous size, or -1 if growth exceeds the limit.
+  @inline(__always)
+  mutating func grow(_ ti: Int, by delta: Int, fillValue: Value, max: Int?) -> Int32 {
+    let old = count(ofTable: ti)
+    let newSize = old + delta
+    if let m = max, newSize > m { return -1 }
+    if newSize > WasmLimits.maxTableElements { return -1 }
+    for i in old..<newSize { self[ti, i] = fillValue }
+    setCount(newSize, ofTable: ti)
+    return Int32(old)
+  }
+}
 
 // MARK: - Interpreter
 
@@ -133,6 +1021,8 @@ struct WasmInterpreter {
   var globals: [Value]  // mutable global variable slots (global.get/set)
   // Tables store Value (.funcref or .externref) directly to support both funcref and externref tables.
   // The reftype of each slot is determined by the table's declared RefType.
+  // TODO: Embedded Phase 5 — replace [[Value]] with FlatTableStorage (requires updating all
+  // table accesses in dispatchEmbedded; deferred due to large scope of changes).
   var tables: [[Value]]  // reference tables: tables[tableIdx][elemIdx]
   // Bit i = 1 means segment i has been dropped. Supports up to 64 segments.
   var droppedDataSegments: UInt64 = 0
@@ -209,6 +1099,7 @@ struct WasmInterpreter {
     // Each table slot holds a Value (.funcref or .externref) matching the table's declared refType.
     // Only active segments are applied at instantiation; passive segments are skipped
     // and remain available for use by table.init / elem.drop at runtime.
+    // TODO: Embedded Phase 5 — replace [[Value]] initialisation with FlatTableStorage.initTable.
     var tbls: [[Value]] = module.tables.map { tbl in
       let nullVal: Value = tbl.refType == .externRef ? .externref(nil) : .funcref(nil)
       return [Value](repeating: nullVal, count: Int(tbl.min))

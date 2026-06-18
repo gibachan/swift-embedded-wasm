@@ -240,19 +240,42 @@ The following changes are needed when migrating to the Embedded phase.
   }
   ```
 
-- [ ] **Replace `Array<T>` with fixed-size buffers**
+- [x] **Replace `Array<T>` with fixed-size buffers**
 
   Replace the dynamic arrays used at runtime with fixed-length buffers.
 
-  | Field | Location | Current | Embedded replacement |
-  |-------|----------|---------|----------------------|
-  | `valueStack` | `WasmInterpreter.swift` L279 | `[Value]` | Fixed-length array + top index (e.g. max depth 256) |
-  | `callStack` | `WasmInterpreter.swift` L280 | `[Frame]` | Fixed-length array + depth counter (e.g. max depth 64) |
-  | `CallFrame.locals` | `WasmInterpreter.swift` L87 | `[Value]` | Fixed slots on the stack (e.g. max locals 128) |
-  | `CallFrame.labels` | `WasmInterpreter.swift` L87 | `[Label]` | Fixed-length array (e.g. max nesting depth 32) |
-  | `tables` | `WasmInterpreter.swift` L125 | `[[Value]]` | Flat fixed-length buffer + per-table offset/count |
+  | Field | Location | Current (Embedded) | Status |
+  |-------|----------|--------------------|--------|
+  | `valueStack` | `WasmInterpreter.swift` | `ValueStack` (256-slot tuple-based) | Complete (Embedded) |
+  | `callStack` | `WasmInterpreter.swift` | `CallStack` (64-slot tuple-based) | Complete (Embedded) |
+  | `EmbeddedFrame.labels` | `WasmInterpreter.swift` | `LabelStack` (32-slot tuple-based) | Complete (Embedded) |
+  | `CallFrame.locals` | `WasmInterpreter.swift` | `[Value]` | macOS path only; Phase 5 |
+  | `tables` | `WasmInterpreter.swift` | `[[Value]]` | Phase 5 (`FlatTableStorage` defined, not yet connected) |
 
   Note: `droppedDataSegments` and `droppedElementSegments` were `[Bool]` and are now `UInt64` bitmaps (completed).
+
+  **Implemented (Phase 3/4):** Three fixed-size buffer types were added to `WasmInterpreter.swift`:
+
+  - `LabelStack` — unified label stack for `EmbeddedFrame.labels` on both platforms. Embedded
+    stores labels in a 32-element tuple (no malloc); macOS uses `[Label]` (heap) internally.
+    The `#if hasFeature(Embedded)` is encapsulated inside `LabelStack`; call sites are unconditional.
+  - `ValueStack` — 256-slot buffer replacing the Embedded `valueStack: [Value]`
+  - `CallStack` — 64-slot buffer replacing the Embedded `frames: [EmbeddedFrame]`
+  - `FlatTableStorage` — defined only; connection to `tables: [[Value]]` is tracked as `// TODO: Embedded Phase 5`
+
+  Four runtime limit constants were added to `WasmLimits` in `WasmModule.swift`:
+
+  ```swift
+  static let maxTableElements: Int = 256  // max elements per table
+  static let maxValueStackDepth: Int = 256 // max operand stack depth
+  static let maxCallDepth: Int = 64        // max call stack depth (call frames)
+  static let maxLabelDepth: Int = 32       // max nested block/loop/if depth per frame
+  ```
+
+  Overflow is currently caught by `precondition` (traps); `WasmError.stackOverflow` is reserved
+  for future explicit `throw` on overflow. All Embedded dispatch function signatures were updated
+  to use `EmbeddedValueStack` / `EmbeddedCallStack` type aliases. The macOS path retains
+  `[Value]` / `[EmbeddedFrame]` with `// TODO: Embedded Phase 5` markers.
 
 - [x] **Eliminate argument copy in `call` / `call_indirect`**
 
@@ -301,7 +324,7 @@ compile-time fixed-size buffers.
     uses a local `BinaryReader` cursor to decode opcodes and immediates directly from `rawBytes`
   - `EmbeddedFrame` — per-call frame tracking `ip: UInt32` (absolute byte offset in `rawBytes`),
     `jumpCursor: Int` (monotonic index into `jumpTable`), `localBase: Int` (index of first
-    local on `valueStack`), `resultCount: Int`, and `labels: [Label]`
+    local on `valueStack`), `resultCount: Int`, and `labels: LabelStack`
   - `BinaryReader` — zero-allocation byte reader over `UnsafeBufferPointer<UInt8>`;
     handles LEB128, floats, and block types inline
   - `jumpCursorForIp()` — binary search fallback that re-synchronises `jumpCursor` after a
@@ -319,23 +342,33 @@ compile-time fixed-size buffers.
   Prerequisites completed: `FunctionHandle` zero-copy byte range (Phase 2), `brTable` flat
   inline (Phase 2.5②), jump table pre-computation (above).
 
-- [ ] **Replace `ValueStack` with a fixed-size buffer + index management**
+- [x] **Replace `ValueStack` with a fixed-size buffer + index management**
 
-  Fix the maximum stack depth (e.g. 256 elements) and manage it with a `top` index.
-  Throw `WasmError.stackOverflow` on overflow.
+  Implemented in `WasmInterpreter.swift` inside `#if hasFeature(Embedded)`.
+  `ValueStack` is a 256-slot tuple-based fixed buffer; overflow is caught by `precondition`.
+  `WasmError.stackOverflow` is reserved for future explicit `throw`.
 
+  In `WasmInterpreterEmbedded.swift`, the Embedded execution path uses:
   ```swift
-  struct ValueStack {
-      var storage: (Value, Value, ...) // fixed-length tuple or UnsafeBufferPointer
-      var top: Int = 0
-  }
+  var valueStack = ValueStack()   // #if hasFeature(Embedded)
+  ```
+  The macOS path retains `var valueStack: [Value] = []` with `// TODO: Embedded Phase 5`.
+
+- [ ] **Replace `CallStack` / `CallFrame.locals` with fixed arrays on the stack** (Embedded path complete; macOS `locals` deferred to Phase 5)
+
+  **Embedded `CallStack` — complete:** `CallStack` is a 64-slot tuple-based fixed buffer in
+  `WasmInterpreter.swift` (`#if hasFeature(Embedded)`). The Embedded execution path uses:
+  ```swift
+  var frames = CallStack()    // #if hasFeature(Embedded)
   ```
 
-- [ ] **Replace `CallStack` / `CallFrame.locals` with fixed arrays on the stack**
+  **`EmbeddedFrame.locals` — complete (shared value stack):** In the Embedded path, locals are
+  stored at the base of the shared `ValueStack` (no per-frame `[Value]` allocation). This was
+  already the design from Phase 4; no additional change was needed.
 
-  Fix the maximum call depth (e.g. 64 frames) and manage with a fixed-length buffer.
-  Limit each frame's local variable count (e.g. 128 locals).
-  Throw `WasmError.stackOverflow` when the limit is exceeded.
+  **macOS `[EmbeddedFrame]` / `CallFrame.locals` — deferred to Phase 5:** The macOS path retains
+  `var frames: [EmbeddedFrame] = []` and `CallFrame.locals: [Value]`
+  with `// TODO: Embedded Phase 5` markers.
 
 - [ ] **Replace `WasmModule` dynamic fields with fixed-length buffers**
 

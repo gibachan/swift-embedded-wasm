@@ -26,9 +26,14 @@ enum WasmLimits {
   static let maxExports: Int = 32  // max number of exports
   static let maxGlobals: Int = 32  // max number of global variables
   static let maxTables: Int = 4  // max number of tables
+  static let maxTableElements: Int = 256  // max elements per table (for fixed-buffer Embedded target)
   static let maxMemories: Int = 1  // Wasm MVP spec §5.5.8 allows at most 1 memory; also matches the Embedded fixed-buffer limit.
   static let maxElements: Int = 16  // max number of element segments
   static let maxData: Int = 16  // max number of data segments
+  // Interpreter runtime limits (used by fixed-size buffer implementations in Embedded builds)
+  static let maxValueStackDepth: Int = 256  // max operand stack depth
+  static let maxCallDepth: Int = 64  // max call stack depth (call frames)
+  static let maxLabelDepth: Int = 32  // max nested block/loop/if depth per frame
 }
 
 // MARK: - Value Types

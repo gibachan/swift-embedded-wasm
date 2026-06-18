@@ -125,6 +125,7 @@ enum WasmError: Error, Equatable, Sendable {
 
     // --- Interpreter (trap equivalents) ---
     case stackUnderflow
+    case stackOverflow   // value stack, call stack, or label stack exceeded the fixed-size limit
     case typeMismatch
     case memoryAccessOutOfBounds
     case divisionByZero
@@ -174,7 +175,7 @@ Goal: catch bad Wasm binaries and implementation bugs early during development.
 **Type validation skipped; resource-limit checks always run.**
 
 - Magic number / version check (always performed in the parser)
-- `WasmLimits` section-count checks (always performed in the parser — throws `WasmError.resourceLimitExceeded` if any section's item count exceeds the fixed-buffer limits defined in `WasmLimits`)
+- `WasmLimits` section-count checks (always performed in the parser — throws `WasmError.resourceLimitExceeded` if any section's item count exceeds the fixed-buffer limits defined in `WasmLimits`; runtime stack limits `maxValueStackDepth`, `maxCallDepth`, `maxLabelDepth` are enforced by `precondition` in Embedded builds)
 - No type stack tracking (saves RAM and load time)
 - Assumes trusted input (developer-controlled binaries)
 
@@ -323,16 +324,21 @@ Per-call frame used by `runIterativeEmbedded()`.  Tracks a byte-offset `ip` inst
 instruction-array index.
 
 ```swift
-private struct EmbeddedFrame {
+struct EmbeddedFrame {
     var ip: UInt32       // absolute byte offset in module.rawBytes
     var jumpCursor: Int  // monotonic index into FunctionHandle.jumpTable
     let handleIdx: Int   // index into module.code
     let localBase: Int   // index of first local/param on valueStack
     let localCount: Int  // params + declared locals; depth of valueStack at body start
     let resultCount: Int // number of return values
-    var labels: [Label]  // TODO: Embedded Phase 5 — replace with fixed-size buffer
+    var labels: LabelStack  // unified on both platforms; LabelStack uses [Label] internally on macOS
 }
 ```
+
+`LabelStack` encapsulates the platform difference: Embedded uses a 32-element tuple (no malloc),
+macOS uses `[Label]` (heap) to keep `EmbeddedFrame` small enough that `CallStack` (64 frames)
+fits on the call stack. The single `#if hasFeature(Embedded)` lives inside `LabelStack` itself.
+Call sites in `dispatchEmbedded` / `handleEmbeddedBranch` / `pushEmbeddedFrame` are unconditional.
 
 Local variables (params + declared locals) are stored on the shared `valueStack` at indices
 `localBase ..< localBase + localCount`.  This eliminates per-frame heap allocation for locals.
@@ -373,11 +379,26 @@ private func jumpCursorForIp(_ ip: UInt32, in jumpTable: [JumpEntry]) -> Int {
 }
 ```
 
-#### Remaining Phase 4 open items
+#### Phase 4 fixed-buffer status
 
-- Replace `[JumpEntry]` with a fixed-size buffer to eliminate `malloc` for jump tables.
-- Replace `[Label]` inside `EmbeddedFrame` with a fixed-size buffer.
-- Replace `ValueStack` / `CallStack` with fixed-size arrays (see TODO.md Phase 4).
+- `LabelStack` (32 entries): **complete** — both macOS and Embedded use `LabelStack` for `EmbeddedFrame.labels`. Embedded uses a 32-element tuple internally; macOS uses `[Label]` (heap) to keep `EmbeddedFrame` small. The `#if` is encapsulated inside `LabelStack`; no call-site branching required.
+- `ValueStack` (256 entries): **complete** — replaces `valueStack: [Value]` in Embedded builds.
+- `CallStack` (64 entries): **complete** — replaces `frames: [EmbeddedFrame]` in Embedded builds.
+- `FlatTableStorage`: **defined, not yet connected** — `tables: [[Value]]` replacement is tracked as `// TODO: Embedded Phase 5`.
+- `[JumpEntry]` fixed buffer: **not yet done** — `FunctionHandle.jumpTable` remains `[JumpEntry]`; fixed-buffer replacement is tracked as `// TODO: Embedded Phase 4` in source.
+
+The `WasmLimits` enum in `WasmModule.swift` now includes four runtime constants used by the fixed buffers:
+
+```swift
+static let maxTableElements: Int  = 256  // max elements per table
+static let maxValueStackDepth: Int = 256 // max operand stack depth
+static let maxCallDepth: Int       = 64  // max call stack depth (call frames)
+static let maxLabelDepth: Int      = 32  // max nested block/loop/if depth per frame
+```
+
+Overflow is currently caught by `precondition` (traps on violation). `WasmError.stackOverflow`
+is defined and reserved for future explicit `throw` paths. The macOS execution path retains
+dynamic `[Value]` / `[EmbeddedFrame]` storage with `// TODO: Embedded Phase 5` markers.
 
 ---
 

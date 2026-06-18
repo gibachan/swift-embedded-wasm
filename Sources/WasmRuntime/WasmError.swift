@@ -36,4 +36,5 @@ enum WasmError: Error, Equatable, Sendable {
   case indirectCallTypeMismatch  // call_indirect: function type does not match expected type
   case invalidConversionToInteger  // trunc: NaN, Inf, or out-of-range float → integer (Wasm trap)
   case resourceLimitExceeded  // module requires more resources than this runtime supports (e.g. >64 segments)
+  case stackOverflow  // value stack, call stack, or label stack exceeded the fixed-size limit
 }

@@ -7,6 +7,69 @@
 // Locals are stored on the shared value stack starting at localBase, which means zero
 // extra heap allocation per call beyond what the value stack already holds.
 
+// MARK: - Interpreter stack type aliases
+
+// These type aliases allow dispatchEmbedded / handleEmbeddedBranch to use a single
+// set of inout parameter types that resolve to the fixed-size buffer types on Embedded
+// and to plain Arrays on macOS.
+//
+// API compatibility notes:
+//   - ValueStack / [Value]:   append(_:), removeLast() -> Value, count, isEmpty,
+//                             subscript[Int], removeSubrange(Int), removeSubrange(n...),
+//                             removeLast(k:), last (non-optional / forced below)
+//   - CallStack / [EmbeddedFrame]: append(_:), removeLast(), count, isEmpty,
+//                                  subscript[Int]
+//   - FlatTableStorage / [[Value]]: subscript[Int, Int], count(ofTable:) / .count,
+//                                    initTable / full [[Value]] protocol
+//
+// The one API divergence is `last`: [Value].last is Optional; ValueStack.last is not.
+// All uses of valueStack.last in dispatchEmbedded use valueStack[valueStack.count-1]
+// instead to work identically for both types.
+// EmbeddedValueStack is [Value] on macOS and ValueStack on Embedded.
+// ValueStack (~4 KB inout parameter) causes Swift debug-build stack frames of ~1.4 MB
+// inside dispatchEmbedded (a very large function with many withUnsafeBytes closures).
+// 512 KB test-thread stacks overflow immediately.  Using [Value] on macOS avoids this.
+//
+// Why [Value] / [EmbeddedFrame] on macOS:
+// Both ValueStack (~4 KB) and CallStack (~3.5 KB on macOS) are large fixed-size structs
+// that use withUnsafeBytes inside their subscript accessors.  When passed as inout
+// parameters to dispatchEmbedded — a very large function with hundreds of case bodies —
+// the Swift debug-build compiler reserves stack space for every live variable across the
+// entire function body, producing a stack frame of 900 KB – 1.4 MB.  Swift Testing
+// threads have a 512 KB stack, so the function crashes immediately.
+//
+// On Embedded targets (bare-metal or RTOS), the interpreter entry point runs on a
+// thread sized for this use; the fixed-size buffers are required because malloc may be
+// unavailable.
+//
+// On macOS the plain-Array alternatives avoid the oversized stack frame while keeping
+// the same dispatch logic unchanged.  The single #if is the minimum conditional
+// compilation needed to allow a shared dispatchEmbedded implementation.
+//
+// LabelStack uses a separate, independent #if inside its own struct body (Approach A).
+// That conditional determines whether each EmbeddedFrame.labels is a fixed tuple or a
+// [Label].  It does NOT affect the type aliases here.
+//
+// Conditional compilation for the macOS/Embedded split is confined to:
+//   1. LabelStack internals (WasmInterpreter.swift) — one #if hasFeature(Embedded)
+//   2. EmbeddedValueStack / EmbeddedCallStack type aliases (this file)
+//   3. valueStack / frames initialisation in runIterativeEmbedded (this file)
+//   4. return statement in runIterativeEmbedded (toArray() vs identity)
+//   5. hostFunctions / HostFunction vs HostFunctionPtr split (WasmInterpreter.swift)
+#if hasFeature(Embedded)
+  typealias EmbeddedValueStack = ValueStack
+  typealias EmbeddedCallStack = CallStack
+#else
+  // TODO: Embedded Phase 5 — unify to ValueStack / CallStack once dispatchEmbedded
+  // stack usage is reduced (e.g. by splitting into sub-functions).
+  typealias EmbeddedValueStack = [Value]
+  typealias EmbeddedCallStack = [EmbeddedFrame]
+#endif
+// EmbeddedTableStorage uses [[Value]] on both platforms for now.
+// TODO: Embedded Phase 5 — replace with FlatTableStorage once all table accesses in
+// dispatchEmbedded have been migrated to the FlatTableStorage API.
+typealias EmbeddedTableStorage = [[Value]]
+
 // MARK: - BinaryReader
 
 /// Zero-allocation byte reader over a fixed UnsafeBufferPointer<UInt8>.
@@ -130,15 +193,26 @@ struct BinaryReader {
 /// jumpCursor is a monotonically-advancing index into FunctionHandle.jumpTable;
 /// it is advanced by 1 each time a block/loop/if opcode is decoded, giving O(1)
 /// lookup without scanning.
-private struct EmbeddedFrame {
+// internal (not private) so that CallStack (defined in WasmInterpreter.swift) can reference
+// this type.
+struct EmbeddedFrame {
   var ip: UInt32  // absolute byte offset in module.rawBytes
   var jumpCursor: Int  // monotonic index into handle.jumpTable
   let handleIdx: Int  // index into module.code
   let localBase: Int  // index of first local (= first param) on valueStack
   let localCount: Int  // total locals (params + declared); valueStack depth at body start
   let resultCount: Int  // number of return values
-  // TODO: Embedded Phase 5 — replace [Label] with fixed-size buffer
-  var labels: [Label]  // TODO: Embedded Phase 5 — fixed buffer
+  var labels: LabelStack  // unified on both platforms (Approach A: LabelStack uses [Label] internally on macOS)
+
+  /// Zero-value sentinel used to fill uninitialised slots in the fixed-size CallStack buffer.
+  static let zero = EmbeddedFrame(
+    ip: 0,
+    jumpCursor: 0,
+    handleIdx: 0,
+    localBase: 0,
+    localCount: 0,
+    resultCount: 0,
+    labels: LabelStack())
 }
 
 // MARK: - WasmInteger generic helpers
@@ -162,7 +236,9 @@ private struct EmbeddedFrame {
 /// `op` is a non-capturing closure (e.g. `{ a, b in a &+ b }`) so it compiles to a
 /// static function reference in Embedded Swift — no heap allocation.
 @inline(__always)
-func intBinaryOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value], _ op: (T, T) -> T)
+func intBinaryOp<T: WasmInteger>(
+  _ type: T.Type, _ stack: inout EmbeddedValueStack, _ op: (T, T) -> T
+)
   throws(WasmError)
 {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
@@ -175,7 +251,9 @@ func intBinaryOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value], _ op: (
 ///
 /// Used for: eq, ne, lt_u, gt_u, le_u, ge_u.
 @inline(__always)
-func intCmpOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value], _ op: (T, T) -> Bool)
+func intCmpOp<T: WasmInteger>(
+  _ type: T.Type, _ stack: inout EmbeddedValueStack, _ op: (T, T) -> Bool
+)
   throws(WasmError)
 {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
@@ -189,7 +267,7 @@ func intCmpOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value], _ op: (T, 
 /// Used for: lt_s, gt_s, le_s, ge_s.
 @inline(__always)
 func intSignedCmpOp<T: WasmInteger>(
-  _ type: T.Type, _ stack: inout [Value], _ op: (T.Signed, T.Signed) -> Bool
+  _ type: T.Type, _ stack: inout EmbeddedValueStack, _ op: (T.Signed, T.Signed) -> Bool
 ) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = (try T.fromValue(stack.removeLast())).toSigned()
@@ -199,7 +277,7 @@ func intSignedCmpOp<T: WasmInteger>(
 
 /// eqz: pop T, push i32 1 if zero, else 0.
 @inline(__always)
-func intEqzOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intEqzOp<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard !stack.isEmpty else { throw WasmError.stackUnderflow }
   let a = try T.fromValue(stack.removeLast())
   stack.append(.i32(a == 0 ? 1 : 0))
@@ -209,7 +287,7 @@ func intEqzOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(Was
 ///
 /// Per Wasm spec, clz/ctz/popcnt on i32 return i32 and on i64 return i64.
 @inline(__always)
-func intCountOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value], _ op: (T) -> Int)
+func intCountOp<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack, _ op: (T) -> Int)
   throws(WasmError)
 {
   guard !stack.isEmpty else { throw WasmError.stackUnderflow }
@@ -219,7 +297,7 @@ func intCountOp<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value], _ op: (T
 
 /// div_s: signed division; traps on /0 and T.Signed.min / -1.
 @inline(__always)
-func intDivS<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intDivS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = (try T.fromValue(stack.removeLast())).toSigned()
   let a = (try T.fromValue(stack.removeLast())).toSigned()
@@ -230,7 +308,7 @@ func intDivS<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(Wasm
 
 /// div_u: unsigned division; traps on /0.
 @inline(__always)
-func intDivU<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intDivU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
@@ -240,7 +318,7 @@ func intDivU<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(Wasm
 
 /// rem_s: signed remainder; traps on /0; returns 0 for T.Signed.min % -1.
 @inline(__always)
-func intRemS<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intRemS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = (try T.fromValue(stack.removeLast())).toSigned()
   let a = (try T.fromValue(stack.removeLast())).toSigned()
@@ -251,7 +329,7 @@ func intRemS<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(Wasm
 
 /// rem_u: unsigned remainder; traps on /0.
 @inline(__always)
-func intRemU<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intRemU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
@@ -261,7 +339,7 @@ func intRemU<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(Wasm
 
 /// shl: left shift; shift amount is masked to the bit-width of T.
 @inline(__always)
-func intShl<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intShl<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
@@ -271,7 +349,7 @@ func intShl<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmE
 
 /// shr_s: arithmetic (signed) right shift; shift amount masked to bit-width of T.
 @inline(__always)
-func intShrS<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intShrS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = (try T.fromValue(stack.removeLast())).toSigned()
@@ -286,7 +364,7 @@ func intShrS<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(Wasm
 
 /// shr_u: logical (unsigned) right shift; shift amount masked to bit-width of T.
 @inline(__always)
-func intShrU<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intShrU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
@@ -296,7 +374,7 @@ func intShrU<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(Wasm
 
 /// rotl: left rotation; rotation amount masked to bit-width of T.
 @inline(__always)
-func intRotl<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intRotl<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
@@ -307,7 +385,7 @@ func intRotl<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(Wasm
 
 /// rotr: right rotation; rotation amount masked to bit-width of T.
 @inline(__always)
-func intRotr<T: WasmInteger>(_ type: T.Type, _ stack: inout [Value]) throws(WasmError) {
+func intRotr<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
   guard stack.count >= 2 else { throw WasmError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
@@ -351,8 +429,13 @@ extension WasmInterpreter {
     fuelLimit: Int = 10_000_000
   ) throws(WasmError) -> [Value] {
 
-    var valueStack: [Value] = []
-    var frames: [EmbeddedFrame] = []
+    #if hasFeature(Embedded)
+      var valueStack = ValueStack()
+      var frames = CallStack()
+    #else
+      var valueStack: EmbeddedValueStack = []  // TODO: Embedded Phase 5 — unify to ValueStack
+      var frames: EmbeddedCallStack = []  // TODO: Embedded Phase 5 — unify to CallStack
+    #endif
     var fuel = fuelLimit
 
     var localMemory = memory
@@ -447,7 +530,11 @@ extension WasmInterpreter {
         droppedElem: &localDroppedElem)
     }
 
-    return valueStack
+    #if hasFeature(Embedded)
+      return valueStack.toArray()
+    #else
+      return valueStack  // [Value] is already [Value]
+    #endif
   }
 
   // MARK: embeddedBlockArity / embeddedLoopBrArity
@@ -484,7 +571,8 @@ extension WasmInterpreter {
 
   private func pushEmbeddedFrame(
     _ funcIdx: Int, _ argCount: Int,
-    _ valueStack: inout [Value], _ frames: inout [EmbeddedFrame], _ memory: inout [UInt8]
+    _ valueStack: inout EmbeddedValueStack, _ frames: inout EmbeddedCallStack,
+    _ memory: inout [UInt8]
   ) throws(WasmError) {
     guard valueStack.count >= argCount else { throw WasmError.stackUnderflow }
     let importedCount = module.importedFunctionCount
@@ -495,12 +583,15 @@ extension WasmInterpreter {
         precondition(
           resultCount <= 8,
           "HostFunctionPtr: resultCount exceeds 8-slot result buffer")
-        withUnsafeTemporaryAllocation(of: Value.self, capacity: 8) { resultsBuf in
-          valueStack.withUnsafeBytes { stackRaw in
+        // Copy arguments from ValueStack into a temporary allocation so we can pass
+        // a contiguous raw pointer to the host function.  ValueStack stores elements in
+        // sub-tuple fields which are not guaranteed to be contiguous across fields, so we
+        // must copy rather than borrowing valueStack's internal storage directly.
+        withUnsafeTemporaryAllocation(of: Value.self, capacity: max(argCount, 1)) { argsBuf in
+          for i in 0..<argCount { argsBuf[i] = valueStack[argsStart + i] }
+          withUnsafeTemporaryAllocation(of: Value.self, capacity: 8) { resultsBuf in
             let argsRaw: UnsafeRawPointer? =
-              stackRaw.baseAddress.map {
-                $0.advanced(by: argsStart * MemoryLayout<Value>.stride)
-              }
+              argCount > 0 ? UnsafeRawPointer(argsBuf.baseAddress!) : nil
             let resultsRaw: UnsafeMutableRawPointer? =
               resultCount > 0 ? UnsafeMutableRawPointer(resultsBuf.baseAddress!) : nil
             memory.withUnsafeMutableBytes { memBuf in
@@ -508,12 +599,13 @@ extension WasmInterpreter {
               let memLen = Int32(memBuf.count)
               hostFunctions[funcIdx](argsRaw, Int32(argCount), memPtr, memLen, resultsRaw)
             }
+            valueStack.removeLast(argCount)
+            for i in 0..<resultCount { valueStack.append(resultsBuf[i]) }
           }
-          valueStack.removeLast(argCount)
-          for i in 0..<resultCount { valueStack.append(resultsBuf[i]) }
         }
       #else
-        let argsSlice = Array(valueStack[argsStart...])
+        var argsSlice: [Value] = []
+        for i in argsStart..<(argsStart + argCount) { argsSlice.append(valueStack[i]) }
         let results = hostFunctions[funcIdx](argsSlice, memory)
         valueStack.removeLast(argCount)
         valueStack.append(contentsOf: results)
@@ -550,14 +642,14 @@ extension WasmInterpreter {
         localBase: localBase,
         localCount: localCount,
         resultCount: funcType.results.count,
-        labels: []))
+        labels: LabelStack()))
   }
 
   // MARK: handleEmbeddedBranch
 
   private func handleEmbeddedBranch(
     _ depth: UInt32, _ fi: Int,
-    _ valueStack: inout [Value], _ frames: inout [EmbeddedFrame]
+    _ valueStack: inout EmbeddedValueStack, _ frames: inout EmbeddedCallStack
   ) throws(WasmError) {
     let d = Int(depth)
     let labelCount = frames[fi].labels.count
@@ -620,11 +712,11 @@ extension WasmInterpreter {
     opcode: UInt8,
     nextIp: UInt32,
     fi: Int,
-    valueStack: inout [Value],
-    frames: inout [EmbeddedFrame],
+    valueStack: inout EmbeddedValueStack,
+    frames: inout EmbeddedCallStack,
     memory: inout [UInt8],
     globals: inout [Value],
-    tables: inout [[Value]],
+    tables: inout EmbeddedTableStorage,
     droppedData: inout UInt64,
     droppedElem: inout UInt64
   ) throws(WasmError) {
@@ -938,7 +1030,7 @@ extension WasmInterpreter {
     case 0x22:  // local.tee
       let idx = try readU32Local()
       guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      valueStack[frames[fi].localBase + Int(idx)] = valueStack.last!
+      valueStack[frames[fi].localBase + Int(idx)] = valueStack[valueStack.count - 1]
       frames[fi].ip = UInt32(cursor)
 
     // MARK: Global variables (0x23-0x24)
