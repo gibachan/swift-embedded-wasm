@@ -1336,6 +1336,120 @@ struct Fixed32_UInt32 {
   #endif
 }
 
+// MARK: Fixed32_Value
+
+/// 32-slot fixed buffer for runtime mutable global variable storage (max WasmLimits.maxGlobals = 32).
+///
+/// Tuple storage on both macOS and Embedded — no malloc on either platform.
+/// 4 rows × 8 elements = 32 slots; total size ~512 bytes (safe for all thread stacks).
+///
+/// Requires both read and write subscript because global.get/set mutate this buffer.
+struct Fixed32_Value {
+  private var s0, s1, s2, s3: (Value, Value, Value, Value, Value, Value, Value, Value)
+  var _count: Int
+
+  init(_ arr: [Value]) {
+    let z = Value.i32(0)
+    let row = (z, z, z, z, z, z, z, z)
+    s0 = row
+    s1 = row
+    s2 = row
+    s3 = row
+    _count = 0
+    for e in arr { append(e) }
+  }
+
+  var count: Int { _count }
+
+  @inline(__always)
+  subscript(index: Int) -> Value {
+    get {
+      precondition(index >= 0 && index < _count)
+      let row = index / 8
+      let col = index % 8
+      return withRow(row) { $0[col] }
+    }
+    set {
+      precondition(index >= 0 && index < _count)
+      let row = index / 8
+      let col = index % 8
+      setElement(row: row, col: col, value: newValue)
+    }
+  }
+
+  @inline(__always)
+  private func withRow<R>(_ row: Int, _ body: (UnsafePointer<Value>) -> R) -> R {
+    switch row {
+    case 0:
+      return withUnsafeBytes(of: s0) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 1:
+      return withUnsafeBytes(of: s1) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    case 2:
+      return withUnsafeBytes(of: s2) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    default:
+      return withUnsafeBytes(of: s3) { body($0.baseAddress!.assumingMemoryBound(to: Value.self)) }
+    }
+  }
+
+  // Direct tuple-element assignment for writes — avoids withUnsafeMutableBytes on non-BitwiseCopyable Value.
+  private mutating func setElement(row: Int, col: Int, value: Value) {
+    switch row {
+    case 0:
+      switch col {
+      case 0: s0.0 = value
+      case 1: s0.1 = value
+      case 2: s0.2 = value
+      case 3: s0.3 = value
+      case 4: s0.4 = value
+      case 5: s0.5 = value
+      case 6: s0.6 = value
+      default: s0.7 = value
+      }
+    case 1:
+      switch col {
+      case 0: s1.0 = value
+      case 1: s1.1 = value
+      case 2: s1.2 = value
+      case 3: s1.3 = value
+      case 4: s1.4 = value
+      case 5: s1.5 = value
+      case 6: s1.6 = value
+      default: s1.7 = value
+      }
+    case 2:
+      switch col {
+      case 0: s2.0 = value
+      case 1: s2.1 = value
+      case 2: s2.2 = value
+      case 3: s2.3 = value
+      case 4: s2.4 = value
+      case 5: s2.5 = value
+      case 6: s2.6 = value
+      default: s2.7 = value
+      }
+    default:
+      switch col {
+      case 0: s3.0 = value
+      case 1: s3.1 = value
+      case 2: s3.2 = value
+      case 3: s3.3 = value
+      case 4: s3.4 = value
+      case 5: s3.5 = value
+      case 6: s3.6 = value
+      default: s3.7 = value
+      }
+    }
+  }
+
+  mutating func append(_ e: Value) {
+    precondition(_count < 32, "Fixed32_Value overflow: maxGlobals exceeded")
+    let row = _count / 8
+    let col = _count % 8
+    setElement(row: row, col: col, value: e)
+    _count += 1
+  }
+}
+
 // MARK: Fixed4_TableType
 
 /// 4-slot fixed buffer for the Table section (max WasmLimits.maxTables = 4).

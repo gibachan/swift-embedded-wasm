@@ -61,6 +61,123 @@ enum HostImport {
   #endif
 }
 
+// MARK: - Fixed32_HostFunctionPtr (Embedded only)
+
+// 32-slot fixed buffer for Embedded host functions (max WasmLimits.maxImports = 32).
+// Eliminates the heap-allocated [HostFunctionPtr] array used during init.
+// @convention(c) function pointers are pointer-sized and behave as bitwise-copyable
+// values; withUnsafeBytes is safe for read access (no write access needed since
+// hostFunctions is a `let` property — it is never mutated after init).
+#if hasFeature(Embedded)
+  struct Fixed32_HostFunctionPtr {
+    private var s0, s1, s2,
+      s3:
+        (
+          HostFunctionPtr, HostFunctionPtr, HostFunctionPtr, HostFunctionPtr,
+          HostFunctionPtr, HostFunctionPtr, HostFunctionPtr, HostFunctionPtr
+        )
+    private var _count: Int
+
+    init() {
+      // Swift requires a zero-value function pointer to initialise the tuple.
+      // This sentinel value is never called; it only fills uninitialised slots.
+      let z: HostFunctionPtr = { _, _, _, _, _ in }
+      let row = (z, z, z, z, z, z, z, z)
+      s0 = row
+      s1 = row
+      s2 = row
+      s3 = row
+      _count = 0
+    }
+
+    var count: Int { _count }
+
+    @inline(__always)
+    subscript(index: Int) -> HostFunctionPtr {
+      precondition(index >= 0 && index < _count)
+      let row = index / 8
+      let col = index % 8
+      return withRow(row) { $0[col] }
+    }
+
+    @inline(__always)
+    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<HostFunctionPtr>) -> R) -> R {
+      switch row {
+      case 0:
+        return withUnsafeBytes(of: s0) {
+          body($0.baseAddress!.assumingMemoryBound(to: HostFunctionPtr.self))
+        }
+      case 1:
+        return withUnsafeBytes(of: s1) {
+          body($0.baseAddress!.assumingMemoryBound(to: HostFunctionPtr.self))
+        }
+      case 2:
+        return withUnsafeBytes(of: s2) {
+          body($0.baseAddress!.assumingMemoryBound(to: HostFunctionPtr.self))
+        }
+      default:
+        return withUnsafeBytes(of: s3) {
+          body($0.baseAddress!.assumingMemoryBound(to: HostFunctionPtr.self))
+        }
+      }
+    }
+
+    mutating func append(_ fn: HostFunctionPtr) {
+      precondition(_count < 32, "Fixed32_HostFunctionPtr overflow: maxImports exceeded")
+      let row = _count / 8
+      let col = _count % 8
+      // Direct tuple-element assignment avoids withUnsafeMutableBytes on function pointers.
+      switch row {
+      case 0:
+        switch col {
+        case 0: s0.0 = fn
+        case 1: s0.1 = fn
+        case 2: s0.2 = fn
+        case 3: s0.3 = fn
+        case 4: s0.4 = fn
+        case 5: s0.5 = fn
+        case 6: s0.6 = fn
+        default: s0.7 = fn
+        }
+      case 1:
+        switch col {
+        case 0: s1.0 = fn
+        case 1: s1.1 = fn
+        case 2: s1.2 = fn
+        case 3: s1.3 = fn
+        case 4: s1.4 = fn
+        case 5: s1.5 = fn
+        case 6: s1.6 = fn
+        default: s1.7 = fn
+        }
+      case 2:
+        switch col {
+        case 0: s2.0 = fn
+        case 1: s2.1 = fn
+        case 2: s2.2 = fn
+        case 3: s2.3 = fn
+        case 4: s2.4 = fn
+        case 5: s2.5 = fn
+        case 6: s2.6 = fn
+        default: s2.7 = fn
+        }
+      default:
+        switch col {
+        case 0: s3.0 = fn
+        case 1: s3.1 = fn
+        case 2: s3.2 = fn
+        case 3: s3.3 = fn
+        case 4: s3.4 = fn
+        case 5: s3.5 = fn
+        case 6: s3.6 = fn
+        default: s3.7 = fn
+        }
+      }
+      _count += 1
+    }
+  }
+#endif
+
 // Wasm f32.min: propagates NaN; treats -0 < +0
 private func wasmF32Min(_ a: Float, _ b: Float) -> Float {
   if a.isNaN || b.isNaN { return .nan }
@@ -1009,21 +1126,24 @@ struct WasmInterpreter {
   let module: WasmModule
   var memory: [UInt8]
   #if hasFeature(Embedded)
-    // In Embedded builds, host functions are @convention(c) pointers — no heap allocation.
-    // internal (no modifier) so WasmInterpreterEmbedded.swift (same module, separate file) can
-    // access hostFunctions from runIterativeEmbedded.
-    let hostFunctions: [HostFunctionPtr]
+    // In Embedded builds, host functions are @convention(c) pointers in a fixed-size buffer —
+    // no heap allocation. internal (no modifier) so WasmInterpreterEmbedded.swift (same module,
+    // separate file) can access hostFunctions from callHostFunction.
+    let hostFunctions: Fixed32_HostFunctionPtr
   #else
     let hostFunctions: [HostFunction]
   #endif
   // internal (no modifier) so that WasmInterpreterEmbedded.swift (same module, separate file)
   // can pass these as inout arguments to dispatchEmbedded.
-  var globals: [Value]  // mutable global variable slots (global.get/set)
+  var globals: Fixed32_Value  // mutable global variable slots (global.get/set)
   // Tables store Value (.funcref or .externref) directly to support both funcref and externref tables.
   // The reftype of each slot is determined by the table's declared RefType.
-  // TODO: Embedded Phase 5 — replace [[Value]] with FlatTableStorage (requires updating all
-  // table accesses in dispatchEmbedded; deferred due to large scope of changes).
-  var tables: [[Value]]  // reference tables: tables[tableIdx][elemIdx]
+  #if hasFeature(Embedded)
+    // Embedded: fixed-size flat storage — no heap allocation.
+    var tables: FlatTableStorage  // reference tables; access via tables[ti, ei]
+  #else
+    var tables: [[Value]]  // TODO: Embedded Phase 5 — replace with FlatTableStorage
+  #endif
   // Bit i = 1 means segment i has been dropped. Supports up to 64 segments.
   var droppedDataSegments: UInt64 = 0
   // Bit i = 1 means segment i has been dropped. Supports up to 64 segments.
@@ -1042,9 +1162,9 @@ struct WasmInterpreter {
     // fi.module / fi.name are [UInt8]; StaticString cases use withUTF8Buffer for
     // zero-copy byte comparison without Unicode normalisation.
     #if hasFeature(Embedded)
-      // Embedded path: host functions are @convention(c) pointers — no heap-captured closures.
+      // Embedded path: host functions are @convention(c) pointers in a fixed-size buffer — no heap.
       // Use an index loop for Embedded compatibility (Fixed32_Import is the Embedded-path type; see WasmModule.swift).
-      var funcs: [HostFunctionPtr] = []
+      var funcs = Fixed32_HostFunctionPtr()
       for impIdx2 in 0..<module.imports.count {
         let imp = module.imports[impIdx2]
         guard case .function(let fi) = imp else { continue }
@@ -1100,39 +1220,63 @@ struct WasmInterpreter {
     // Initialise globals from module.globals.initValue.
     // Index-based loop works on both Fixed32_GlobalDef (Embedded) and [GlobalDef] (macOS)
     // now that Fixed32_GlobalDef exposes count + subscript on both platforms.
-    var globalsArr: [Value] = []
+    var globalsArr = Fixed32_Value([])
     for gi in 0..<module.globals.count { globalsArr.append(module.globals[gi].initValue) }
     self.globals = globalsArr
 
-    // Build per-table arrays from the Table section; one entry per declared table.
+    // Build per-table storage from the Table section; one entry per declared table.
     // Each table slot holds a Value (.funcref or .externref) matching the table's declared refType.
     // Only active segments are applied at instantiation; passive segments are skipped
     // and remain available for use by table.init / elem.drop at runtime.
     // Index-based loop works on both Fixed4_TableType (Embedded) and [TableType] (macOS)
     // now that Fixed4_TableType exposes count + subscript on both platforms.
-    // TODO: Embedded Phase 5 — replace [[Value]] initialisation with FlatTableStorage.initTable.
-    var tbls: [[Value]] = []
-    for ti2 in 0..<module.tables.count {
-      let tbl = module.tables[ti2]
-      let nullVal: Value = tbl.refType == .externRef ? .externref(nil) : .funcref(nil)
-      tbls.append([Value](repeating: nullVal, count: Int(tbl.min)))
-    }
-    // Apply active element segments; index-based loop works on both Fixed16_ElementSegment and [ElementSegment].
-    for segi in 0..<module.elements.count {
-      let seg = module.elements[segi]
-      guard !seg.isPassive else { continue }  // passive segments are not applied at instantiation
-      let ti = Int(seg.tableIndex)
-      guard ti < tbls.count else { throw .memoryAccessOutOfBounds }
-      let start = Int(seg.offset)
-      // Use the table's declared refType to produce the correct Value variant.
-      let refType = module.tables[ti].refType
-      for (i, funcIdx) in seg.functionIndices.enumerated() {
-        let pos = start + i
-        guard pos < tbls[ti].count else { throw .memoryAccessOutOfBounds }
-        tbls[ti][pos] = refType == .externRef ? .externref(funcIdx) : .funcref(funcIdx)
+    #if hasFeature(Embedded)
+      // Embedded: use FlatTableStorage — no heap allocation.
+      var tbls = FlatTableStorage()
+      for ti2 in 0..<module.tables.count {
+        let tbl = module.tables[ti2]
+        let nullVal: Value = tbl.refType == .externRef ? .externref(nil) : .funcref(nil)
+        try tbls.initTable(ti2, size: Int(tbl.min), nullValue: nullVal)
       }
-    }
-    self.tables = tbls
+      // Apply active element segments; index-based loop works on both platforms.
+      for segi in 0..<module.elements.count {
+        let seg = module.elements[segi]
+        guard !seg.isPassive else { continue }
+        let ti = Int(seg.tableIndex)
+        guard ti < tbls.tableCount else { throw .memoryAccessOutOfBounds }
+        let start = Int(seg.offset)
+        let refType = module.tables[ti].refType
+        for (i, funcIdx) in seg.functionIndices.enumerated() {
+          let pos = start + i
+          guard pos < tbls.count(ofTable: ti) else { throw .memoryAccessOutOfBounds }
+          tbls[ti, pos] = refType == .externRef ? .externref(funcIdx) : .funcref(funcIdx)
+        }
+      }
+      self.tables = tbls
+    #else
+      var tbls: [[Value]] = []
+      for ti2 in 0..<module.tables.count {
+        let tbl = module.tables[ti2]
+        let nullVal: Value = tbl.refType == .externRef ? .externref(nil) : .funcref(nil)
+        tbls.append([Value](repeating: nullVal, count: Int(tbl.min)))
+      }
+      // Apply active element segments; index-based loop works on both Fixed16_ElementSegment and [ElementSegment].
+      for segi in 0..<module.elements.count {
+        let seg = module.elements[segi]
+        guard !seg.isPassive else { continue }  // passive segments are not applied at instantiation
+        let ti = Int(seg.tableIndex)
+        guard ti < tbls.count else { throw .memoryAccessOutOfBounds }
+        let start = Int(seg.offset)
+        // Use the table's declared refType to produce the correct Value variant.
+        let refType = module.tables[ti].refType
+        for (i, funcIdx) in seg.functionIndices.enumerated() {
+          let pos = start + i
+          guard pos < tbls[ti].count else { throw .memoryAccessOutOfBounds }
+          tbls[ti][pos] = refType == .externRef ? .externref(funcIdx) : .funcref(funcIdx)
+        }
+      }
+      self.tables = tbls
+    #endif
 
     // Determine memory size: prefer imported memory, fall back to local memory definition.
     // Use an index loop for Embedded compatibility (Fixed32_Import is the Embedded-path type; see WasmModule.swift).

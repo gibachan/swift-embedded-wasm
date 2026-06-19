@@ -14,13 +14,13 @@
 // and to plain Arrays on macOS.
 //
 // API compatibility notes:
-//   - ValueStack / [Value]:   append(_:), removeLast() -> Value, count, isEmpty,
-//                             subscript[Int], removeSubrange(Int), removeSubrange(n...),
-//                             removeLast(k:), last (non-optional / forced below)
-//   - CallStack / [EmbeddedFrame]: append(_:), removeLast(), count, isEmpty,
-//                                  subscript[Int]
-//   - FlatTableStorage / [[Value]]: subscript[Int, Int], count(ofTable:) / .count,
-//                                    initTable / full [[Value]] protocol
+//   - ValueStack / [Value]:          append(_:), removeLast() -> Value, count, isEmpty,
+//                                    subscript[Int], removeSubrange(Int), removeSubrange(n...),
+//                                    removeLast(k:), last (non-optional / forced below)
+//   - CallStack / [EmbeddedFrame]:   append(_:), removeLast(), count, isEmpty, subscript[Int]
+//   - FlatTableStorage / [[Value]]:  subscript[Int, Int], count(ofTable:), tableCount,
+//                                    grow(_:by:fillValue:max:); [[Value]] gains these via extension
+//   - Fixed32_Value / [Value]:       subscript[Int] get/set, count
 //
 // The one API divergence is `last`: [Value].last is Optional; ValueStack.last is not.
 // All uses of valueStack.last in dispatchEmbedded use valueStack[valueStack.count-1]
@@ -52,10 +52,12 @@
 //
 // Conditional compilation for the macOS/Embedded split is confined to:
 //   1. LabelStack internals (WasmInterpreter.swift) — one #if hasFeature(Embedded)
-//   2. EmbeddedValueStack / EmbeddedCallStack type aliases (this file)
+//   2. EmbeddedValueStack / EmbeddedCallStack / EmbeddedTableStorage type aliases (this file)
 //   3. valueStack / frames initialisation in runIterativeEmbedded (this file)
 //   4. return statement in runIterativeEmbedded (toArray() vs identity)
-//   5. hostFunctions / HostFunction vs HostFunctionPtr split (WasmInterpreter.swift)
+//   5. hostFunctions field and init (Fixed32_HostFunctionPtr vs [HostFunction] — fundamental type difference)
+//   6. tables field and init (FlatTableStorage vs [[Value]] — ~16 KB struct causes stack overflow in debug builds)
+// globals uses Fixed32_Value on both platforms (512 bytes — safe for all thread stacks; no #if needed).
 #if hasFeature(Embedded)
   typealias EmbeddedValueStack = ValueStack
   typealias EmbeddedCallStack = CallStack
@@ -65,10 +67,56 @@
   typealias EmbeddedValueStack = [Value]
   typealias EmbeddedCallStack = [EmbeddedFrame]
 #endif
-// EmbeddedTableStorage uses [[Value]] on both platforms for now.
-// TODO: Embedded Phase 5 — replace with FlatTableStorage once all table accesses in
-// dispatchEmbedded have been migrated to the FlatTableStorage API.
-typealias EmbeddedTableStorage = [[Value]]
+// EmbeddedTableStorage uses FlatTableStorage on Embedded (no malloc) and [[Value]] on macOS.
+// FlatTableStorage is ~16 KB; passing it as inout to the large dispatchEmbedded function causes
+// Swift debug-build stack frames of several MB, overflowing 512 KB Swift Testing thread stacks.
+// [[Value]] on macOS avoids this while keeping the same FlatTableStorage API via the shim below.
+// dispatchEmbedded uses the FlatTableStorage API exclusively: tables[ti, ei], tables.count(ofTable:),
+// tables.tableCount, tables.grow(_:by:fillValue:max:).
+#if hasFeature(Embedded)
+  typealias EmbeddedTableStorage = FlatTableStorage
+#else
+  typealias EmbeddedTableStorage = [[Value]]
+#endif
+// EmbeddedGlobalStorage is Fixed32_Value on both platforms — no #if needed.
+// Fixed32_Value is ~512 bytes (4 rows × 8 Value slots) and safe as an inout parameter on all stacks.
+typealias EmbeddedGlobalStorage = Fixed32_Value
+
+// MARK: - [[Value]] FlatTableStorage compatibility shim (macOS only)
+
+// On macOS, EmbeddedTableStorage is [[Value]].  dispatchEmbedded uses the FlatTableStorage API
+// (two-index subscript, count(ofTable:), tableCount, grow) — so [[Value]] must expose the same
+// interface.  This extension is compiled only for non-Embedded builds; the real FlatTableStorage
+// provides the same API natively on Embedded.
+#if !hasFeature(Embedded)
+  extension Array where Element == [Value] {
+    /// Two-index subscript mirroring FlatTableStorage.subscript(ti:ei:).
+    subscript(ti: Int, ei: Int) -> Value {
+      get { self[ti][ei] }
+      set { self[ti][ei] = newValue }
+    }
+
+    /// Element count for table `ti`.
+    func count(ofTable ti: Int) -> Int { self[ti].count }
+
+    /// Number of live tables (mirrors FlatTableStorage.tableCount).
+    var tableCount: Int { count }
+
+    /// Grow table `ti` by `delta` slots filled with `fillValue`.
+    /// Returns the previous element count, or -1 if growth exceeds the declared max limit.
+    /// Note: WasmLimits.maxTableElements is NOT enforced here — macOS uses heap-allocated
+    /// [[Value]] so memory is not a hard constraint; only the module-declared max applies.
+    mutating func grow(_ ti: Int, by delta: Int, fillValue: Value, max: Int?) -> Int32 {
+      let old = self[ti].count
+      let newSize = old + delta
+      if let m = max, newSize > m { return -1 }
+      // Overflow guard: if delta alone overflows Int, growth is impossible.
+      guard delta <= Int.max - old else { return -1 }
+      self[ti].append(contentsOf: [Value](repeating: fillValue, count: delta))
+      return Int32(old)
+    }
+  }
+#endif
 
 // MARK: - BinaryReader
 
@@ -717,7 +765,7 @@ extension WasmInterpreter {
     valueStack: inout EmbeddedValueStack,
     frames: inout EmbeddedCallStack,
     memory: inout [UInt8],
-    globals: inout [Value],
+    globals: inout EmbeddedGlobalStorage,
     tables: inout EmbeddedTableStorage,
     droppedData: inout UInt64,
     droppedElem: inout UInt64
@@ -974,10 +1022,10 @@ extension WasmInterpreter {
       guard case .i32(let elemIdx) = valueStack.removeLast() else { throw WasmError.typeMismatch }
       let eIdx = Int(elemIdx)
       let ti = Int(tableIdxOp)
-      guard ti < tables.count else { throw WasmError.undefinedElement }
-      let tbl = tables[ti]
-      guard eIdx >= 0 && eIdx < tbl.count else { throw WasmError.undefinedElement }
-      guard case .funcref(let optFuncIdx) = tbl[eIdx], let resolvedFuncIdx = optFuncIdx else {
+      guard ti < tables.tableCount else { throw WasmError.undefinedElement }
+      guard eIdx >= 0 && eIdx < tables.count(ofTable: ti) else { throw WasmError.undefinedElement }
+      guard case .funcref(let optFuncIdx) = tables[ti, eIdx], let resolvedFuncIdx = optFuncIdx
+      else {
         throw WasmError.undefinedElement
       }
       let expectedType = module.types[Int(typeIdx)]
@@ -1055,10 +1103,10 @@ extension WasmInterpreter {
       guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
       guard case .i32(let idx) = valueStack.removeLast() else { throw WasmError.typeMismatch }
       let ti25 = Int(tableIdx25)
-      guard ti25 < tables.count else { throw WasmError.undefinedElement }
+      guard ti25 < tables.tableCount else { throw WasmError.undefinedElement }
       let i25 = Int(UInt32(bitPattern: idx))
-      guard i25 < tables[ti25].count else { throw WasmError.undefinedElement }
-      valueStack.append(tables[ti25][i25])
+      guard i25 < tables.count(ofTable: ti25) else { throw WasmError.undefinedElement }
+      valueStack.append(tables[ti25, i25])
       frames[fi].ip = UInt32(cursor)
 
     case 0x26:  // table.set
@@ -1067,15 +1115,15 @@ extension WasmInterpreter {
       let refVal = valueStack.removeLast()
       guard case .i32(let idx) = valueStack.removeLast() else { throw WasmError.typeMismatch }
       let ti26 = Int(tableIdx26)
-      guard ti26 < tables.count else { throw WasmError.undefinedElement }
+      guard ti26 < tables.tableCount else { throw WasmError.undefinedElement }
       let tableRefType = ti26 < module.tables.count ? module.tables[ti26].refType : .funcRef
       switch (tableRefType, refVal) {
       case (.funcRef, .funcref), (.externRef, .externref): break
       default: throw WasmError.typeMismatch
       }
       let i26 = Int(UInt32(bitPattern: idx))
-      guard i26 < tables[ti26].count else { throw WasmError.undefinedElement }
-      tables[ti26][i26] = refVal
+      guard i26 < tables.count(ofTable: ti26) else { throw WasmError.undefinedElement }
+      tables[ti26, i26] = refVal
       frames[fi].ip = UInt32(cursor)
 
     // MARK: Memory loads (0x28-0x35)
@@ -2520,7 +2568,7 @@ extension WasmInterpreter {
         let eiFC12 = Int(elemIdxFC12)
         let tiFC12 = Int(tableIdxFC12)
         guard eiFC12 < module.elements.count else { throw WasmError.undefinedElement }
-        guard tiFC12 < tables.count else { throw WasmError.undefinedElement }
+        guard tiFC12 < tables.tableCount else { throw WasmError.undefinedElement }
         let copyCountFC12 = Int(UInt32(bitPattern: n))
         // A dropped element segment has effective length 0.
         let elemLenFC12 =
@@ -2530,7 +2578,7 @@ extension WasmInterpreter {
         let dstOffFC12 = Int(UInt32(bitPattern: dst))
         // Bounds check: applied unconditionally.
         guard srcOffFC12 + copyCountFC12 <= elemLenFC12 else { throw WasmError.undefinedElement }
-        guard dstOffFC12 + copyCountFC12 <= tables[tiFC12].count else {
+        guard dstOffFC12 + copyCountFC12 <= tables.count(ofTable: tiFC12) else {
           throw WasmError.undefinedElement
         }
         if copyCountFC12 > 0 {
@@ -2538,7 +2586,7 @@ extension WasmInterpreter {
           let tableRefTypeFC12 =
             tiFC12 < module.tables.count ? module.tables[tiFC12].refType : .funcRef
           for i in 0..<copyCountFC12 {
-            tables[tiFC12][dstOffFC12 + i] =
+            tables[tiFC12, dstOffFC12 + i] =
               tableRefTypeFC12 == .externRef
               ? .externref(elemsFC12[srcOffFC12 + i]) : .funcref(elemsFC12[srcOffFC12 + i])
           }
@@ -2561,17 +2609,17 @@ extension WasmInterpreter {
         guard case .i32(let dst) = valueStack.removeLast() else { throw WasmError.typeMismatch }
         let diFC14 = Int(dstIdxFC14)
         let siFC14 = Int(srcIdxFC14)
-        guard diFC14 < tables.count && siFC14 < tables.count else {
+        guard diFC14 < tables.tableCount && siFC14 < tables.tableCount else {
           throw WasmError.undefinedElement
         }
         let copyCountFC14 = Int(UInt32(bitPattern: n))
         let srcOffFC14 = Int(UInt32(bitPattern: src))
         let dstOffFC14 = Int(UInt32(bitPattern: dst))
         // Bounds check: applied unconditionally.
-        guard srcOffFC14 + copyCountFC14 <= tables[siFC14].count else {
+        guard srcOffFC14 + copyCountFC14 <= tables.count(ofTable: siFC14) else {
           throw WasmError.undefinedElement
         }
-        guard dstOffFC14 + copyCountFC14 <= tables[diFC14].count else {
+        guard dstOffFC14 + copyCountFC14 <= tables.count(ofTable: diFC14) else {
           throw WasmError.undefinedElement
         }
         if copyCountFC14 > 0 {
@@ -2579,17 +2627,17 @@ extension WasmInterpreter {
             // Same table: overlap-safe copy (memmove semantics).
             if dstOffFC14 <= srcOffFC14 || dstOffFC14 >= srcOffFC14 + copyCountFC14 {
               for i in 0..<copyCountFC14 {
-                tables[diFC14][dstOffFC14 + i] = tables[siFC14][srcOffFC14 + i]
+                tables[diFC14, dstOffFC14 + i] = tables[siFC14, srcOffFC14 + i]
               }
             } else {
               for i in stride(from: copyCountFC14 - 1, through: 0, by: -1) {
-                tables[diFC14][dstOffFC14 + i] = tables[siFC14][srcOffFC14 + i]
+                tables[diFC14, dstOffFC14 + i] = tables[siFC14, srcOffFC14 + i]
               }
             }
           } else {
             // Different tables: no aliasing possible; always copy forward.
             for i in 0..<copyCountFC14 {
-              tables[diFC14][dstOffFC14 + i] = tables[siFC14][srcOffFC14 + i]
+              tables[diFC14, dstOffFC14 + i] = tables[siFC14, srcOffFC14 + i]
             }
           }
         }
@@ -2606,30 +2654,20 @@ extension WasmInterpreter {
         default: throw WasmError.typeMismatch
         }
         let tiFC15 = Int(tableIdxFC15)
-        guard tiFC15 < tables.count else { throw WasmError.undefinedElement }
+        guard tiFC15 < tables.tableCount else { throw WasmError.undefinedElement }
         let nFC15 = Int(UInt32(bitPattern: delta))
-        let oldSizeFC15 = Int32(tables[tiFC15].count)
-        // Overflow guard: if n alone overflows Int, growth is impossible.
-        guard nFC15 <= Int.max - tables[tiFC15].count else {
-          valueStack.append(.i32(-1))
-          frames[fi].ip = UInt32(cursor)
-          break
-        }
-        let newSizeFC15 = tables[tiFC15].count + nFC15
-        let tableMaxFC15 = tiFC15 < module.tables.count ? module.tables[tiFC15].max : nil
-        if let maxPages = tableMaxFC15, newSizeFC15 > Int(maxPages) {
-          valueStack.append(.i32(-1))
-        } else {
-          tables[tiFC15].append(contentsOf: [Value](repeating: refValFC15, count: nFC15))
-          valueStack.append(.i32(oldSizeFC15))
-        }
+        let tableMaxFC15 =
+          tiFC15 < module.tables.count ? module.tables[tiFC15].max.map(Int.init) : nil
+        let growResultFC15 = tables.grow(
+          tiFC15, by: nFC15, fillValue: refValFC15, max: tableMaxFC15)
+        valueStack.append(.i32(growResultFC15))
         frames[fi].ip = UInt32(cursor)
 
       case 16:  // table.size  immediate: tableidx (u32)
         let tableIdxFC16 = try readU32Local()
         let tiFC16 = Int(tableIdxFC16)
-        guard tiFC16 < tables.count else { throw WasmError.undefinedElement }
-        valueStack.append(.i32(Int32(tables[tiFC16].count)))
+        guard tiFC16 < tables.tableCount else { throw WasmError.undefinedElement }
+        valueStack.append(.i32(Int32(tables.count(ofTable: tiFC16))))
         frames[fi].ip = UInt32(cursor)
 
       case 17:  // table.fill  immediate: tableidx (u32)
@@ -2639,7 +2677,7 @@ extension WasmInterpreter {
         let fillRefFC17 = valueStack.removeLast()
         guard case .i32(let dst) = valueStack.removeLast() else { throw WasmError.typeMismatch }
         let tiFC17 = Int(tableIdxFC17)
-        guard tiFC17 < tables.count else { throw WasmError.undefinedElement }
+        guard tiFC17 < tables.tableCount else { throw WasmError.undefinedElement }
         // Verify the fill value type matches the table's declared refType.
         let tableFillRefTypeFC17 =
           tiFC17 < module.tables.count ? module.tables[tiFC17].refType : .funcRef
@@ -2650,11 +2688,11 @@ extension WasmInterpreter {
         let dstOffFC17 = Int(UInt32(bitPattern: dst))
         let fillCountFC17 = Int(UInt32(bitPattern: n))
         // Bounds check: applied unconditionally.
-        guard dstOffFC17 + fillCountFC17 <= tables[tiFC17].count else {
+        guard dstOffFC17 + fillCountFC17 <= tables.count(ofTable: tiFC17) else {
           throw WasmError.undefinedElement
         }
         for i in 0..<fillCountFC17 {
-          tables[tiFC17][dstOffFC17 + i] = fillRefFC17
+          tables[tiFC17, dstOffFC17 + i] = fillRefFC17
         }
         frames[fi].ip = UInt32(cursor)
 

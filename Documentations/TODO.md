@@ -9,16 +9,26 @@ The following work is needed to reach a state where Wasm runs on real hardware.
 
 ### Eliminate Dynamic Allocation
 
-- [ ] **Remaining dynamic allocations (deferred to Phase 5)**
+- [x] **Heap allocations eliminated (Phase 5)**
 
-  The following fields are still heap-allocated and will be addressed in Phase 5:
+  The following fields have been migrated from heap-allocated `Array<T>` to fixed-size buffers:
+
+  | Field | Location | Resolution |
+  |-------|----------|------------|
+  | `code: [FunctionHandle]` | `WasmModule` | → `Fixed64_FunctionHandle` (Embedded: tuple; macOS: `[FunctionHandle]`) |
+  | `tables: [[Value]]` | `WasmInterpreter` | → `FlatTableStorage` (Embedded); `[[Value]]` + shim (macOS, avoids ~16 KB inout stack pressure) |
+  | `globals: [Value]` | `WasmInterpreter` | → `Fixed32_Value` (both platforms — 512 bytes, no `#if` needed) |
+  | `hostFunctions: [HostFunctionPtr]` | `WasmInterpreter` (Embedded) | → `Fixed32_HostFunctionPtr` (Embedded only; macOS keeps `[HostFunction]` closures) |
+  | `ValueStack` / `CallStack` | `WasmInterpreterEmbedded` | fixed-size tuple buffers on Embedded; `[Value]` / `[EmbeddedFrame]` on macOS (stack-pressure workaround) |
+  | `LabelStack` | `EmbeddedFrame` | 32-element tuple on Embedded; `[Label]` on macOS |
+
+- [ ] **Remaining dynamic allocations**
 
   | Field | Location | Note |
   |-------|----------|------|
-  | `code: [FunctionHandle]` | `WasmModule` | byte ranges + pre-computed jump tables |
-  | `rawBytes: [UInt8]` | `WasmModule` | original Wasm binary buffer |
+  | `rawBytes: [UInt8]` | `WasmModule` | original Wasm binary buffer; zero-copy approach requires caller to manage lifetime |
   | `var tempInstructions: [Instruction]` | `parseFunctionHandles()` | per-function heap alloc during parse; needs a zero-allocation byte scanner to eliminate |
-  | `var frames: [EmbeddedFrame]` | macOS path | `CallStack` already fixed on Embedded; macOS uses `[EmbeddedFrame]` |
+  | `var frames: [EmbeddedFrame]` | macOS path | `CallStack` already fixed on Embedded; macOS uses `[EmbeddedFrame]` (stack-pressure workaround) |
   | `CallFrame.locals: [Value]` | macOS path | Embedded stores locals on shared `ValueStack`; macOS uses `[Value]` |
 
 - [ ] **Introduce an Arena Allocator to reduce allocations during module load**

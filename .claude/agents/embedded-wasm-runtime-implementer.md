@@ -54,6 +54,25 @@ These rules apply to ALL code you write. Violations will cause build failures in
 - `UnsafeBufferPointer` / `UnsafeMutableRawBufferPointer` for linear memory access with explicit bounds checking.
 - Byte-level name comparison: `nameBytes.elementsEqual("funcName".utf8)`.
 
+### `#if hasFeature(Embedded)` — minimize conditional compilation
+
+Avoid `#if hasFeature(Embedded)` wherever possible. Every block doubles the code path and widens the divergence between macOS and Embedded builds.
+
+**Permitted uses:**
+- The type literally does not exist on macOS (e.g. `HostFunctionPtr` is an `@convention(c)` type that only exists in Embedded builds).
+- A large fixed-size buffer would cause stack overflow in macOS debug builds when passed as `inout` to `dispatchEmbedded` (e.g. `ValueStack` ~4 KB, `FlatTableStorage` ~16 KB produce 900 KB–1.4 MB stack frames; Swift Testing threads have a 512 KB stack limit).
+- The existing `LabelStack` pattern: confine one `#if` inside a struct body so that callers see a single unified type on both platforms.
+
+**Forbidden patterns — use the alternatives instead:**
+| Pattern to avoid | Alternative |
+|---|---|
+| Per-field `#if` split (`var x: TypeA` vs `var x: TypeB`) | Design a Fixed* buffer that works identically on both platforms |
+| Duplicate logic in `#if` / `#else` branches | Unify the type so one implementation handles both platforms |
+| Inner `#if` inside a new Fixed* struct | If the struct is <1 KB, use tuple storage unconditionally on both platforms (see `Fixed32_Value`) |
+| Type-alias split (`typealias EmbeddedFoo = TypeA` / `TypeB`) | Only `EmbeddedValueStack` and `EmbeddedCallStack` carry a platform split; do not introduce new ones |
+
+**Decision rule:** Before adding any new `#if hasFeature(Embedded)`, ask "Can this type be implemented identically on both platforms?" Tuple-based Fixed* buffers under 1 KB are safe on all thread stacks and need no platform split.
+
 ### macOS phase allowances (must be marked for future replacement):
 - `Array<T>` for dynamic collections (parser results, stacks, locals). Mark with `// TODO: Embedded — replace with fixed-size buffer`.
 - `indirect case` for recursive instruction trees. Mark with `// TODO: Embedded — flatten representation`.
