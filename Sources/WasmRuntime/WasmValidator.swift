@@ -33,7 +33,8 @@
           guard Int(fi.typeIndex) < module.types.count else { throw .typeMismatch }
         }
       }
-      for (i, handle) in module.code.enumerated() {
+      for i in 0..<module.code.count {
+        let handle = module.code[i]
         let funcType = module.functionType(at: module.importedFunctionCount + i)
         let instructions = try WasmParser.decodeInstructions(
           handle: handle, rawBytes: module.rawBytes, types: module.types)

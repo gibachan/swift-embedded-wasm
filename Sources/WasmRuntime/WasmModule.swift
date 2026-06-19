@@ -1940,6 +1940,215 @@ struct FixedJumpTable_JumpEntry: Sendable {
   #endif
 }
 
+// MARK: Fixed64_FunctionHandle
+
+extension FunctionHandle {
+  /// Sentinel used to fill uninitialised slots in Fixed64_FunctionHandle.
+  /// `static var` (not `let`) avoids a lazy global in .data; Fixed64_FunctionHandle.init()
+  /// copies this value once per init and never reads it back as live module data.
+  static var zero: FunctionHandle {
+    FunctionHandle(
+      codeOffset: 0,
+      codeSize: 0,
+      locals: FixedLocals_ValueType(),
+      hasBulkMemoryInstruction: false,
+      jumpTable: FixedJumpTable_JumpEntry()
+    )
+  }
+}
+
+/// 64-slot fixed buffer for the Code section (max WasmLimits.maxFunctions = 64).
+///
+/// FunctionHandle contains FixedLocals_ValueType and FixedJumpTable_JumpEntry — both value types
+/// with no heap references in Embedded builds — so direct tuple element assignment is safe.
+/// Built incrementally via append() as parseFunctionHandles builds handles one by one.
+///
+/// Embedded: storage is 8 × 8-element sub-tuples of FunctionHandle — no malloc.
+/// macOS:    storage is [FunctionHandle] (heap) — keeps struct size manageable.
+struct Fixed64_FunctionHandle: Sendable {
+  #if hasFeature(Embedded)
+    private var s0, s1, s2, s3, s4, s5, s6,
+      s7:
+        (
+          FunctionHandle, FunctionHandle, FunctionHandle, FunctionHandle,
+          FunctionHandle, FunctionHandle, FunctionHandle, FunctionHandle
+        )
+    private var _count: Int
+
+    init() {
+      let z = FunctionHandle.zero
+      let row = (z, z, z, z, z, z, z, z)
+      s0 = row
+      s1 = row
+      s2 = row
+      s3 = row
+      s4 = row
+      s5 = row
+      s6 = row
+      s7 = row
+      _count = 0
+    }
+
+    var count: Int { _count }
+
+    subscript(index: Int) -> FunctionHandle {
+      precondition(index >= 0 && index < _count)
+      let row = index / 8
+      let col = index % 8
+      return withRow(row) { $0[col] }
+    }
+
+    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<FunctionHandle>) -> R) -> R {
+      switch row {
+      case 0:
+        return withUnsafeBytes(of: s0) {
+          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
+        }
+      case 1:
+        return withUnsafeBytes(of: s1) {
+          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
+        }
+      case 2:
+        return withUnsafeBytes(of: s2) {
+          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
+        }
+      case 3:
+        return withUnsafeBytes(of: s3) {
+          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
+        }
+      case 4:
+        return withUnsafeBytes(of: s4) {
+          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
+        }
+      case 5:
+        return withUnsafeBytes(of: s5) {
+          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
+        }
+      case 6:
+        return withUnsafeBytes(of: s6) {
+          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
+        }
+      default:
+        return withUnsafeBytes(of: s7) {
+          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
+        }
+      }
+    }
+
+    // Direct inout tuple-element assignment — FunctionHandle is not BitwiseCopyable
+    // (contains FixedLocals_ValueType and FixedJumpTable_JumpEntry with their own internals),
+    // so we avoid withUnsafeMutableBytes and use named element assignment.
+    private mutating func setElement(row: Int, col: Int, value: FunctionHandle) {
+      switch row {
+      case 0:
+        switch col {
+        case 0: s0.0 = value
+        case 1: s0.1 = value
+        case 2: s0.2 = value
+        case 3: s0.3 = value
+        case 4: s0.4 = value
+        case 5: s0.5 = value
+        case 6: s0.6 = value
+        default: s0.7 = value
+        }
+      case 1:
+        switch col {
+        case 0: s1.0 = value
+        case 1: s1.1 = value
+        case 2: s1.2 = value
+        case 3: s1.3 = value
+        case 4: s1.4 = value
+        case 5: s1.5 = value
+        case 6: s1.6 = value
+        default: s1.7 = value
+        }
+      case 2:
+        switch col {
+        case 0: s2.0 = value
+        case 1: s2.1 = value
+        case 2: s2.2 = value
+        case 3: s2.3 = value
+        case 4: s2.4 = value
+        case 5: s2.5 = value
+        case 6: s2.6 = value
+        default: s2.7 = value
+        }
+      case 3:
+        switch col {
+        case 0: s3.0 = value
+        case 1: s3.1 = value
+        case 2: s3.2 = value
+        case 3: s3.3 = value
+        case 4: s3.4 = value
+        case 5: s3.5 = value
+        case 6: s3.6 = value
+        default: s3.7 = value
+        }
+      case 4:
+        switch col {
+        case 0: s4.0 = value
+        case 1: s4.1 = value
+        case 2: s4.2 = value
+        case 3: s4.3 = value
+        case 4: s4.4 = value
+        case 5: s4.5 = value
+        case 6: s4.6 = value
+        default: s4.7 = value
+        }
+      case 5:
+        switch col {
+        case 0: s5.0 = value
+        case 1: s5.1 = value
+        case 2: s5.2 = value
+        case 3: s5.3 = value
+        case 4: s5.4 = value
+        case 5: s5.5 = value
+        case 6: s5.6 = value
+        default: s5.7 = value
+        }
+      case 6:
+        switch col {
+        case 0: s6.0 = value
+        case 1: s6.1 = value
+        case 2: s6.2 = value
+        case 3: s6.3 = value
+        case 4: s6.4 = value
+        case 5: s6.5 = value
+        case 6: s6.6 = value
+        default: s6.7 = value
+        }
+      default:
+        switch col {
+        case 0: s7.0 = value
+        case 1: s7.1 = value
+        case 2: s7.2 = value
+        case 3: s7.3 = value
+        case 4: s7.4 = value
+        case 5: s7.5 = value
+        case 6: s7.6 = value
+        default: s7.7 = value
+        }
+      }
+    }
+
+    mutating func append(_ h: FunctionHandle) {
+      precondition(_count < 64, "Fixed64_FunctionHandle overflow: maxFunctions exceeded")
+      let row = _count / 8
+      let col = _count % 8
+      setElement(row: row, col: col, value: h)
+      _count += 1
+    }
+
+  #else
+    // macOS: heap-allocated to keep struct size manageable.
+    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
+    private var _buf: [FunctionHandle] = []
+    var count: Int { _buf.count }
+    subscript(index: Int) -> FunctionHandle { _buf[index] }
+    mutating func append(_ h: FunctionHandle) { _buf.append(h) }
+  #endif
+}
+
 // MARK: - Module
 
 /// A parsed Wasm module. Data is stored per section.
@@ -1951,8 +2160,7 @@ struct WasmModule: Sendable {
   let memories: Fixed1_MemoryType  // Memory section
   let globals: Fixed32_GlobalDef  // Global section
   let exports: Fixed32_Export  // Export section
-  let code: [FunctionHandle]  // Code section: byte ranges with pre-computed jump tables
-  // TODO: Embedded Phase 5 — replace [FunctionHandle] with fixed-size buffer
+  let code: Fixed64_FunctionHandle  // Code section: byte ranges with pre-computed jump tables
   let rawBytes: [UInt8]  // Original binary buffer retained for on-the-fly instruction decode
   // TODO: Embedded Phase 5 — consider zero-copy approach for rawBytes
   let start: UInt32?  // Start section
@@ -1975,7 +2183,7 @@ struct WasmModule: Sendable {
     memories: [MemoryType],
     globals: [GlobalDef] = [],
     exports: [Export],
-    code: [FunctionHandle],
+    code: Fixed64_FunctionHandle,
     start: UInt32? = nil,
     elements: [ElementSegment] = [],
     data: [DataSegment] = [],
@@ -1988,7 +2196,7 @@ struct WasmModule: Sendable {
     self.memories = Fixed1_MemoryType(memories)
     self.globals = Fixed32_GlobalDef(globals)
     self.exports = Fixed32_Export(exports)
-    self.code = code  // TODO: Embedded Phase 5 — replace with fixed-size buffer
+    self.code = code
     self.start = start
     self.elements = Fixed16_ElementSegment(elements)
     self.data = Fixed16_DataSegment(data)

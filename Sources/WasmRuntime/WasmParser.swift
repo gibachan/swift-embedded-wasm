@@ -34,6 +34,210 @@ private enum PendingBlock {
     jumpEntryIdx: Int, opcodeByteOffset: UInt32, elseByteOffset: UInt32)
 }
 
+// MARK: - FixedPendingBlocks_PendingBlock
+
+/// 32-slot fixed-capacity stack for PendingBlock entries during parseFlatBodyTracked.
+///
+/// WasmLimits.maxLabelDepth = 32 caps the nesting depth, so 32 slots are sufficient.
+///
+/// Embedded: storage is 4 × 8-element sub-tuples of PendingBlock? — no malloc.
+///           PendingBlock? is used so nil can represent an uninitialised slot.
+///           PendingBlock contains only value-type fields (BlockType, Int, UInt32),
+///           so storing it on the stack is safe for RP2350 (520 KB SRAM).
+/// macOS:    storage is [PendingBlock] (heap) — keeps struct size manageable.
+private struct FixedPendingBlocks_PendingBlock {
+  #if hasFeature(Embedded)
+    // PendingBlock contains value-type fields only (BlockType, Int, UInt32) —
+    // no heap references — so direct tuple element assignment is correct.
+    private var s0, s1, s2,
+      s3:
+        (
+          PendingBlock?, PendingBlock?, PendingBlock?, PendingBlock?,
+          PendingBlock?, PendingBlock?, PendingBlock?, PendingBlock?
+        )
+    private var _count: Int
+
+    init() {
+      let row:
+        (
+          PendingBlock?, PendingBlock?, PendingBlock?, PendingBlock?,
+          PendingBlock?, PendingBlock?, PendingBlock?, PendingBlock?
+        ) = (nil, nil, nil, nil, nil, nil, nil, nil)
+      s0 = row
+      s1 = row
+      s2 = row
+      s3 = row
+      _count = 0
+    }
+
+    var count: Int { _count }
+    var isEmpty: Bool { _count == 0 }
+
+    mutating func push(_ pb: PendingBlock) {
+      precondition(_count < 32, "FixedPendingBlocks overflow: maxLabelDepth exceeded")
+      let row = _count / 8
+      let col = _count % 8
+      setElement(row: row, col: col, value: pb)
+      _count += 1
+    }
+
+    mutating func pop() -> PendingBlock? {
+      guard _count > 0 else { return nil }
+      _count -= 1
+      let row = _count / 8
+      let col = _count % 8
+      return getElement(row: row, col: col)
+    }
+
+    // Direct inout tuple-element assignment — no withUnsafeBytes because PendingBlock
+    // is not BitwiseCopyable (contains an enum with associated values).
+    private mutating func setElement(row: Int, col: Int, value: PendingBlock) {
+      switch row {
+      case 0:
+        switch col {
+        case 0: s0.0 = value
+        case 1: s0.1 = value
+        case 2: s0.2 = value
+        case 3: s0.3 = value
+        case 4: s0.4 = value
+        case 5: s0.5 = value
+        case 6: s0.6 = value
+        default: s0.7 = value
+        }
+      case 1:
+        switch col {
+        case 0: s1.0 = value
+        case 1: s1.1 = value
+        case 2: s1.2 = value
+        case 3: s1.3 = value
+        case 4: s1.4 = value
+        case 5: s1.5 = value
+        case 6: s1.6 = value
+        default: s1.7 = value
+        }
+      case 2:
+        switch col {
+        case 0: s2.0 = value
+        case 1: s2.1 = value
+        case 2: s2.2 = value
+        case 3: s2.3 = value
+        case 4: s2.4 = value
+        case 5: s2.5 = value
+        case 6: s2.6 = value
+        default: s2.7 = value
+        }
+      default:
+        switch col {
+        case 0: s3.0 = value
+        case 1: s3.1 = value
+        case 2: s3.2 = value
+        case 3: s3.3 = value
+        case 4: s3.4 = value
+        case 5: s3.5 = value
+        case 6: s3.6 = value
+        default: s3.7 = value
+        }
+      }
+    }
+
+    private func getElement(row: Int, col: Int) -> PendingBlock? {
+      switch row {
+      case 0:
+        switch col {
+        case 0: return s0.0
+        case 1: return s0.1
+        case 2: return s0.2
+        case 3: return s0.3
+        case 4: return s0.4
+        case 5: return s0.5
+        case 6: return s0.6
+        default: return s0.7
+        }
+      case 1:
+        switch col {
+        case 0: return s1.0
+        case 1: return s1.1
+        case 2: return s1.2
+        case 3: return s1.3
+        case 4: return s1.4
+        case 5: return s1.5
+        case 6: return s1.6
+        default: return s1.7
+        }
+      case 2:
+        switch col {
+        case 0: return s2.0
+        case 1: return s2.1
+        case 2: return s2.2
+        case 3: return s2.3
+        case 4: return s2.4
+        case 5: return s2.5
+        case 6: return s2.6
+        default: return s2.7
+        }
+      default:
+        switch col {
+        case 0: return s3.0
+        case 1: return s3.1
+        case 2: return s3.2
+        case 3: return s3.3
+        case 4: return s3.4
+        case 5: return s3.5
+        case 6: return s3.6
+        default: return s3.7
+        }
+      }
+    }
+
+  #else
+    // macOS: heap-allocated to keep struct size manageable.
+    private var _buf: [PendingBlock] = []
+    var count: Int { _buf.count }
+    var isEmpty: Bool { _buf.isEmpty }
+    mutating func push(_ pb: PendingBlock) { _buf.append(pb) }
+    mutating func pop() -> PendingBlock? { _buf.popLast() }
+  #endif
+}
+
+// MARK: - InstructionOutput
+
+/// Abstraction for a sink that receives decoded instructions during parseFlatBodyTracked.
+///
+/// Using a generic constraint <Out: InstructionOutput> enables static dispatch (zero overhead)
+/// and avoids existentials, which are forbidden in Embedded Swift.
+///
+/// Two conformances:
+///   - InstructionSink (no-op): used by parseFunctionHandles (Embedded + macOS) when the
+///     decoded instruction stream is not needed — only the jump table and hasBulkMemory flag matter.
+///   - [Instruction] (macOS only): used by decodeInstructions to build the flat instruction array.
+protocol InstructionOutput {
+  mutating func append(_ instr: Instruction)
+  mutating func update(at index: Int, _ instr: Instruction)
+  var count: Int { get }
+}
+
+/// No-op InstructionOutput used by parseFunctionHandles.
+///
+/// append() only increments the counter — no Instruction storage is allocated.
+/// update() is a no-op; backpatching is still performed on the jump table, but
+/// the instruction array backpatch path is skipped.
+struct InstructionSink: InstructionOutput {
+  private var _count: Int = 0
+  var count: Int { _count }
+  mutating func append(_ instr: Instruction) { _count += 1 }
+  mutating func update(at index: Int, _ instr: Instruction) {}  // backpatch not needed
+}
+
+#if !hasFeature(Embedded)
+  // macOS: extend [Instruction] to conform to InstructionOutput so decodeInstructions
+  // can pass it directly to the generic parseFlatBodyTracked.
+  // Not available in Embedded because Array<T> conformances to non-stdlib protocols
+  // require the stdlib generics runtime.
+  extension Array: InstructionOutput where Element == Instruction {
+    mutating func update(at index: Int, _ instr: Instruction) { self[index] = instr }
+  }
+#endif
+
 struct WasmParser {
   private var stream: BufferStream
   // Retain the original buffer so that Embedded builds can re-scan function body
@@ -94,7 +298,7 @@ struct WasmParser {
     var memories: [MemoryType] = []
     var globals: [GlobalDef] = []
     var exports: [Export] = []
-    var code: [FunctionHandle] = []
+    var code = Fixed64_FunctionHandle()
     var start: UInt32? = nil
     var elements: [ElementSegment] = []
     var data: [DataSegment] = []
@@ -177,11 +381,11 @@ struct WasmParser {
 
     // If any bulk-memory instruction (memory.init or data.drop) is present in the
     // code section, the Data Count section is required (§5.5.15, §A.2).
-    // Use explicit loops instead of nested closures to avoid heap-capturing closures
-    // that are not supported in Embedded Swift.
+    // Use index-based loop to avoid requiring Sequence conformance on Fixed64_FunctionHandle
+    // (which would add protocol overhead not needed elsewhere).
     var hasBulkMemoryInstruction = false
-    for body in code {
-      if body.hasBulkMemoryInstruction {
+    for i in 0..<code.count {
+      if code[i].hasBulkMemoryInstruction {
         hasBulkMemoryInstruction = true
         break
       }
@@ -650,11 +854,11 @@ struct WasmParser {
   /// [Instruction] array and the jump table), then stores the byte range, local types, bulk-memory
   /// flag, and jump table in a FunctionHandle.
   // TODO: Phase 5 — replace parseFlatBodyTracked call with a zero-allocation byte skipper.
-  private mutating func parseFunctionHandles() throws(WasmError) -> [FunctionHandle] {
+  private mutating func parseFunctionHandles() throws(WasmError) -> Fixed64_FunctionHandle {
     let count = try readU32()
     // Check before allocating any FunctionHandle entries to fail fast on oversized modules.
     guard count <= WasmLimits.maxFunctions else { throw .resourceLimitExceeded }
-    var handles: [FunctionHandle] = []
+    var handles = Fixed64_FunctionHandle()
     for _ in 0..<count {
       let bodySize = try readU32()
 
@@ -674,23 +878,14 @@ struct WasmParser {
       }
 
       let codeStart = UInt32(stream.offset)
-      // TODO: Embedded Phase 5 — tempInstructions is heap-allocated per function.
-      // Replace parseFlatBodyTracked with a byte-scanner that detects bulk-memory opcodes
-      // in-line without constructing [Instruction].
-      var tempInstructions: [Instruction] = []
-      var jumpTable = FixedJumpTable_JumpEntry()
-      try parseFlatBodyTracked(into: &tempInstructions, jumpTable: &jumpTable)
-      let codeEnd = UInt32(stream.offset)
-
+      // InstructionSink is a no-op output — no [Instruction] allocation.
+      // hasBulkMemory is set in-line by parseFlatBodyTracked when it encounters
+      // memory.init (0xFC 0x08) or data.drop (0xFC 0x09).
+      var sink = InstructionSink()
       var hasBulkMemory = false
-      for instr in tempInstructions {
-        switch instr {
-        case .memoryInit: hasBulkMemory = true
-        case .dataDrop: hasBulkMemory = true
-        default: break
-        }
-        if hasBulkMemory { break }
-      }
+      var jumpTable = FixedJumpTable_JumpEntry()
+      try parseFlatBodyTracked(into: &sink, hasBulkMemory: &hasBulkMemory, jumpTable: &jumpTable)
+      let codeEnd = UInt32(stream.offset)
 
       handles.append(
         FunctionHandle(
@@ -704,7 +899,7 @@ struct WasmParser {
     return handles
   }
 
-  /// Parses instructions into a flat array, tracking control-flow byte offsets for the jump table.
+  /// Parses instructions into an output sink, tracking control-flow byte offsets for the jump table.
   ///
   /// Captures the absolute byte offset of each opcode before consuming it, and appends a
   /// JumpEntry to `jumpTable` for every block/loop/if with the pre-computed byte targets.
@@ -715,12 +910,15 @@ struct WasmParser {
   ///
   /// Iterative: uses an explicit `pending` stack instead of recursion to avoid Swift call-stack
   /// overflow on deeply nested control structures (e.g. the `deep` function in block.0.wasm).
-  private mutating func parseFlatBodyTracked(
-    into instructions: inout [Instruction],
+  ///
+  /// `hasBulkMemory` is set to true if a memory.init (0xFC 0x08) or data.drop (0xFC 0x09)
+  /// instruction is encountered. The caller must initialise it to false before calling.
+  private mutating func parseFlatBodyTracked<Out: InstructionOutput>(
+    into output: inout Out,
+    hasBulkMemory: inout Bool,
     jumpTable: inout FixedJumpTable_JumpEntry
   ) throws(WasmError) {
-    // TODO: Embedded Phase 5 — replace with a fixed-capacity buffer to avoid heap allocation.
-    var pending: [PendingBlock] = []
+    var pending = FixedPendingBlocks_PendingBlock()
 
     while true {
       // Capture the absolute byte offset of this opcode BEFORE consuming it.
@@ -732,9 +930,9 @@ struct WasmParser {
       case 0x02:  // block
         let bt = try readBlockType()
         let (brArity, paramCount) = try blockArityForBlock(bt)
-        let headerPc = instructions.count
+        let headerPc = output.count
         // Placeholder; endPc backpatched on matching `end`.
-        instructions.append(.block(bt, brArity: brArity, paramCount: paramCount, endPc: 0))
+        output.append(.block(bt, brArity: brArity, paramCount: paramCount, endPc: 0))
         // Pre-append placeholder so outer block's entry precedes inner blocks' entries
         // (pre-order). Phase 4's monotonically-advancing cursor requires this ordering.
         guard jumpTable.count < WasmLimits.maxJumpEntriesPerFunction else {
@@ -742,7 +940,7 @@ struct WasmParser {
         }
         let jumpEntryIdx = jumpTable.count
         jumpTable.append(JumpEntry(instrOffset: opcodeByteOffset, target1: 0, target2: 0))
-        pending.append(
+        pending.push(
           .block(
             headerPc: headerPc, bt: bt, brArity: brArity, paramCount: paramCount,
             jumpEntryIdx: jumpEntryIdx, opcodeByteOffset: opcodeByteOffset))
@@ -753,8 +951,8 @@ struct WasmParser {
         // stream.offset now points at the first byte of the loop body.
         // Phase 4 decoder will restart here on a br targeting this loop.
         let startByteOffset = UInt32(stream.offset)
-        let startPc = instructions.count + 1  // first body instruction follows the loop instr
-        instructions.append(.loop(bt, brArity: loopBrArity, startPc: startPc))
+        let startPc = output.count + 1  // first body instruction follows the loop instr
+        output.append(.loop(bt, brArity: loopBrArity, startPc: startPc))
         // target1 (startByteOffset) is already known; the entry is fully written here — no
         // backpatch needed. Pre-order: this loop's entry precedes any inner blocks' entries.
         guard jumpTable.count < WasmLimits.maxJumpEntriesPerFunction else {
@@ -762,14 +960,14 @@ struct WasmParser {
         }
         jumpTable.append(
           JumpEntry(instrOffset: opcodeByteOffset, target1: startByteOffset, target2: 0))
-        pending.append(.loop)
+        pending.push(.loop)
 
       case 0x04:  // if [else] end
         let bt = try readBlockType()
         let (brArity, paramCount) = try blockArityForBlock(bt)
-        let headerPc = instructions.count
+        let headerPc = output.count
         // Placeholder; both PCs backpatched on matching `else`/`end`.
-        instructions.append(
+        output.append(
           .ifElse(bt, brArity: brArity, paramCount: paramCount, elsePc: 0, endPc: 0))
         // Pre-append placeholder BEFORE the then-body so that this if's entry precedes
         // any inner blocks in both then-body and else-body (pre-order).
@@ -778,27 +976,28 @@ struct WasmParser {
         }
         let jumpEntryIdx = jumpTable.count
         jumpTable.append(JumpEntry(instrOffset: opcodeByteOffset, target1: 0, target2: 0))
-        pending.append(
+        pending.push(
           .ifThen(
             headerPc: headerPc, bt: bt, brArity: brArity, paramCount: paramCount,
             jumpEntryIdx: jumpEntryIdx, opcodeByteOffset: opcodeByteOffset))
 
       case 0x05:  // else: closes then-body, opens else-body
         guard !pending.isEmpty else { throw WasmError.invalidInstruction(0x05) }
-        let top = pending.removeLast()
+        let top = pending.pop()
         guard
+          let top,
           case .ifThen(
             let headerPc, let bt, let brArity, let paramCount,
             let jumpEntryIdx, let outerByteOffset) = top
         else { throw WasmError.invalidInstruction(0x05) }
         _ = headerPc  // used below in ifElse push
-        instructions.append(.blockEnd)  // ends the then-path
-        let jumpPc = instructions.count
-        instructions.append(.jump(0))  // placeholder; backpatched at matching `end`
-        let elsePc = instructions.count
+        output.append(.blockEnd)  // ends the then-path
+        let jumpPc = output.count
+        output.append(.jump(0))  // placeholder; backpatched at matching `end`
+        let elsePc = output.count
         // stream.offset is now just after the 0x05 else opcode — first byte of else body.
         let elseByteOffset = UInt32(stream.offset)
-        pending.append(
+        pending.push(
           .ifElse(
             headerPc: headerPc, jumpPc: jumpPc, elsePc: elsePc,
             bt: bt, brArity: brArity, paramCount: paramCount,
@@ -806,21 +1005,22 @@ struct WasmParser {
             elseByteOffset: elseByteOffset))
 
       case 0x0B:  // end: closes a block/loop/if body or the function body
-        guard let top = pending.popLast() else { return }  // function body end
+        guard let top = pending.pop() else { return }  // function body end
         switch top {
         case .block(
           let headerPc, let bt, let brArity, let paramCount,
           let jumpEntryIdx, let outerByteOffset):
-          let blockEndPc = instructions.count
-          instructions.append(.blockEnd)
+          let blockEndPc = output.count
+          output.append(.blockEnd)
           // stream.offset now sits just past the 0x0B end opcode.
           let endByteOffset = UInt32(stream.offset)
-          instructions[headerPc] = .block(
-            bt, brArity: brArity, paramCount: paramCount, endPc: blockEndPc + 1)
+          output.update(
+            at: headerPc,
+            .block(bt, brArity: brArity, paramCount: paramCount, endPc: blockEndPc + 1))
           jumpTable[jumpEntryIdx] = JumpEntry(
             instrOffset: outerByteOffset, target1: endByteOffset, target2: 0)
         case .loop:
-          instructions.append(.blockEnd)
+          output.append(.blockEnd)
         case .ifThen(
           let headerPc, let bt, let brArity, let paramCount,
           let jumpEntryIdx, let outerByteOffset):
@@ -829,11 +1029,12 @@ struct WasmParser {
           //   so the interpreter executes `end` which pops the if label naturally.
           // target2 = stream.offset (byte after `end`): br-continuation; handleEmbeddedBranch
           //   already pops the label, so ip must land past the `end`, not on it.
-          let blockEndPc = instructions.count
-          instructions.append(.blockEnd)
-          let endPc = instructions.count
-          instructions[headerPc] = .ifElse(
-            bt, brArity: brArity, paramCount: paramCount, elsePc: blockEndPc, endPc: endPc)
+          let blockEndPc = output.count
+          output.append(.blockEnd)
+          let endPc = output.count
+          output.update(
+            at: headerPc,
+            .ifElse(bt, brArity: brArity, paramCount: paramCount, elsePc: blockEndPc, endPc: endPc))
           jumpTable[jumpEntryIdx] = JumpEntry(
             instrOffset: outerByteOffset,
             target1: opcodeByteOffset,
@@ -842,12 +1043,13 @@ struct WasmParser {
           let headerPc, let jumpPc, let elsePc, let bt, let brArity, let paramCount,
           let jumpEntryIdx, let outerByteOffset, let elseByteOffset):
           // Has else clause: then-path jumps past end; else-path falls through to here.
-          instructions.append(.blockEnd)
+          output.append(.blockEnd)
           let endByteOffset = UInt32(stream.offset)
-          let endPc = instructions.count
-          instructions[headerPc] = .ifElse(
-            bt, brArity: brArity, paramCount: paramCount, elsePc: elsePc, endPc: endPc)
-          instructions[jumpPc] = .jump(endPc)
+          let endPc = output.count
+          output.update(
+            at: headerPc,
+            .ifElse(bt, brArity: brArity, paramCount: paramCount, elsePc: elsePc, endPc: endPc))
+          output.update(at: jumpPc, .jump(endPc))
           jumpTable[jumpEntryIdx] = JumpEntry(
             instrOffset: outerByteOffset, target1: elseByteOffset, target2: endByteOffset)
         }
@@ -856,354 +1058,356 @@ struct WasmParser {
       // The opcodeByteOffset captured above is not used for non-control-flow instructions.
 
       case 0x00:  // unreachable
-        instructions.append(.unreachable)
+        output.append(.unreachable)
 
       case 0x01:  // nop
-        instructions.append(.nop)
+        output.append(.nop)
 
       case 0x0C:  // br
-        instructions.append(.br(try readU32()))
+        output.append(.br(try readU32()))
 
       case 0x0D:  // br_if
-        instructions.append(.brIf(try readU32()))
+        output.append(.brIf(try readU32()))
 
       case 0x0E:  // br_table
         let count = try readU32()
-        let headerPc = instructions.count
-        instructions.append(.brTable(count: count, default_: 0))  // placeholder; backpatched below
+        let headerPc = output.count
+        output.append(.brTable(count: count, default_: 0))  // placeholder; backpatched below
         for _ in 0..<count {
-          instructions.append(.brTableEntry(try readU32()))
+          output.append(.brTableEntry(try readU32()))
         }
         let default_ = try readU32()
-        instructions[headerPc] = .brTable(count: count, default_: default_)  // backpatch
+        output.update(at: headerPc, .brTable(count: count, default_: default_))  // backpatch
 
       case 0x0F:  // return
-        instructions.append(.return_)
+        output.append(.return_)
 
       case 0x10:  // call
-        instructions.append(.call(try readU32()))
+        output.append(.call(try readU32()))
 
       case 0x11:  // call_indirect: type_idx, table_idx
         let typeIdx = try readU32()
         let tableIdx = try readU32()
-        instructions.append(.callIndirect(typeIdx, tableIdx))
+        output.append(.callIndirect(typeIdx, tableIdx))
 
       case 0x1A:  // drop
-        instructions.append(.drop)
+        output.append(.drop)
 
       case 0x1B:  // select
-        instructions.append(.select)
+        output.append(.select)
 
       case 0x20:  // local.get
-        instructions.append(.localGet(try readU32()))
+        output.append(.localGet(try readU32()))
 
       case 0x21:  // local.set
-        instructions.append(.localSet(try readU32()))
+        output.append(.localSet(try readU32()))
 
       case 0x22:  // local.tee
-        instructions.append(.localTee(try readU32()))
+        output.append(.localTee(try readU32()))
 
       case 0x23:  // global.get
-        instructions.append(.globalGet(try readU32()))
+        output.append(.globalGet(try readU32()))
 
       case 0x24:  // global.set
-        instructions.append(.globalSet(try readU32()))
+        output.append(.globalSet(try readU32()))
 
       case 0x25:  // table.get
-        instructions.append(.tableGet(try readU32()))
+        output.append(.tableGet(try readU32()))
 
       case 0x26:  // table.set
-        instructions.append(.tableSet(try readU32()))
+        output.append(.tableSet(try readU32()))
 
       case 0x28:  // i32.load
-        instructions.append(.i32Load(try readU32(), try readU32()))
+        output.append(.i32Load(try readU32(), try readU32()))
 
       case 0x29:  // i64.load
-        instructions.append(.i64Load(try readU32(), try readU32()))
+        output.append(.i64Load(try readU32(), try readU32()))
 
       case 0x2A:  // f32.load
-        instructions.append(.f32Load(try readU32(), try readU32()))
+        output.append(.f32Load(try readU32(), try readU32()))
 
       case 0x2B:  // f64.load
-        instructions.append(.f64Load(try readU32(), try readU32()))
+        output.append(.f64Load(try readU32(), try readU32()))
 
       case 0x2C:  // i32.load8_s
-        instructions.append(.i32Load8S(try readU32(), try readU32()))
+        output.append(.i32Load8S(try readU32(), try readU32()))
 
       case 0x2D:  // i32.load8_u
-        instructions.append(.i32Load8U(try readU32(), try readU32()))
+        output.append(.i32Load8U(try readU32(), try readU32()))
 
       case 0x2E:  // i32.load16_s
-        instructions.append(.i32Load16S(try readU32(), try readU32()))
+        output.append(.i32Load16S(try readU32(), try readU32()))
 
       case 0x2F:  // i32.load16_u
-        instructions.append(.i32Load16U(try readU32(), try readU32()))
+        output.append(.i32Load16U(try readU32(), try readU32()))
 
       case 0x30:  // i64.load8_s
-        instructions.append(.i64Load8S(try readU32(), try readU32()))
+        output.append(.i64Load8S(try readU32(), try readU32()))
 
       case 0x31:  // i64.load8_u
-        instructions.append(.i64Load8U(try readU32(), try readU32()))
+        output.append(.i64Load8U(try readU32(), try readU32()))
 
       case 0x32:  // i64.load16_s
-        instructions.append(.i64Load16S(try readU32(), try readU32()))
+        output.append(.i64Load16S(try readU32(), try readU32()))
 
       case 0x33:  // i64.load16_u
-        instructions.append(.i64Load16U(try readU32(), try readU32()))
+        output.append(.i64Load16U(try readU32(), try readU32()))
 
       case 0x34:  // i64.load32_s
-        instructions.append(.i64Load32S(try readU32(), try readU32()))
+        output.append(.i64Load32S(try readU32(), try readU32()))
 
       case 0x35:  // i64.load32_u
-        instructions.append(.i64Load32U(try readU32(), try readU32()))
+        output.append(.i64Load32U(try readU32(), try readU32()))
 
       case 0x36:  // i32.store
-        instructions.append(.i32Store(try readU32(), try readU32()))
+        output.append(.i32Store(try readU32(), try readU32()))
 
       case 0x37:  // i64.store
-        instructions.append(.i64Store(try readU32(), try readU32()))
+        output.append(.i64Store(try readU32(), try readU32()))
 
       case 0x38:  // f32.store
-        instructions.append(.f32Store(try readU32(), try readU32()))
+        output.append(.f32Store(try readU32(), try readU32()))
 
       case 0x39:  // f64.store
-        instructions.append(.f64Store(try readU32(), try readU32()))
+        output.append(.f64Store(try readU32(), try readU32()))
 
       case 0x3A:  // i32.store8
-        instructions.append(.i32Store8(try readU32(), try readU32()))
+        output.append(.i32Store8(try readU32(), try readU32()))
 
       case 0x3B:  // i32.store16
-        instructions.append(.i32Store16(try readU32(), try readU32()))
+        output.append(.i32Store16(try readU32(), try readU32()))
 
       case 0x3C:  // i64.store8
-        instructions.append(.i64Store8(try readU32(), try readU32()))
+        output.append(.i64Store8(try readU32(), try readU32()))
 
       case 0x3D:  // i64.store16
-        instructions.append(.i64Store16(try readU32(), try readU32()))
+        output.append(.i64Store16(try readU32(), try readU32()))
 
       case 0x3E:  // i64.store32
-        instructions.append(.i64Store32(try readU32(), try readU32()))
+        output.append(.i64Store32(try readU32(), try readU32()))
 
       case 0x3F:  // memory.size (1-byte reserved operand = 0x00)
         _ = try readByte()
-        instructions.append(.memorySize)
+        output.append(.memorySize)
 
       case 0x40:  // memory.grow (1-byte reserved operand = 0x00)
         _ = try readByte()
-        instructions.append(.memoryGrow)
+        output.append(.memoryGrow)
 
       case 0xFC:  // bulk memory / SIMD-saturating-truncate prefix
         let subOp = try readByte()
         switch subOp {
-        case 0x00: instructions.append(.i32TruncSatF32S)
-        case 0x01: instructions.append(.i32TruncSatF32U)
-        case 0x02: instructions.append(.i32TruncSatF64S)
-        case 0x03: instructions.append(.i32TruncSatF64U)
-        case 0x04: instructions.append(.i64TruncSatF32S)
-        case 0x05: instructions.append(.i64TruncSatF32U)
-        case 0x06: instructions.append(.i64TruncSatF64S)
-        case 0x07: instructions.append(.i64TruncSatF64U)
+        case 0x00: output.append(.i32TruncSatF32S)
+        case 0x01: output.append(.i32TruncSatF32U)
+        case 0x02: output.append(.i32TruncSatF64S)
+        case 0x03: output.append(.i32TruncSatF64U)
+        case 0x04: output.append(.i64TruncSatF32S)
+        case 0x05: output.append(.i64TruncSatF32U)
+        case 0x06: output.append(.i64TruncSatF64S)
+        case 0x07: output.append(.i64TruncSatF64U)
         case 0x08:
           let segIdx = try readU32()
           _ = try readByte()  // mem_idx: always 0x00 in MVP (single memory)
-          instructions.append(.memoryInit(segIdx))
+          output.append(.memoryInit(segIdx))
+          hasBulkMemory = true  // memory.init requires Data Count section
         case 0x09:
-          instructions.append(.dataDrop(try readU32()))
+          output.append(.dataDrop(try readU32()))
+          hasBulkMemory = true  // data.drop requires Data Count section
         case 0x0A:
           _ = try readByte()  // dst memory index (always 0x00 in MVP)
           _ = try readByte()  // src memory index (always 0x00 in MVP)
-          instructions.append(.memoryCopy)
+          output.append(.memoryCopy)
         case 0x0B:
           _ = try readByte()  // memory index (always 0x00 in MVP)
-          instructions.append(.memoryFill)
+          output.append(.memoryFill)
         case 0x0C:
           let elemIdx = try readU32()
           let tableIdx = try readU32()
-          instructions.append(.tableInit(elemIdx, tableIdx))
+          output.append(.tableInit(elemIdx, tableIdx))
         case 0x0D:
-          instructions.append(.elemDrop(try readU32()))
+          output.append(.elemDrop(try readU32()))
         case 0x0E:
           let dstTable = try readU32()
           let srcTable = try readU32()
-          instructions.append(.tableCopy(dstTable, srcTable))
+          output.append(.tableCopy(dstTable, srcTable))
         case 0x0F:
-          instructions.append(.tableGrow(try readU32()))
+          output.append(.tableGrow(try readU32()))
         case 0x10:
-          instructions.append(.tableSize(try readU32()))
+          output.append(.tableSize(try readU32()))
         case 0x11:
-          instructions.append(.tableFill(try readU32()))
+          output.append(.tableFill(try readU32()))
         default:
           throw .invalidInstruction(0xFC)
         }
 
       case 0x41:  // i32.const (signed LEB128)
-        instructions.append(.i32Const(try readI32()))
+        output.append(.i32Const(try readI32()))
 
       case 0x42:  // i64.const (signed LEB128, 64-bit)
-        instructions.append(.i64Const(try readI64()))
+        output.append(.i64Const(try readI64()))
 
       case 0x43:  // f32.const (4 bytes, little-endian IEEE 754)
-        instructions.append(.f32Const(try readF32()))
+        output.append(.f32Const(try readF32()))
 
       case 0x44:  // f64.const (8 bytes, little-endian IEEE 754)
-        instructions.append(.f64Const(try readF64()))
+        output.append(.f64Const(try readF64()))
 
       // f32 comparisons (return i32)
-      case 0x5B: instructions.append(.f32Eq)
-      case 0x5C: instructions.append(.f32Ne)
-      case 0x5D: instructions.append(.f32Lt)
-      case 0x5E: instructions.append(.f32Gt)
-      case 0x5F: instructions.append(.f32Le)
-      case 0x60: instructions.append(.f32Ge)
+      case 0x5B: output.append(.f32Eq)
+      case 0x5C: output.append(.f32Ne)
+      case 0x5D: output.append(.f32Lt)
+      case 0x5E: output.append(.f32Gt)
+      case 0x5F: output.append(.f32Le)
+      case 0x60: output.append(.f32Ge)
 
       // i32 unary
-      case 0x45: instructions.append(.i32Eqz)
-      case 0x67: instructions.append(.i32Clz)
-      case 0x68: instructions.append(.i32Ctz)
-      case 0x69: instructions.append(.i32Popcnt)
-      case 0xC0: instructions.append(.i32Extend8S)
-      case 0xC1: instructions.append(.i32Extend16S)
+      case 0x45: output.append(.i32Eqz)
+      case 0x67: output.append(.i32Clz)
+      case 0x68: output.append(.i32Ctz)
+      case 0x69: output.append(.i32Popcnt)
+      case 0xC0: output.append(.i32Extend8S)
+      case 0xC1: output.append(.i32Extend16S)
 
       // i32 comparisons
-      case 0x46: instructions.append(.i32Eq)
-      case 0x47: instructions.append(.i32Ne)
-      case 0x48: instructions.append(.i32LtS)
-      case 0x49: instructions.append(.i32LtU)
-      case 0x4A: instructions.append(.i32GtS)
-      case 0x4B: instructions.append(.i32GtU)
-      case 0x4C: instructions.append(.i32LeS)
-      case 0x4D: instructions.append(.i32LeU)
-      case 0x4E: instructions.append(.i32GeS)
-      case 0x4F: instructions.append(.i32GeU)
+      case 0x46: output.append(.i32Eq)
+      case 0x47: output.append(.i32Ne)
+      case 0x48: output.append(.i32LtS)
+      case 0x49: output.append(.i32LtU)
+      case 0x4A: output.append(.i32GtS)
+      case 0x4B: output.append(.i32GtU)
+      case 0x4C: output.append(.i32LeS)
+      case 0x4D: output.append(.i32LeU)
+      case 0x4E: output.append(.i32GeS)
+      case 0x4F: output.append(.i32GeU)
 
       // i32 arithmetic
-      case 0x6A: instructions.append(.i32Add)
-      case 0x6B: instructions.append(.i32Sub)
-      case 0x6C: instructions.append(.i32Mul)
-      case 0x6D: instructions.append(.i32DivS)
-      case 0x6E: instructions.append(.i32DivU)
-      case 0x6F: instructions.append(.i32RemS)
-      case 0x70: instructions.append(.i32RemU)
+      case 0x6A: output.append(.i32Add)
+      case 0x6B: output.append(.i32Sub)
+      case 0x6C: output.append(.i32Mul)
+      case 0x6D: output.append(.i32DivS)
+      case 0x6E: output.append(.i32DivU)
+      case 0x6F: output.append(.i32RemS)
+      case 0x70: output.append(.i32RemU)
 
       // i32 bitwise
-      case 0x71: instructions.append(.i32And)
-      case 0x72: instructions.append(.i32Or)
-      case 0x73: instructions.append(.i32Xor)
-      case 0x74: instructions.append(.i32Shl)
-      case 0x75: instructions.append(.i32ShrS)
-      case 0x76: instructions.append(.i32ShrU)
-      case 0x77: instructions.append(.i32Rotl)
-      case 0x78: instructions.append(.i32Rotr)
+      case 0x71: output.append(.i32And)
+      case 0x72: output.append(.i32Or)
+      case 0x73: output.append(.i32Xor)
+      case 0x74: output.append(.i32Shl)
+      case 0x75: output.append(.i32ShrS)
+      case 0x76: output.append(.i32ShrU)
+      case 0x77: output.append(.i32Rotl)
+      case 0x78: output.append(.i32Rotr)
 
       // f32 unary
-      case 0x8B: instructions.append(.f32Abs)
-      case 0x8C: instructions.append(.f32Neg)
-      case 0x8D: instructions.append(.f32Ceil)
-      case 0x8E: instructions.append(.f32Floor)
-      case 0x8F: instructions.append(.f32Trunc)
-      case 0x90: instructions.append(.f32Nearest)
-      case 0x91: instructions.append(.f32Sqrt)
+      case 0x8B: output.append(.f32Abs)
+      case 0x8C: output.append(.f32Neg)
+      case 0x8D: output.append(.f32Ceil)
+      case 0x8E: output.append(.f32Floor)
+      case 0x8F: output.append(.f32Trunc)
+      case 0x90: output.append(.f32Nearest)
+      case 0x91: output.append(.f32Sqrt)
 
       // f32 binary arithmetic
-      case 0x92: instructions.append(.f32Add)
-      case 0x93: instructions.append(.f32Sub)
-      case 0x94: instructions.append(.f32Mul)
-      case 0x95: instructions.append(.f32Div)
-      case 0x96: instructions.append(.f32Min)
-      case 0x97: instructions.append(.f32Max)
-      case 0x98: instructions.append(.f32Copysign)
+      case 0x92: output.append(.f32Add)
+      case 0x93: output.append(.f32Sub)
+      case 0x94: output.append(.f32Mul)
+      case 0x95: output.append(.f32Div)
+      case 0x96: output.append(.f32Min)
+      case 0x97: output.append(.f32Max)
+      case 0x98: output.append(.f32Copysign)
 
       // i64 unary
-      case 0x50: instructions.append(.i64Eqz)
-      case 0x79: instructions.append(.i64Clz)
-      case 0x7A: instructions.append(.i64Ctz)
-      case 0x7B: instructions.append(.i64Popcnt)
-      case 0xC2: instructions.append(.i64Extend8S)
-      case 0xC3: instructions.append(.i64Extend16S)
-      case 0xC4: instructions.append(.i64Extend32S)
+      case 0x50: output.append(.i64Eqz)
+      case 0x79: output.append(.i64Clz)
+      case 0x7A: output.append(.i64Ctz)
+      case 0x7B: output.append(.i64Popcnt)
+      case 0xC2: output.append(.i64Extend8S)
+      case 0xC3: output.append(.i64Extend16S)
+      case 0xC4: output.append(.i64Extend32S)
 
       // i64 comparisons (return i32)
-      case 0x51: instructions.append(.i64Eq)
-      case 0x52: instructions.append(.i64Ne)
-      case 0x53: instructions.append(.i64LtS)
-      case 0x54: instructions.append(.i64LtU)
-      case 0x55: instructions.append(.i64GtS)
-      case 0x56: instructions.append(.i64GtU)
-      case 0x57: instructions.append(.i64LeS)
-      case 0x58: instructions.append(.i64LeU)
-      case 0x59: instructions.append(.i64GeS)
-      case 0x5A: instructions.append(.i64GeU)
+      case 0x51: output.append(.i64Eq)
+      case 0x52: output.append(.i64Ne)
+      case 0x53: output.append(.i64LtS)
+      case 0x54: output.append(.i64LtU)
+      case 0x55: output.append(.i64GtS)
+      case 0x56: output.append(.i64GtU)
+      case 0x57: output.append(.i64LeS)
+      case 0x58: output.append(.i64LeU)
+      case 0x59: output.append(.i64GeS)
+      case 0x5A: output.append(.i64GeU)
 
       // i64 arithmetic
-      case 0x7C: instructions.append(.i64Add)
-      case 0x7D: instructions.append(.i64Sub)
-      case 0x7E: instructions.append(.i64Mul)
-      case 0x7F: instructions.append(.i64DivS)
-      case 0x80: instructions.append(.i64DivU)
-      case 0x81: instructions.append(.i64RemS)
-      case 0x82: instructions.append(.i64RemU)
+      case 0x7C: output.append(.i64Add)
+      case 0x7D: output.append(.i64Sub)
+      case 0x7E: output.append(.i64Mul)
+      case 0x7F: output.append(.i64DivS)
+      case 0x80: output.append(.i64DivU)
+      case 0x81: output.append(.i64RemS)
+      case 0x82: output.append(.i64RemU)
 
       // i64 bitwise
-      case 0x83: instructions.append(.i64And)
-      case 0x84: instructions.append(.i64Or)
-      case 0x85: instructions.append(.i64Xor)
-      case 0x86: instructions.append(.i64Shl)
-      case 0x87: instructions.append(.i64ShrS)
-      case 0x88: instructions.append(.i64ShrU)
-      case 0x89: instructions.append(.i64Rotl)
-      case 0x8A: instructions.append(.i64Rotr)
+      case 0x83: output.append(.i64And)
+      case 0x84: output.append(.i64Or)
+      case 0x85: output.append(.i64Xor)
+      case 0x86: output.append(.i64Shl)
+      case 0x87: output.append(.i64ShrS)
+      case 0x88: output.append(.i64ShrU)
+      case 0x89: output.append(.i64Rotl)
+      case 0x8A: output.append(.i64Rotr)
 
-      case 0xA7: instructions.append(.i32WrapI64)
-      case 0xA8: instructions.append(.i32TruncF32S)
-      case 0xA9: instructions.append(.i32TruncF32U)
-      case 0xAA: instructions.append(.i32TruncF64S)
-      case 0xAB: instructions.append(.i32TruncF64U)
-      case 0xAC: instructions.append(.i64ExtendI32S)
-      case 0xAD: instructions.append(.i64ExtendI32U)
-      case 0xAE: instructions.append(.i64TruncF32S)
-      case 0xAF: instructions.append(.i64TruncF32U)
-      case 0xB0: instructions.append(.i64TruncF64S)
-      case 0xB1: instructions.append(.i64TruncF64U)
-      case 0xB2: instructions.append(.f32ConvertI32S)
-      case 0xB3: instructions.append(.f32ConvertI32U)
-      case 0xB4: instructions.append(.f32ConvertI64S)
-      case 0xB5: instructions.append(.f32ConvertI64U)
-      case 0xB6: instructions.append(.f32DemoteF64)
-      case 0xB7: instructions.append(.f64ConvertI32S)
-      case 0xB8: instructions.append(.f64ConvertI32U)
-      case 0xB9: instructions.append(.f64ConvertI64S)
-      case 0xBA: instructions.append(.f64ConvertI64U)
-      case 0xBB: instructions.append(.f64PromoteF32)
-      case 0xBC: instructions.append(.i32ReinterpretF32)
-      case 0xBD: instructions.append(.i64ReinterpretF64)
-      case 0xBE: instructions.append(.f32ReinterpretI32)
-      case 0xBF: instructions.append(.f64ReinterpretI64)
+      case 0xA7: output.append(.i32WrapI64)
+      case 0xA8: output.append(.i32TruncF32S)
+      case 0xA9: output.append(.i32TruncF32U)
+      case 0xAA: output.append(.i32TruncF64S)
+      case 0xAB: output.append(.i32TruncF64U)
+      case 0xAC: output.append(.i64ExtendI32S)
+      case 0xAD: output.append(.i64ExtendI32U)
+      case 0xAE: output.append(.i64TruncF32S)
+      case 0xAF: output.append(.i64TruncF32U)
+      case 0xB0: output.append(.i64TruncF64S)
+      case 0xB1: output.append(.i64TruncF64U)
+      case 0xB2: output.append(.f32ConvertI32S)
+      case 0xB3: output.append(.f32ConvertI32U)
+      case 0xB4: output.append(.f32ConvertI64S)
+      case 0xB5: output.append(.f32ConvertI64U)
+      case 0xB6: output.append(.f32DemoteF64)
+      case 0xB7: output.append(.f64ConvertI32S)
+      case 0xB8: output.append(.f64ConvertI32U)
+      case 0xB9: output.append(.f64ConvertI64S)
+      case 0xBA: output.append(.f64ConvertI64U)
+      case 0xBB: output.append(.f64PromoteF32)
+      case 0xBC: output.append(.i32ReinterpretF32)
+      case 0xBD: output.append(.i64ReinterpretF64)
+      case 0xBE: output.append(.f32ReinterpretI32)
+      case 0xBF: output.append(.f64ReinterpretI64)
 
       // f64 comparisons (return i32)
-      case 0x61: instructions.append(.f64Eq)
-      case 0x62: instructions.append(.f64Ne)
-      case 0x63: instructions.append(.f64Lt)
-      case 0x64: instructions.append(.f64Gt)
-      case 0x65: instructions.append(.f64Le)
-      case 0x66: instructions.append(.f64Ge)
+      case 0x61: output.append(.f64Eq)
+      case 0x62: output.append(.f64Ne)
+      case 0x63: output.append(.f64Lt)
+      case 0x64: output.append(.f64Gt)
+      case 0x65: output.append(.f64Le)
+      case 0x66: output.append(.f64Ge)
 
       // f64 unary
-      case 0x99: instructions.append(.f64Abs)
-      case 0x9A: instructions.append(.f64Neg)
-      case 0x9B: instructions.append(.f64Ceil)
-      case 0x9C: instructions.append(.f64Floor)
-      case 0x9D: instructions.append(.f64Trunc)
-      case 0x9E: instructions.append(.f64Nearest)
-      case 0x9F: instructions.append(.f64Sqrt)
+      case 0x99: output.append(.f64Abs)
+      case 0x9A: output.append(.f64Neg)
+      case 0x9B: output.append(.f64Ceil)
+      case 0x9C: output.append(.f64Floor)
+      case 0x9D: output.append(.f64Trunc)
+      case 0x9E: output.append(.f64Nearest)
+      case 0x9F: output.append(.f64Sqrt)
 
       // f64 binary arithmetic
-      case 0xA0: instructions.append(.f64Add)
-      case 0xA1: instructions.append(.f64Sub)
-      case 0xA2: instructions.append(.f64Mul)
-      case 0xA3: instructions.append(.f64Div)
-      case 0xA4: instructions.append(.f64Min)
-      case 0xA5: instructions.append(.f64Max)
-      case 0xA6: instructions.append(.f64Copysign)
+      case 0xA0: output.append(.f64Add)
+      case 0xA1: output.append(.f64Sub)
+      case 0xA2: output.append(.f64Mul)
+      case 0xA3: output.append(.f64Div)
+      case 0xA4: output.append(.f64Min)
+      case 0xA5: output.append(.f64Max)
+      case 0xA6: output.append(.f64Copysign)
 
       // ref instructions
       case 0xD0:  // ref.null reftype: [] → [funcref | externref]
@@ -1211,13 +1415,13 @@ struct WasmParser {
         guard let refType = RefType(rawValue: reftypeByte) else {
           throw .invalidRefType(reftypeByte)
         }
-        instructions.append(.refNull(refType))
+        output.append(.refNull(refType))
 
       case 0xD1:  // ref.is_null: [funcref] → [i32]
-        instructions.append(.refIsNull)
+        output.append(.refIsNull)
 
       case 0xD2:  // ref.func funcIdx: [] → [funcref]
-        instructions.append(.refFunc(try readU32()))
+        output.append(.refFunc(try readU32()))
 
       default:
         throw .invalidInstruction(opcode)
@@ -1297,6 +1501,7 @@ struct WasmParser {
       for i in 0..<types.count { typesArr.append(types[i]) }
 
       var instructions: [Instruction] = []
+      var hasBulkMemory = false
       var jumpTable = FixedJumpTable_JumpEntry()
       // withUnsafeBufferPointer is rethrows; catch and rethrow as typed WasmError
       // to satisfy the typed-throws function signature.
@@ -1305,7 +1510,8 @@ struct WasmParser {
           var parser = WasmParser(buf)
           parser.stream = BufferStream(buf, offset: Int(handle.codeOffset))
           parser.types = typesArr
-          try parser.parseFlatBodyTracked(into: &instructions, jumpTable: &jumpTable)
+          try parser.parseFlatBodyTracked(
+            into: &instructions, hasBulkMemory: &hasBulkMemory, jumpTable: &jumpTable)
         }
       } catch let e as WasmError {
         throw e
