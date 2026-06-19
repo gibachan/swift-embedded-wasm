@@ -1,7 +1,26 @@
 // Global state shared between @main setup and BTstack callbacks
 var hciEventCallbackRegistration = btstack_packet_callback_registration_t()
 var ledCharHandle: UInt16 = 0
+var logNotifyHandle: UInt16 = 0
 let ledPin = UInt32(CYW43_WL_GPIO_LED_PIN)
+
+// 64-byte static log buffer for BLE notification output — tuple avoids heap allocation.
+var logBuf: (
+  UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+  UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+  UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+  UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+  UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+  UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+  UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+  UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8
+) = (
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+)
+var logBufLen: Int32 = 0
 
 // WASM receive state
 var wasmRecvLen: UInt32 = 0       // bytes written into the receive buffer so far
@@ -82,9 +101,23 @@ func attWriteCallback(
         }
 
     case 0xF2:
-        // Execute only when all expected bytes have been received
+        // Execute only when all expected bytes have been received and CRC32 matches.
+        // Packet layout: [0xF2, crc[0], crc[1], crc[2], crc[3]] (5 bytes, little-endian CRC).
         guard wasmRecvExpected > 0, wasmRecvLen == wasmRecvExpected else { return 0 }
-        executeReceivedWasm()
+        guard bufferSize >= 5 else { return 0 }
+        let receivedCRC = UInt32(buffer[1])
+            | UInt32(buffer[2]) << 8
+            | UInt32(buffer[3]) << 16
+            | UInt32(buffer[4]) << 24
+        guard let destBase = wasm_recv_buf_ptr() else { return 0 }
+        let wasmBuf = UnsafeBufferPointer<UInt8>(start: destBase, count: Int(wasmRecvLen))
+        guard wasmCRC32(wasmBuf) == receivedCRC else {
+            // CRC mismatch — discard the corrupted transfer.
+            wasmRecvLen = 0
+            wasmRecvExpected = 0
+            return 0
+        }
+        executeReceivedWasm(conHandle: conHandle)
 
     default:
         break
@@ -176,21 +209,66 @@ func hostSleep(
   sleep_ms(UInt32(clamped))
 }
 
-// Write "result: <v>\n" to UART without using variadic printf.
+// Append one byte to logBuf (silently drops if the buffer is full).
+func logAppendByte(_ b: UInt8) {
+    guard logBufLen < 64 else { return }
+    withUnsafeMutableBytes(of: &logBuf) { ptr in
+        ptr[Int(logBufLen)] = b
+    }
+    logBufLen += 1
+}
+
+// Write one byte to UART and to logBuf so the same output reaches both destinations.
+func writeByte(_ b: UInt8) {
+    _ = putchar(Int32(b))
+    logAppendByte(b)
+}
+
+// CRC32 (IEEE 802.3 / PKZIP, polynomial 0xEDB88320) — matches the iOS side implementation.
+// Runs bit-by-bit to avoid a 1 KB lookup table in flash.
+func wasmCRC32(_ buf: UnsafeBufferPointer<UInt8>) -> UInt32 {
+    var crc: UInt32 = 0xFFFF_FFFF
+    for i in 0..<buf.count {
+        var b = UInt32(buf[i]) ^ (crc & 0xFF)
+        for _ in 0..<8 {
+            b = (b & 1) != 0 ? (b >> 1) ^ 0xEDB8_8320 : b >> 1
+        }
+        crc = b ^ (crc >> 8)
+    }
+    return ~crc
+}
+
+// Send logBuf as a single BLE Notification on logNotifyHandle.
+// att_server_notify requires the ATT handle and a connected peripheral handle.
+func bleNotifyLog(conHandle: UInt16) {
+    guard logBufLen > 0, logNotifyHandle != 0 else { return }
+    withUnsafeBytes(of: &logBuf) { ptr in
+        guard let base = ptr.baseAddress else { return }
+        _ = att_server_notify(
+            conHandle,
+            logNotifyHandle,
+            base.assumingMemoryBound(to: UInt8.self),
+            UInt16(logBufLen)
+        )
+    }
+    logBufLen = 0
+}
+
+// Write "result: <v>\n" to UART and logBuf without using variadic printf.
 // printf is unavailable in Embedded Swift (C variadic functions are not supported).
-// putchar() from pico/stdlib.h is non-variadic and works in Embedded Swift.
+// writeByte() routes each byte to both putchar() and logAppendByte().
 func uartWriteResult(_ v: Int32) {
     // "result: " encoded as a stack-allocated tuple — no heap allocation.
     var prefix: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
         (0x72, 0x65, 0x73, 0x75, 0x6C, 0x74, 0x3A, 0x20)  // "result: "
     withUnsafeBytes(of: &prefix) { ptr in
-        for i in 0..<ptr.count { _ = putchar(Int32(ptr[i])) }
+        for i in 0..<ptr.count { writeByte(ptr[i]) }
     }
     // Use UInt32 for digit extraction to handle Int32.min correctly.
     // Int32.min negated as Int32 overflows; casting to UInt32 via bitPattern is exact.
     var u: UInt32
     if v < 0 {
-        _ = putchar(0x2D)  // '-'
+        writeByte(0x2D)  // '-'
         u = ~UInt32(bitPattern: v) &+ 1  // two's complement negation, exact for all Int32
     } else {
         u = UInt32(bitPattern: v)
@@ -200,7 +278,7 @@ func uartWriteResult(_ v: Int32) {
         (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     var len = 0
     if u == 0 {
-        _ = putchar(0x30)  // '0'
+        writeByte(0x30)  // '0'
     } else {
         withUnsafeMutableBytes(of: &digits) { ptr in
             while u > 0 {
@@ -213,25 +291,27 @@ func uartWriteResult(_ v: Int32) {
         withUnsafeBytes(of: digits) { ptr in
             var i = len - 1
             while i >= 0 {
-                _ = putchar(Int32(ptr[i]))
+                writeByte(ptr[i])
                 i -= 1
             }
         }
     }
-    _ = putchar(0x0A)  // '\n'
+    writeByte(0x0A)  // '\n'
 }
 
 // Execute the WASM binary that has been written into the static receive buffer.
 //
 // Dispatch strategy (in order):
-//   1. If the module exports "add" — call add(3, 4) and print the result via UART.
+//   1. If the module exports "add" — call add(3, 4) and print the result via UART + logBuf.
 //      This exercises the i32-add.wasm demo and verifies i32.add round-trip.
 //   2. If the module exports "run" — call run() with no arguments.
 //      This covers the existing blink/gpio demos.
 //   3. Neither export found — return silently.
 //
 // No String == comparisons: names are compared as [UInt8] via callExport(nameBytes:).
-func executeReceivedWasm() {
+// conHandle is the BLE connection handle used to send the log notification after execution.
+func executeReceivedWasm(conHandle: UInt16) {
+    logBufLen = 0  // clear log buffer for this execution run
     guard wasmRecvLen > 0, let ptr = wasm_recv_buf_ptr() else { return }
     let wasmBuf = UnsafeBufferPointer<UInt8>(start: ptr, count: Int(wasmRecvLen))
     var parser = WasmParser(wasmBuf)
@@ -276,6 +356,8 @@ func executeReceivedWasm() {
     } catch {
         // On WASM error, leave hardware state unchanged
     }
+    // Send accumulated output (e.g. "result: 7\n") to iOS as a BLE Notification.
+    bleNotifyLog(conHandle: conHandle)
     // Reset transfer state so the next 0xF0 starts fresh
     wasmRecvLen = 0
     wasmRecvExpected = 0
@@ -317,6 +399,24 @@ struct Main {
                 bytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
                 0x0108,  // ATT_PROPERTY_WRITE | ATT_PROPERTY_DYNAMIC
                 0, 0,    // ATT_SECURITY_NONE for read and write
+                nil, 0
+            )
+        }
+
+        // Notify characteristic: 12345678-1234-5678-1234-56789abcdef2 (big-endian)
+        // Properties: 0x0110 = ATT_PROPERTY_NOTIFY (0x10) | ATT_PROPERTY_DYNAMIC (0x100)
+        // att_db_util automatically appends a CCCD when NOTIFY is set.
+        // iOS subscribes by writing 0x0001 to the CCCD via setNotifyValue(true).
+        var logCharUUID: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                          UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) = (
+            0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78,
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf2
+        )
+        withUnsafeBytes(of: &logCharUUID) { bytes in
+            logNotifyHandle = att_db_util_add_characteristic_uuid128(
+                bytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                0x0110,  // ATT_PROPERTY_NOTIFY | ATT_PROPERTY_DYNAMIC
+                0, 0,
                 nil, 0
             )
         }

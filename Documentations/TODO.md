@@ -118,20 +118,20 @@ The iOS app is implemented in SwiftUI + CoreBluetooth.
 
 ### BLE Protocol Design
 
-- [ ] **Design a Notification characteristic for log output**
+- [x] **Design a Notification characteristic for log output**
 
   Forward UART log output from Pico to iOS as BLE Notifications.
   Implement as UART → ring buffer → BLE Notification.
   Split and reassemble log lines to fit MTU size (20–512 bytes).
 
-- [ ] **Strengthen the transfer-complete / execution-start handshake protocol**
+- [x] **Strengthen the transfer-complete / execution-start handshake protocol**
 
   Currently completion is determined solely by matching received byte count.
   Include a CRC checksum in the final packet to detect corruption or interruption during transfer.
 
 ### Required Features (iOS App)
 
-- [ ] **Display Pico execution logs in real time in the iOS app**
+- [x] **Display Pico execution logs in real time in the iOS app**
 
   Append text to a SwiftUI `ScrollView` each time a Log Notification is received.
   Receive via the CoreBluetooth `centralManager(_:didUpdateValueFor:)` delegate
@@ -143,10 +143,6 @@ The iOS app is implemented in SwiftUI + CoreBluetooth.
 
   Use SwiftData or FileManager to save transferred binaries to the app's Documents folder.
   Implement a management screen with list view, deletion, and re-sending.
-
-- [ ] **Select and transfer any `.wasm` from the iOS Files app**
-
-  Enable `.wasm` file selection via `UIDocumentPickerViewController`.
 
 - [ ] **Mirror OLED display content in the iOS app**
 

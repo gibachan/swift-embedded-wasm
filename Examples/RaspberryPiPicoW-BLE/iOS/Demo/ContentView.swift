@@ -46,6 +46,20 @@ struct ContentView: View {
           }
         }
 
+        Section("Pico Output") {
+          if ble.picoLog.isEmpty {
+            Text("No output yet")
+              .foregroundStyle(.secondary)
+          } else {
+            ForEach(Array(ble.picoLog.enumerated()), id: \.offset) { _, line in
+              Text(line)
+                .font(.system(.body, design: .monospaced))
+            }
+            Button("Clear") { ble.clearPicoLog() }
+              .foregroundStyle(.red)
+          }
+        }
+
         Section("Log") {
           NavigationLink("Show Log (\(ble.log.count))") {
             LogView(log: ble.log)

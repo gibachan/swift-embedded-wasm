@@ -13,6 +13,7 @@ final class BLEManager: NSObject {
   private var central: CBCentralManager!
   private var peripheral: CBPeripheral?
   private var characteristic: CBCharacteristic?
+  private var notifyCharacteristic: CBCharacteristic?
 
   // MARK: - State Properties
 
@@ -22,6 +23,7 @@ final class BLEManager: NSObject {
   var isSending = false
   var sendProgress: Double = 0  // 0.0 – 1.0
   var log: [String] = []
+  var picoLog: [String] = []  // output lines received from Pico via BLE Notification
 
   // MARK: - Write queue for chunked WASM transfer
 
@@ -77,8 +79,17 @@ final class BLEManager: NSObject {
       offset = end
     }
 
-    // 0xF2: execute
-    queue.append(Data([0xF2]))
+    // 0xF2: execute + CRC32 (bytes[1..4], little-endian)
+    // The Pico recomputes CRC32 over the received buffer and rejects execution on mismatch.
+    let checksum = crc32(of: data)
+    queue.append(
+      Data([
+        0xF2,
+        UInt8(checksum & 0xFF),
+        UInt8((checksum >> 8) & 0xFF),
+        UInt8((checksum >> 16) & 0xFF),
+        UInt8((checksum >> 24) & 0xFF),
+      ]))
 
     writeQueue = queue
     totalChunks = queue.filter { $0.first == 0xF1 }.count
@@ -103,6 +114,23 @@ final class BLEManager: NSObject {
     isSending = false
     sendProgress = 1
     log.append("✅ WASM sent")
+  }
+
+  // CRC32 (IEEE 802.3 / PKZIP, polynomial 0xEDB88320) — same algorithm as Pico side.
+  private func crc32(of data: Data) -> UInt32 {
+    var crc: UInt32 = 0xFFFF_FFFF
+    for byte in data {
+      var b = UInt32(byte) ^ (crc & 0xFF)
+      for _ in 0..<8 {
+        b = (b & 1) != 0 ? (b >> 1) ^ 0xEDB8_8320 : b >> 1
+      }
+      crc = b ^ (crc >> 8)
+    }
+    return ~crc
+  }
+
+  func clearPicoLog() {
+    picoLog.removeAll()
   }
 }
 
@@ -161,6 +189,7 @@ extension BLEManager: CBCentralManagerDelegate {
     writeQueue.removeAll()
     self.peripheral = nil
     self.characteristic = nil
+    self.notifyCharacteristic = nil
     log.append("🔌 Disconnected")
     central.scanForPeripherals(withServices: nil)
   }
@@ -189,6 +218,24 @@ extension BLEManager: CBPeripheralDelegate {
         isReady = true
         log.append("🎯 Writable characteristic found")
       }
+      if char.properties.contains(.notify) {
+        self.notifyCharacteristic = char
+        peripheral.setNotifyValue(true, for: char)
+        log.append("🔔 Subscribed to log notifications")
+      }
+    }
+  }
+
+  func peripheral(_ peripheral: CBPeripheral,
+                  didUpdateValueFor characteristic: CBCharacteristic,
+                  error: Error?) {
+    guard characteristic == notifyCharacteristic,
+      let data = characteristic.value,
+      let text = String(bytes: data, encoding: .utf8)
+    else { return }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmed.isEmpty {
+      picoLog.append(trimmed)
     }
   }
 
