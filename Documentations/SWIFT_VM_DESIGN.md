@@ -56,7 +56,7 @@ Implement one instruction at a time with verifiable granularity (following the `
 |-----------|------|
 | `WasmParser` | Converts Wasm binary to `WasmModule` |
 | `WasmValidator` | Validates module type consistency (enabled only via `#if !hasFeature(Embedded)`) |
-| `WasmInterpreter` | Executes the module (Stack Machine). Tracks `data.drop` / `elem.drop` state via `droppedDataSegments: UInt64` / `droppedElementSegments: UInt64` bitmaps |
+| `WasmInterpreter` | Executes the module (Stack Machine). Tracks `data.drop` / `elem.drop` state via `droppedDataSegments: UInt64` / `droppedElementSegments: UInt64` bitmaps. Exposes execution statistics: `executedInstructions: UInt64`, `peakValueStackDepth: Int`, `peakCallStackDepth: Int`, and `resetStats()` |
 | `WasmModule` | Parsed Wasm module (functions, memory, globals). `DataSegment.offset: Int32?` (nil = passive, non-nil = active write offset) |
 | Linear Memory | `var memory: [UInt8]` (held by the interpreter). Responsible for bounds checking |
 | Host Function Table | `[HostFunction]` array (indexed in import declaration order) |

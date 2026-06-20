@@ -24,6 +24,7 @@ final class BLEManager: NSObject {
   var sendProgress: Double = 0  // 0.0 – 1.0
   var log: [String] = []
   var picoLog: [String] = []  // output lines received from Pico via BLE Notification
+  var statsHistory: [ExecutionStats] = []
 
   // MARK: - Write queue for chunked WASM transfer
 
@@ -132,6 +133,10 @@ final class BLEManager: NSObject {
   func clearPicoLog() {
     picoLog.removeAll()
   }
+
+  func clearStats() {
+    statsHistory.removeAll()
+  }
 }
 
 // MARK: - CBCentralManagerDelegate
@@ -234,7 +239,12 @@ extension BLEManager: CBPeripheralDelegate {
       let text = String(bytes: data, encoding: .utf8)
     else { return }
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !trimmed.isEmpty {
+    guard !trimmed.isEmpty else { return }
+    if trimmed.hasPrefix("STATS:") {
+      if let stats = ExecutionStats(statsLine: trimmed, run: statsHistory.count + 1) {
+        statsHistory.append(stats)
+      }
+    } else {
       picoLog.append(trimmed)
     }
   }

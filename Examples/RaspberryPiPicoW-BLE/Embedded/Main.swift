@@ -238,6 +238,52 @@ func wasmCRC32(_ buf: UnsafeBufferPointer<UInt8>) -> UInt32 {
     return ~crc
 }
 
+// Append a UInt64 as decimal digits to logBuf (no UART, no heap).
+func logAppendDecimalU64(_ v: UInt64) {
+    if v == 0 {
+        logAppendByte(0x30)
+        return
+    }
+    // 20 slots = max decimal digits in UInt64 (18446744073709551615).
+    var digits: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                 UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    var len = 0
+    var u = v
+    withUnsafeMutableBytes(of: &digits) { ptr in
+        while u > 0 {
+            ptr[len] = UInt8(u % 10) + 0x30
+            u /= 10
+            len += 1
+        }
+    }
+    withUnsafeBytes(of: digits) { ptr in
+        var i = len - 1
+        while i >= 0 {
+            logAppendByte(ptr[i])
+            i -= 1
+        }
+    }
+}
+
+// Send execution statistics as a BLE Notification in the format "STATS:<instr>,<vs>,<cs>\n".
+// Uses the same logNotifyHandle as the log characteristic.
+// iOS parses the "STATS:" prefix to separate stats from log output.
+// Must be called after bleNotifyLog() — logBuf is empty after bleNotifyLog resets logBufLen.
+func bleNotifyStats(conHandle: UInt16, instr: UInt64, vsDepth: Int, csDepth: Int) {
+    logBufLen = 0  // defensive reset; bleNotifyLog() already sets this to 0 after sending
+    // "STATS:" = 0x53 0x54 0x41 0x54 0x53 0x3A
+    logAppendByte(0x53); logAppendByte(0x54); logAppendByte(0x41)
+    logAppendByte(0x54); logAppendByte(0x53); logAppendByte(0x3A)
+    logAppendDecimalU64(instr)
+    logAppendByte(0x2C)  // ','
+    logAppendDecimalU64(UInt64(vsDepth))
+    logAppendByte(0x2C)  // ','
+    logAppendDecimalU64(UInt64(csDepth))
+    logAppendByte(0x0A)  // '\n'
+    bleNotifyLog(conHandle: conHandle)
+}
+
 // Send logBuf as a single BLE Notification on logNotifyHandle.
 // att_server_notify requires the ATT handle and a connected peripheral handle.
 func bleNotifyLog(conHandle: UInt16) {
@@ -315,6 +361,7 @@ func executeReceivedWasm(conHandle: UInt16) {
     guard wasmRecvLen > 0, let ptr = wasm_recv_buf_ptr() else { return }
     let wasmBuf = UnsafeBufferPointer<UInt8>(start: ptr, count: Int(wasmRecvLen))
     var parser = WasmParser(wasmBuf)
+    var execStats: (instr: UInt64, vs: Int, cs: Int)? = nil
     do throws(WasmError) {
         let module = try parser.parse()
         // TODO: Embedded Phase 5 — replace [HostImport] with a stack-allocated fixed buffer.
@@ -353,12 +400,19 @@ func executeReceivedWasm(conHandle: UInt16) {
                 // "run" not found or execution error — leave hardware unchanged.
             }
         }
+        execStats = (interp.executedInstructions, interp.peakValueStackDepth, interp.peakCallStackDepth)
     } catch {
         // On WASM error, leave hardware state unchanged
     }
     // Send accumulated output (e.g. "result: 7\n") to iOS as a BLE Notification.
     bleNotifyLog(conHandle: conHandle)
-    // Reset transfer state so the next 0xF0 starts fresh
+    // Send execution statistics as a separate "STATS:..." notification.
+    if let s = execStats {
+        bleNotifyStats(conHandle: conHandle, instr: s.instr, vsDepth: s.vs, csDepth: s.cs)
+    }
+    // Reset transfer state. Safe here: `interp` and `module` are already dropped
+    // (end of the `do` block above), so module.rawBytes (UnsafeBufferPointer into the
+    // static receive buffer) is no longer aliased before the buffer is logically freed.
     wasmRecvLen = 0
     wasmRecvExpected = 0
 }

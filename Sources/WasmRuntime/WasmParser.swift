@@ -399,7 +399,7 @@ struct WasmParser {
       tables: tables, memories: memories, globals: globals,
       exports: exports, code: code,
       start: start, elements: elements, data: data,
-      rawBytes: Array(buffer)
+      rawBytes: buffer
     )
     #if !hasFeature(Embedded)
       try WasmValidator(module: module).validate()

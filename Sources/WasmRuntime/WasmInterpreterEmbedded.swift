@@ -491,12 +491,18 @@ extension WasmInterpreter {
     var localTables = tables
     var localDroppedData = droppedDataSegments
     var localDroppedElem = droppedElementSegments
+    var localExecInstr = executedInstructions
+    var localPeakValueStack = peakValueStackDepth
+    var localPeakCallStack = peakCallStackDepth
     defer {
       memory = localMemory
       globals = localGlobals
       tables = localTables
       droppedDataSegments = localDroppedData
       droppedElementSegments = localDroppedElem
+      executedInstructions = localExecInstr
+      peakValueStackDepth = localPeakValueStack
+      peakCallStackDepth = localPeakCallStack
     }
 
     // MARK: embeddedReturn
@@ -519,6 +525,8 @@ extension WasmInterpreter {
 
     valueStack.append(contentsOf: args)
     try pushEmbeddedFrame(functionIndex, args.count, &valueStack, &frames, &localMemory)
+    if valueStack.count > localPeakValueStack { localPeakValueStack = valueStack.count }
+    if frames.count > localPeakCallStack { localPeakCallStack = frames.count }
 
     while !frames.isEmpty {
       let fi = frames.count - 1
@@ -550,20 +558,31 @@ extension WasmInterpreter {
       //   - For control-flow (br, call, return), dispatchEmbedded overrides ip itself.
       //   - We always pass `nextIp` (the byte offset immediately after the opcode byte) so that
       //     sequential opcodes can commit it with a single assignment.
-      var opcodeErr: WasmError? = nil
       var opcode: UInt8 = 0
       var nextIp: UInt32 = frames[fi].ip
-      module.rawBytes.withUnsafeBytes { rawBuf throws(Never) in
-        let typedBuf = rawBuf.bindMemory(to: UInt8.self)
-        var reader = BinaryReader(buffer: typedBuf, offset: Int(frames[fi].ip))
-        do throws(WasmError) {
-          opcode = try reader.readByte()
-          nextIp = UInt32(reader.offset)
-        } catch {
-          opcodeErr = error
+      #if hasFeature(Embedded)
+        // On Embedded, rawBytes is already UnsafeBufferPointer<UInt8> — use it directly.
+        // No closure wrapper needed, so typed throws propagate naturally without the
+        // opcodeErr workaround required by the macOS withUnsafeBytes(throws(Never)) path.
+        var reader = BinaryReader(buffer: module.rawBytes, offset: Int(frames[fi].ip))
+        opcode = try reader.readByte()
+        nextIp = UInt32(reader.offset)
+      #else
+        // On macOS, rawBytes is [UInt8]. withUnsafeBytes closure cannot throw directly
+        // (it is typed throws(Never)), so we capture the error in a local and re-throw.
+        var opcodeErr: WasmError? = nil
+        module.rawBytes.withUnsafeBytes { rawBuf throws(Never) in
+          let typedBuf = rawBuf.bindMemory(to: UInt8.self)
+          var reader = BinaryReader(buffer: typedBuf, offset: Int(frames[fi].ip))
+          do throws(WasmError) {
+            opcode = try reader.readByte()
+            nextIp = UInt32(reader.offset)
+          } catch {
+            opcodeErr = error
+          }
         }
-      }
-      if let e = opcodeErr { throw e }
+        if let e = opcodeErr { throw e }
+      #endif
 
       try dispatchEmbedded(
         opcode: opcode,
@@ -575,7 +594,10 @@ extension WasmInterpreter {
         globals: &localGlobals,
         tables: &localTables,
         droppedData: &localDroppedData,
-        droppedElem: &localDroppedElem)
+        droppedElem: &localDroppedElem,
+        execInstr: &localExecInstr)
+      if valueStack.count > localPeakValueStack { localPeakValueStack = valueStack.count }
+      if frames.count > localPeakCallStack { localPeakCallStack = frames.count }
     }
 
     #if hasFeature(Embedded)
@@ -768,13 +790,16 @@ extension WasmInterpreter {
     globals: inout EmbeddedGlobalStorage,
     tables: inout EmbeddedTableStorage,
     droppedData: inout UInt64,
-    droppedElem: inout UInt64
+    droppedElem: inout UInt64,
+    execInstr: inout UInt64
   ) throws(WasmError) {
 
     // Cursor for reading LEB128 immediates that follow the opcode byte.
     // Starts at nextIp (the byte immediately after the opcode).
     // Each readXxxLocal() advances cursor in-place.
     var cursor = Int(nextIp)
+
+    execInstr &+= 1
 
     // Inline immediate readers — index directly into module.rawBytes (a [UInt8]).
     // Using @inline(__always) local functions rather than closures to avoid heap capture.

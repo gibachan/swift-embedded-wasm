@@ -371,4 +371,26 @@ struct WasmInterpreterTests {
     #expect(try interp.callExport(nameBytes: odd, args: [Value.i32(13)]) == [Value.i32(1)])
     #expect(try interp.callExport(nameBytes: odd, args: [Value.i32(20)]) == [Value.i32(0)])
   }
+
+  @Test func executionStatistics() throws {
+    let module = try parseModule("i32-add")
+    var interp = try WasmInterpreter(module: module)
+    _ = try interp.callExport(nameBytes: Array("i32-add".utf8), args: [.i32(3), .i32(4)])
+    #expect(interp.executedInstructions > 0)
+    #expect(interp.peakValueStackDepth >= 1)
+    #expect(interp.peakCallStackDepth == 1)  // single non-recursive call
+
+    let firstCount = interp.executedInstructions
+
+    interp.resetStats()
+    #expect(interp.executedInstructions == 0)
+    #expect(interp.peakValueStackDepth == 0)
+    #expect(interp.peakCallStackDepth == 0)
+
+    // Stats accumulate across calls: second call adds the same count.
+    _ = try interp.callExport(nameBytes: Array("i32-add".utf8), args: [.i32(1), .i32(2)])
+    _ = try interp.callExport(nameBytes: Array("i32-add".utf8), args: [.i32(5), .i32(6)])
+    #expect(interp.executedInstructions == firstCount * 2)
+    #expect(interp.peakCallStackDepth == 1)
+  }
 }

@@ -1149,6 +1149,20 @@ struct WasmInterpreter {
   // Bit i = 1 means segment i has been dropped. Supports up to 64 segments.
   var droppedElementSegments: UInt64 = 0
 
+  // MARK: - Execution Statistics
+
+  // Counts WASM bytecode instructions dispatched. Host function calls are counted
+  // as the call/call_indirect opcode only; the host function body itself is not counted.
+  var executedInstructions: UInt64 = 0
+  var peakValueStackDepth: Int = 0
+  var peakCallStackDepth: Int = 0
+
+  mutating func resetStats() {
+    executedInstructions = 0
+    peakValueStackDepth = 0
+    peakCallStackDepth = 0
+  }
+
   // MARK: - Init
 
   /// Instantiates the module.

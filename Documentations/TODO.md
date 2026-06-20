@@ -4,85 +4,34 @@
 
 ## Phase 4 — Porting to Raspberry Pi Pico
 
-Embedded Swift compilation (`armv7em-none-none-eabi`) and linking (BLE firmware generation) are verified.
-The following work is needed to reach a state where Wasm runs on real hardware.
+### Remaining Dynamic Allocations
 
-### Eliminate Dynamic Allocation
+The following heap allocations in `Examples/RaspberryPiPicoW-BLE/Embedded/Main.swift` still use `[T]`:
 
-- [x] **Heap allocations eliminated (Phase 5)**
+| Allocation | Note |
+|---|---|
+| `[HostImport]` in `executeReceivedWasm` | 4-element array; replace with a fixed-size buffer once `Fixed4_HostImport` is designed |
+| `[UInt8]` literals for `addName`/`runName` | 3-byte arrays; replace with `withUnsafeBytes(of: &tuple)` once `callExport` accepts `UnsafeBufferPointer<UInt8>` |
+| macOS `var frames: [EmbeddedFrame]` | Intentional stack-pressure workaround; Embedded path already uses fixed-size `CallStack` |
+| macOS `CallFrame.locals: [Value]` | Intentional stack-pressure workaround; Embedded path stores locals on shared `ValueStack` |
 
-  The following fields have been migrated from heap-allocated `Array<T>` to fixed-size buffers:
+### Arena Allocator
 
-  | Field | Location | Resolution |
-  |-------|----------|------------|
-  | `code: [FunctionHandle]` | `WasmModule` | → `Fixed64_FunctionHandle` (Embedded: tuple; macOS: `[FunctionHandle]`) |
-  | `tables: [[Value]]` | `WasmInterpreter` | → `FlatTableStorage` (Embedded); `[[Value]]` + shim (macOS, avoids ~16 KB inout stack pressure) |
-  | `globals: [Value]` | `WasmInterpreter` | → `Fixed32_Value` (both platforms — 512 bytes, no `#if` needed) |
-  | `hostFunctions: [HostFunctionPtr]` | `WasmInterpreter` (Embedded) | → `Fixed32_HostFunctionPtr` (Embedded only; macOS keeps `[HostFunction]` closures) |
-  | `ValueStack` / `CallStack` | `WasmInterpreterEmbedded` | fixed-size tuple buffers on Embedded; `[Value]` / `[EmbeddedFrame]` on macOS (stack-pressure workaround) |
-  | `LabelStack` | `EmbeddedFrame` | 32-element tuple on Embedded; `[Label]` on macOS |
+Reserve a large buffer from Pico SRAM and stack module-load data into it.
+This is more Embedded-friendly than repeated `malloc`/`free` calls, avoiding heap fragmentation.
 
-- [ ] **Remaining dynamic allocations**
+```
+[     Arena buffer (e.g. 64 KB of SRAM)     ]
+ ↑ used ↑  ↑ next allocation starts here
+```
 
-  | Field | Location | Note |
-  |-------|----------|------|
-  | `rawBytes: [UInt8]` | `WasmModule` | original Wasm binary buffer; zero-copy approach requires caller to manage lifetime |
-  | `var tempInstructions: [Instruction]` | `parseFunctionHandles()` | per-function heap alloc during parse; needs a zero-allocation byte scanner to eliminate |
-  | `var frames: [EmbeddedFrame]` | macOS path | `CallStack` already fixed on Embedded; macOS uses `[EmbeddedFrame]` (stack-pressure workaround) |
-  | `CallFrame.locals: [Value]` | macOS path | Embedded stores locals on shared `ValueStack`; macOS uses `[Value]` |
+### Host Function Extensions
 
-- [ ] **Introduce an Arena Allocator to reduce allocations during module load**
-
-  Reserve a large buffer from Pico SRAM and stack module-load data into it.
-  This is more Embedded-friendly than repeated `malloc`/`free` calls, avoiding heap fragmentation.
-
-  ```
-  [     Arena buffer (e.g. 64 KB of SRAM)     ]
-   ↑ used ↑  ↑ next allocation starts here
-  ```
-
-### Host Function Implementation
-
-Implement host functions for Wasm to control Pico peripherals.
-Since Embedded Swift cannot heap-allocate closures, use `@convention(c)` function pointers + a static table.
-
-- [x] **`digitalWrite(pin: i32, val: i32) -> void` — GPIO output**
-
-  Calls Pico SDK's `gpio_init()` + `gpio_set_dir()` + `gpio_put()`.
-  `pin` is the GPIO pin number (0–29); `val` is 0 (LOW) / 1 (HIGH).
-  Wasm imports it as `(import "env" "digitalWrite" (func (param i32 i32)))`.
-
-- [x] **`digitalRead(pin: i32) -> i32` — GPIO input**
-
-  Calls Pico SDK's `gpio_get()` and returns the pin state as i32.
-  Wasm imports it as `(import "env" "digitalRead" (func (param i32) (result i32)))`.
-
-- [x] **`sleep(ms: i32) -> void` — delay**
-
-  Calls Pico SDK's `sleep_ms()`.
-  Calling `sleep(1000)` from Wasm waits 1 second.
-
-- [ ] **(Extension) `oledDrawText(x: i32, y: i32, ptr: i32) -> void` — OLED display**
+- [ ] **`oledDrawText(x: i32, y: i32, ptr: i32) -> void` — OLED display**
 
   Receives a string pointer in Wasm linear memory and renders it on an SSD1306 OLED via I2C.
   `ptr` is an offset into linear memory (null-terminated ASCII string assumed).
-
-### Hardware Verification
-
-- [x] **Execute `i32.add` from Wasm and print the result via UART**
-
-  Target a minimal Wasm function such as:
-
-  ```wat
-  (module
-    (func (export "add") (param i32 i32) (result i32)
-      local.get 0
-      local.get 1
-      i32.add))
-  ```
-
-  Call `WasmInterpreter.callExport("add", args: [.i32(3), .i32(4)])` and verify
-  that the return value is `7` and `"result: 7\n"` appears on UART.
+  Requires an SSD1306 I2C driver to be integrated into the Pico firmware.
 
 ### Size and RAM Optimization
 
@@ -115,51 +64,7 @@ Since Embedded Swift cannot heap-allocate closures, use `@convention(c)` functio
   | Pico SDK / system | ~20 KB |
   | **Total (estimate)** | **~154 KB** |
 
+  Use `peakValueStackDepth` and `peakCallStackDepth` from `WasmInterpreter` as runtime watermarks
+  to verify that the fixed-size buffer capacities are sufficient in practice.
   Check per-symbol sizes in `pico-ble.elf.map` and verify the budget is met.
   Tighter reductions are needed to support RP2040 as well.
-
----
-
-## Phase 5 — iOS Integration
-
-Basic BLE-based Wasm transfer and execution is implemented.
-BLE communication uses the CYW43439 (Wi-Fi/BLE combo chip) built into the Pico W.
-The iOS app is implemented in SwiftUI + CoreBluetooth.
-
-### BLE Protocol Design
-
-- [x] **Design a Notification characteristic for log output**
-
-  Forward UART log output from Pico to iOS as BLE Notifications.
-  Implement as UART → ring buffer → BLE Notification.
-  Split and reassemble log lines to fit MTU size (20–512 bytes).
-
-- [x] **Strengthen the transfer-complete / execution-start handshake protocol**
-
-  Currently completion is determined solely by matching received byte count.
-  Include a CRC checksum in the final packet to detect corruption or interruption during transfer.
-
-### Required Features (iOS App)
-
-- [x] **Display Pico execution logs in real time in the iOS app**
-
-  Append text to a SwiftUI `ScrollView` each time a Log Notification is received.
-  Receive via the CoreBluetooth `centralManager(_:didUpdateValueFor:)` delegate
-  and forward to a `@MainActor`-bound ViewModel.
-
-### Extensions (Optional)
-
-- [ ] **Store, manage, and switch between multiple Wasm binaries in the iOS app**
-
-  Use SwiftData or FileManager to save transferred binaries to the app's Documents folder.
-  Implement a management screen with list view, deletion, and re-sending.
-
-- [ ] **Mirror OLED display content in the iOS app**
-
-  Have Pico periodically send its OLED frame buffer (128×64 bits = 1 KB) as BLE Notifications,
-  and render it in real time in the iOS app using `Canvas` or `UIImage`.
-
-- [ ] **Monitor Pico CPU load and memory usage**
-
-  Periodically retrieve instruction count, stack usage, and memory usage from the interpreter during
-  Wasm execution, send via BLE Notification, and display as charts (Swift Charts) in the iOS app.

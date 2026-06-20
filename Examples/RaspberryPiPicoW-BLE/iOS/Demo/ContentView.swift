@@ -60,6 +60,17 @@ struct ContentView: View {
           }
         }
 
+        Section("Stats") {
+          if #available(iOS 16, *) {
+            NavigationLink("Show Stats (\(ble.statsHistory.count) runs)") {
+              StatsView(stats: ble.statsHistory) { ble.clearStats() }
+            }
+          } else {
+            Text("Stats require iOS 16+")
+              .foregroundStyle(.secondary)
+          }
+        }
+
         Section("Log") {
           NavigationLink("Show Log (\(ble.log.count))") {
             LogView(log: ble.log)

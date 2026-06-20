@@ -2275,8 +2275,16 @@ struct WasmModule: Sendable {
   let globals: Fixed32_GlobalDef  // Global section
   let exports: Fixed32_Export  // Export section
   let code: Fixed64_FunctionHandle  // Code section: byte ranges with pre-computed jump tables
-  let rawBytes: [UInt8]  // Original binary buffer retained for on-the-fly instruction decode
-  // TODO: Embedded Phase 5 — consider zero-copy approach for rawBytes
+  // Original binary buffer retained for on-the-fly instruction decode.
+  // On Embedded: zero-copy borrow — caller must keep the pointed-to buffer alive.
+  // On macOS: owned copy made in init — caller lifetime is not a constraint.
+  //
+  // This split IS justified: [UInt8] on Embedded requires malloc; UnsafeBufferPointer avoids it.
+  #if hasFeature(Embedded)
+    let rawBytes: UnsafeBufferPointer<UInt8>
+  #else
+    let rawBytes: [UInt8]
+  #endif
   let start: UInt32?  // Start section
   let elements: Fixed16_ElementSegment  // Element section
   let data: Fixed16_DataSegment  // Data section
@@ -2301,7 +2309,7 @@ struct WasmModule: Sendable {
     start: UInt32? = nil,
     elements: [ElementSegment] = [],
     data: [DataSegment] = [],
-    rawBytes: [UInt8]
+    rawBytes: UnsafeBufferPointer<UInt8>
   ) {
     self.types = Fixed64_FunctionType(types)
     self.imports = Fixed32_Import(imports)
@@ -2314,7 +2322,13 @@ struct WasmModule: Sendable {
     self.start = start
     self.elements = Fixed16_ElementSegment(elements)
     self.data = Fixed16_DataSegment(data)
-    self.rawBytes = rawBytes  // TODO: Embedded Phase 5 — consider zero-copy approach
+    // Embedded: store the pointer directly (zero-copy; caller owns the buffer lifetime).
+    // macOS: copy into an owned [UInt8] so tests can construct modules from arbitrary buffers.
+    #if hasFeature(Embedded)
+      self.rawBytes = rawBytes
+    #else
+      self.rawBytes = Array(rawBytes)
+    #endif
 
     // Build importedFunctionTypeIndices directly via fileprivate append (both platforms).
     // On Embedded this avoids an intermediate [UInt32] heap allocation;
