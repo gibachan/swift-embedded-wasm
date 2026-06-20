@@ -156,7 +156,6 @@ struct ElementSegment: Sendable {
 /// performed on every execution of a block/loop/if instruction.
 ///   blockEnd                 — pops the top label (normal fall-through exit)
 ///   jump(pc)                 — unconditional jump (skips the else body in if/else)
-@frozen
 enum Instruction: Sendable {
   case unreachable  // 0x00
   case nop  // 0x01
@@ -2361,7 +2360,6 @@ struct WasmModule: Sendable {
 // MARK: - Runtime Value
 
 /// A value held on the stack or in locals at runtime
-@frozen
 enum Value: Sendable, Equatable {
   case i32(Int32)
   case i64(Int64)
