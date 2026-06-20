@@ -2281,7 +2281,9 @@ struct WasmModule: Sendable {
   //
   // This split IS justified: [UInt8] on Embedded requires malloc; UnsafeBufferPointer avoids it.
   #if hasFeature(Embedded)
-    let rawBytes: UnsafeBufferPointer<UInt8>
+    // nonisolated(unsafe): UnsafeBufferPointer is not Sendable, but Embedded Swift has no
+    // concurrency and rawBytes is a read-only borrow of a static buffer — safe in practice.
+    nonisolated(unsafe) let rawBytes: UnsafeBufferPointer<UInt8>
   #else
     let rawBytes: [UInt8]
   #endif
