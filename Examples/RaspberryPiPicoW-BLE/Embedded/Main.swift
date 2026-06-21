@@ -26,6 +26,12 @@ var logBufLen: Int32 = 0
 var wasmRecvLen: UInt32 = 0       // bytes written into the receive buffer so far
 var wasmRecvExpected: UInt32 = 0  // total byte count declared by 0xF0 command
 
+// Arena allocator for WASM runtime memory.
+// Backed by a static C buffer (wasm_arena.c) — no heap usage.
+// reset() is called at the start of each executeReceivedWasm() cycle.
+// WasmInterpreter (and WasmModule) must be destroyed before the next reset().
+var wasmArena = WasmArena()
+
 // Advertising payload: Flags (3 bytes) + Complete Local Name "PicoLED" (9 bytes)
 //   [2, 0x01, 0x06]                    — AD type 0x01 Flags: LE General Discoverable, BR/EDR not supported
 //   [8, 0x09, 'P','i','c','o','L','E','D'] — AD type 0x09 Complete Local Name (length byte = name + 1)
@@ -358,6 +364,9 @@ func uartWriteResult(_ v: Int32) {
 // conHandle is the BLE connection handle used to send the log notification after execution.
 func executeReceivedWasm(conHandle: UInt16) {
     logBufLen = 0  // clear log buffer for this execution run
+    // Reset the arena first so all allocations from the previous cycle are reclaimed (O(1)).
+    // WasmInterpreter from the previous cycle has already been destroyed (end of do-block below).
+    wasmArena.reset()
     guard wasmRecvLen > 0, let ptr = wasm_recv_buf_ptr() else { return }
     let wasmBuf = UnsafeBufferPointer<UInt8>(start: ptr, count: Int(wasmRecvLen))
     var parser = WasmParser(wasmBuf)
@@ -369,7 +378,7 @@ func executeReceivedWasm(conHandle: UInt16) {
         hostImports.append(.function("env", "digitalWrite", hostDigitalWrite))
         hostImports.append(.function("env", "digitalRead", hostDigitalRead))
         hostImports.append(.function("env", "sleep", hostSleep))
-        var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+        var interp = try WasmInterpreter(module: module, arena: &wasmArena, hostImports: hostImports)
 
         // --- Try "add(3, 4)" first (i32-add.wasm) ---
         var calledAdd = false

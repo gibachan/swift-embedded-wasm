@@ -42,6 +42,7 @@ SWIFT_SDK := $(shell xcrun --show-sdk-path 2>/dev/null)
 SWIFTFLAGS := \
   -target $(TARGET) \
   -enable-experimental-feature Embedded \
+  -enable-experimental-feature Extern \
   -enable-upcoming-feature NonisolatedNonsendingByDefault \
   -enable-upcoming-feature InferIsolatedConformances \
   -wmo \

@@ -44,10 +44,14 @@ Implement one instruction at a time with verifiable granularity (following the `
 │  ┌──────────────────────────────────────────┐   │
 │  │              WasmModule                  │   │
 │  │  FunctionType[] / Function[] / Global[]  │   │
-│  │  [UInt8] memory / DataSegment[]          │   │
+│  │  DataSegment[]                           │   │
 │  └──────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────┐   │
 │  │           HostFunctionTable              │   │
+│  └──────────────────────────────────────────┘   │
+│  ┌──────────────────────────────────────────┐   │
+│  │               WasmArena                  │   │
+│  │  Bump-pointer arena (96 KB static buf)   │   │
 │  └──────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────┘
 ```
@@ -58,7 +62,8 @@ Implement one instruction at a time with verifiable granularity (following the `
 | `WasmValidator` | Validates module type consistency (enabled only via `#if !hasFeature(Embedded)`) |
 | `WasmInterpreter` | Executes the module (Stack Machine). Tracks `data.drop` / `elem.drop` state via `droppedDataSegments: UInt64` / `droppedElementSegments: UInt64` bitmaps. Exposes execution statistics: `executedInstructions: UInt64`, `peakValueStackDepth: Int`, `peakCallStackDepth: Int`, and `resetStats()` |
 | `WasmModule` | Parsed Wasm module (functions, memory, globals). `DataSegment.offset: Int32?` (nil = passive, non-nil = active write offset) |
-| Linear Memory | `var memory: [UInt8]` (held by the interpreter). Responsible for bounds checking |
+| `WasmArena` | Bump-pointer arena allocator. Caller provides an `inout WasmArena` to `WasmInterpreter.init(module:arena:hostImports:)`. On Embedded the backing buffer is a 96 KB C static array (`wasm_arena.c`); on macOS a single heap allocation made once at `init`. `reset()` reclaims all allocations in O(1). |
+| Linear Memory | `var memory: UnsafeMutableBufferPointer<UInt8>` (held by the interpreter; arena-backed). `var memoryCapacity: Int` tracks the pre-allocated ceiling for `memory.grow`. Responsible for bounds checking. |
 | Host Function Table | `[HostFunction]` array (indexed in import declaration order) |
 
 ---
@@ -418,11 +423,27 @@ with `// TODO: Embedded Phase 5` markers.
 
 ```swift
 // WasmInterpreter.swift
-var memory: [UInt8]
+var memory: UnsafeMutableBufferPointer<UInt8>
+var memoryCapacity: Int
 ```
 
-Dynamically allocated `[UInt8]`. `pico_stdlib` provides `posix_memalign`/`free`,
-so this links correctly on the `pico-ble` target. Bounds checking is explicit.
+Arena-backed via `WasmArena`. The interpreter requires `arena: inout WasmArena` at init time.
+`WasmInterpreter.init` pre-allocates the full maximum memory capacity from the arena once and
+stores the ceiling in `memoryCapacity`. The active `memory` view starts at the initial page count;
+`memory.grow` (opcode 0x40) extends `memory.count` up to `memoryCapacity` without any new
+allocation. On Embedded, the backing store is the 96 KB C static array (`wasm_arena.c`) — zero heap usage.
+
+```swift
+// WasmInterpreter.init — linear memory allocation from arena
+guard let slice = arena.allocate(count: capacityByteCount, alignment: 4) else {
+    throw .resourceLimitExceeded
+}
+slice.initialize(repeating: 0)
+self.memory = UnsafeMutableBufferPointer(start: slice.baseAddress!, count: initialByteCount)
+self.memoryCapacity = capacityByteCount
+```
+
+Bounds checking is explicit on all 23 load/store instruction handlers:
 
 ```swift
 // Bounds check — all 23 load/store handlers (Phase 3 complete)
@@ -434,12 +455,15 @@ let eaInt = Int(ea)
 `UInt64` intermediate arithmetic prevents silent wraparound on 32-bit targets (RP2350) where
 `Int` is 32 bits wide. This fix is applied to all 23 load/store instruction handlers.
 
+`memory.grow` (0x40) and `table.grow` (FC 0x15) also operate in `UInt64` throughout:
+the `delta` operand is reinterpreted as `UInt32(bitPattern: delta)` first, then compared
+and accumulated in `UInt64` before any conversion to `Int`. This prevents an overflow trap
+on RP2350 when an unsigned delta value exceeds `Int32.max`.
+
 ### Remaining Issues
 
-- `memory.grow`'s dynamic `realloc` requires care on RAM-constrained Pico
-- Pure bare-metal (without `pico_stdlib`) requires replacement with a fixed-size buffer
 - Bulk memory ops (`memoryFill` / `memoryCopy` / `memoryInit`) still use the old `Int &+` pattern
-  and are marked `[macOS-phase-OK, Embedded-TODO]` in source; will be fixed in Phase 5
+  in some paths and are marked `[macOS-phase-OK, Embedded-TODO]` in source
 
 ---
 
@@ -477,14 +501,15 @@ Production call sites always use the `StaticString` variants.
 
 The initialiser is generic over any `Sequence` of `HostImport`, so callers can pass
 either `[HostImport]` (macOS, heap-allocated) or `Fixed4_HostImport` (Embedded, stack-allocated)
-without changing the call site:
+without changing the call site. All overloads now require `arena: inout WasmArena` since
+linear memory is allocated from the arena at init time:
 
 ```swift
 // Convenience: no host imports
-init(module: WasmModule) throws(WasmError)
+init(module: WasmModule, arena: inout WasmArena) throws(WasmError)
 
 // Primary generic initialiser — accepts [HostImport] or Fixed4_HostImport
-init<S: Sequence>(module: WasmModule, hostImports: S) throws(WasmError)
+init<S: Sequence>(module: WasmModule, arena: inout WasmArena, hostImports: S) throws(WasmError)
 where S.Element == HostImport
 ```
 
@@ -824,7 +849,7 @@ The Pico's default stack size is a few KB. Avoid deep recursion and large stack 
 | Opcode dispatch | Threaded Code (function pointer + tail call) | macOS: `switch` on `Instruction` enum; Embedded: `switch` on raw opcode byte decoded on-the-fly from `rawBytes` |
 | Code representation | Compiled threaded code | macOS: flat `[Instruction]`; Embedded: `FunctionHandle` (byte range + pre-computed `[JumpEntry]`) |
 | Control flow representation | Nested function calls | Flat bytecode + jump offsets (Phase 1.5); Embedded uses byte-offset `ip` + monotonic `jumpCursor` |
-| Memory management | Manual (`malloc` / `realloc`) | `[UInt8]` (dynamic; fixed buffer planned for Phase 5) |
+| Memory management | Manual (`malloc` / `realloc`) | `WasmArena` bump-pointer allocator; linear memory is `UnsafeMutableBufferPointer<UInt8>` backed by a 96 KB C static array on Embedded (zero heap) |
 | Thread safety | None | Single-threaded `struct` (`actor` not supported in Embedded) |
 | Ownership | Pointer-based pseudo-management (`IM3Runtime*`) | `struct` + value semantics |
 

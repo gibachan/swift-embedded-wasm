@@ -15,13 +15,13 @@ The following heap allocations are intentional and remain:
 
 ### Arena Allocator
 
-Reserve a large buffer from Pico SRAM and stack module-load data into it.
-This is more Embedded-friendly than repeated `malloc`/`free` calls, avoiding heap fragmentation.
+Steps 1–4 are complete. See `Documentations/ARENA_ALLOCATOR.md` for the full design.
 
-```
-[     Arena buffer (e.g. 64 KB of SRAM)     ]
- ↑ used ↑  ↑ next allocation starts here
-```
+- [x] **Step 1**: `WasmArena` bump-pointer allocator implemented (`Sources/WasmRuntime/WasmArena.swift`); 96 KB C static backing buffer added (`Examples/RaspberryPiPicoW-BLE/Embedded/wasm_arena.c`); 12 unit tests (`Tests/WasmRuntimeTests/WasmArenaTests.swift`)
+- [x] **Step 2**: `WasmInterpreter.memory` changed from `[UInt8]` to `UnsafeMutableBufferPointer<UInt8>`; `WasmInterpreter.init` now requires `arena: inout WasmArena`; `memoryCapacity: Int` property added
+- [x] **Step 3**: `DataSegment.bytes` / import/export name bytes changed to zero-copy `UnsafeBufferPointer<UInt8>` slices of `rawBytes` (no arena copy needed)
+- [x] **Step 4**: `Main.swift` updated with `var wasmArena = WasmArena()` global and `wasmArena.reset()` per-cycle; `memory.grow` (0x40) and `table.grow` (FC 0x15) fixed to operate in `UInt64` domain to avoid 32-bit Int overflow traps on RP2350; `-enable-experimental-feature Extern` added to `Makefile` and `CMakeLists.txt`
+- [ ] **Step 5**: Measure `wasmArena.usedBytes` on real hardware via BLE notification; adjust Arena size based on actual measurements
 
 ### Host Function Extensions
 

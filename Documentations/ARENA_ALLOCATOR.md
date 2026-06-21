@@ -167,12 +167,12 @@ uint32_t  wasm_arena_size(void);
 
 ---
 
-## 5. WasmInterpreter.memory の型変更
+## 5. WasmInterpreter.memory の型変更（完了）
 
-現在 `var memory: [UInt8]` は Arena 確保後に `UnsafeMutableBufferPointer<UInt8>` へ変更する。
-Arena-backed な生ポインタを持つので `#if` 不要で両プラットフォーム統一できる。
+`var memory: [UInt8]` は `UnsafeMutableBufferPointer<UInt8>` へ変更済み。
+Arena-backed な生ポインタを持つので `#if` 不要で両プラットフォーム統一されている。
 
-| | 変更前 | 変更後 |
+| | 変更前 | 変更後（現在） |
 |--|--------|--------|
 | 型 | `[UInt8]` | `UnsafeMutableBufferPointer<UInt8>` |
 | 確保 | `[UInt8](repeating: 0, count: n)` | `arena.allocate(count: n, alignment: 4)!` |
@@ -180,21 +180,24 @@ Arena-backed な生ポインタを持つので `#if` 不要で両プラットフ
 | `dispatchEmbedded` 引数 | `memory: inout [UInt8]` | `memory: inout UnsafeMutableBufferPointer<UInt8>` |
 
 `subscript` と `count` は `[UInt8]` / `UnsafeMutableBufferPointer<UInt8>` で共通なので、
-`dispatchEmbedded` 内部の数百行のメモリアクセスコードは書き換えが不要。
-変更が必要なのはシグネチャ宣言と `memory.withUnsafeMutableBytes` を使っている箇所のみ。
+`dispatchEmbedded` 内部の数百行のメモリアクセスコードは書き換えが不要だった。
+
+また、`memory.grow` で使用する容量上限を管理するため `var memoryCapacity: Int` プロパティが
+追加された。Arena は `init` 時に線形メモリの最大ページ数分（または最大 `WasmLimits` 上限分）を
+先行確保し、`memory.grow` はポインタの `count` を拡張するだけでよい。
 
 ---
 
-## 6. 統合ポイント
+## 6. 統合ポイント（実装済み）
 
 ### 6-1. WasmInterpreter.init — 線形メモリ
 
 ```swift
-// 変更前
+// 変更前（旧実装）
 var mem = [UInt8](repeating: 0, count: Int(memPageCount) * 65536)
 self.memory = mem
 
-// 変更後
+// 変更後（現在の実装）
 guard let slice = arena.allocate(count: Int(memPageCount) * 65536, alignment: 4) else {
     throw .resourceLimitExceeded
 }
@@ -268,13 +271,27 @@ wasmArena.reset()         ← Arena リセット（次のサイクル開始）
 
 ## 9. 実装フェーズ
 
-| Step | 内容 | 検証 |
-|------|------|------|
-| **1** | `wasm_arena.c` 追加、`WasmArena` 構造体実装（allocate / reset）、単体テスト | `swift test` |
-| **2** | `WasmInterpreter.memory` を `UnsafeMutableBufferPointer<UInt8>` へ変更。`init` で Arena から確保 | `swift test` + `make compile` |
-| **3** | `DataSegment.bytes` / 名前バイト列をゼロコピースライスへ変更（`WasmParser` 変更） | `swift test` + `make compile` |
-| **4** | `Main.swift` を更新（`wasmArena` グローバル、`reset()`、`parse(arena:)`、`init(arena:)`） | `make build` |
-| **5** | 実機で `wasmArena.usedBytes` を BLE 通知に含め、Arena サイズを実測ベースで調整 | 実機計測 |
+| Step | 内容 | 検証 | 状態 |
+|------|------|------|------|
+| **1** | `wasm_arena.c` 追加、`WasmArena` 構造体実装（allocate / reset）、単体テスト | `swift test` | ✅ 完了 |
+| **2** | `WasmInterpreter.memory` を `UnsafeMutableBufferPointer<UInt8>` へ変更。`init(module:arena:)` で Arena から確保。`memoryCapacity` プロパティ追加 | `swift test` + `make compile` | ✅ 完了 |
+| **3** | `DataSegment.bytes` / 名前バイト列をゼロコピースライスへ変更（`WasmParser` 変更） | `swift test` + `make compile` | ✅ 完了 |
+| **4** | `Main.swift` を更新（`wasmArena` グローバル、`reset()`、`init(arena:)`）。`memory.grow`（0x40）と `table.grow`（FC 0x15）を UInt64 ドメインで処理し 32-bit Int オーバーフロートラップを修正 | `make build` | ✅ 完了 |
+| **5** | 実機で `wasmArena.usedBytes` を BLE 通知に含め、Arena サイズを実測ベースで調整 | 実機計測 | ⏳ 未実施 |
+
+### Step 1 実装ノート
+
+`WasmArena.swift` で Embedded ビルドが C シンボルを参照する際は、Bridging Header ではなく
+`@_extern(c, "wasm_arena_ptr")` / `@_extern(c, "wasm_arena_size")` を使用する（`-enable-experimental-feature Extern` が `Makefile` と `CMakeLists.txt` に追加済み）。
+これにより `Sources/WasmRuntime/` 単体でも `make compile` が通る（`BridgingHeader.h` は `Examples/` にのみ存在する）。
+
+### Step 4 実装ノート（32-bit オーバーフロー修正）
+
+`memory.grow`（opcode 0x40）と `table.grow`（opcode FC 0x15）では、delta を
+`UInt32(bitPattern:)` でビットパターン再解釈した後、比較・演算を終始 `UInt64` ドメインで
+行うよう修正した。RP2350 では `Int` が 32-bit であるため、unsigned delta が `Int32.max` を
+超える場合に `Int(UInt32(bitPattern: delta))` がオーバーフロートラップを引き起こす。
+`UInt64` で比較ガードを行ってから最終的に `Int` へ変換することでこのトラップを回避している。
 
 ---
 
@@ -285,4 +302,6 @@ wasmArena.reset()         ← Arena リセット（次のサイクル開始）
 | **Arena サイズ** | 96 KB は推定。実機計測（Step 5）で確定。RP2040（264 KB SRAM）での成立を要確認 |
 | **ゼロ初期化コスト** | `reset()` 後は前回データが残る。`allocate` 時に `initialize(repeating: 0)` を呼ぶが、64 KB ゼロ埋めのコストを実測する必要がある（memset 相当で高速なはずだが要確認） |
 | **複数ページメモリ** | 2 pages（128 KB）が必要な Wasm が来た場合 Arena が不足する。上限チェックと `.resourceLimitExceeded` の発行で対処 |
-| **`withUnsafeMutableBytes` 置き換え** | `dispatchEmbedded` 内の `memory.withUnsafeMutableBytes` が `UnsafeMutableBufferPointer` に変わる（API 変化を確認） |
+
+> **解決済み**: `dispatchEmbedded` 内の `memory.withUnsafeMutableBytes` の置き換えは
+> `UnsafeMutableBufferPointer<UInt8>` への型変更（Step 2）と同時に完了した。

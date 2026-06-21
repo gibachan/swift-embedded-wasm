@@ -642,7 +642,7 @@ extension WasmInterpreter {
   private func pushEmbeddedFrame(
     _ funcIdx: Int, _ argCount: Int,
     _ valueStack: inout EmbeddedValueStack, _ frames: inout EmbeddedCallStack,
-    _ memory: inout [UInt8]
+    _ memory: inout UnsafeMutableBufferPointer<UInt8>
   ) throws(WasmError) {
     guard valueStack.count >= argCount else { throw WasmError.stackUnderflow }
     let importedCount = module.importedFunctionCount
@@ -664,11 +664,12 @@ extension WasmInterpreter {
               argCount > 0 ? UnsafeRawPointer(argsBuf.baseAddress!) : nil
             let resultsRaw: UnsafeMutableRawPointer? =
               resultCount > 0 ? UnsafeMutableRawPointer(resultsBuf.baseAddress!) : nil
-            memory.withUnsafeMutableBytes { memBuf in
-              let memPtr = memBuf.baseAddress?.assumingMemoryBound(to: UInt8.self)
-              let memLen = Int32(memBuf.count)
-              hostFunctions[funcIdx](argsRaw, Int32(argCount), memPtr, memLen, resultsRaw)
-            }
+            // UnsafeMutableBufferPointer.baseAddress gives direct mutable pointer access —
+            // no withUnsafeMutableBytes wrapper needed (and that API doesn't exist on
+            // UnsafeMutableBufferPointer<UInt8>).
+            let memPtr = memory.baseAddress
+            let memLen = Int32(memory.count)
+            hostFunctions[funcIdx](argsRaw, Int32(argCount), memPtr, memLen, resultsRaw)
             valueStack.removeLast(argCount)
             for i in 0..<resultCount { valueStack.append(resultsBuf[i]) }
           }
@@ -676,7 +677,9 @@ extension WasmInterpreter {
       #else
         var argsSlice: [Value] = []
         for i in argsStart..<(argsStart + argCount) { argsSlice.append(valueStack[i]) }
-        let results = hostFunctions[funcIdx](argsSlice, memory)
+        // HostFunction takes [UInt8] (macOS public API); convert from UnsafeMutableBufferPointer.
+        // TODO: Arena Step 3b — change HostFunction signature to UnsafeBufferPointer<UInt8>.
+        let results = hostFunctions[funcIdx](argsSlice, Array(UnsafeBufferPointer(memory)))
         valueStack.removeLast(argCount)
         valueStack.append(contentsOf: results)
       #endif
@@ -786,7 +789,7 @@ extension WasmInterpreter {
     fi: Int,
     valueStack: inout EmbeddedValueStack,
     frames: inout EmbeddedCallStack,
-    memory: inout [UInt8],
+    memory: inout UnsafeMutableBufferPointer<UInt8>,
     globals: inout EmbeddedGlobalStorage,
     tables: inout EmbeddedTableStorage,
     droppedData: inout UInt64,
@@ -1481,26 +1484,36 @@ extension WasmInterpreter {
       _ = try readByteLocal()  // reserved byte (must be 0x00)
       guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
       guard case .i32(let delta) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      let pageSize40 = 65536
-      let oldPages40 = memory.count / pageSize40
+      let pageSize40: UInt64 = 65536
+      let oldPages40 = memory.count / Int(pageSize40)
       let oldPagesI32_40 = Int32(oldPages40)
-      // Treat delta as unsigned: a negative i32 bit pattern becomes a huge u32 value.
-      let n40 = Int(UInt32(bitPattern: delta))
-      let newByteCount40 = UInt64(n40) * UInt64(pageSize40)
-      let newPages40 = oldPages40 + n40
+      // Treat delta as unsigned per Wasm spec — stay in UInt64 until after overflow guard.
+      // Int(UInt32(bitPattern:)) traps on 32-bit RP2350 when the unsigned value > Int32.max.
+      let n40u = UInt64(UInt32(bitPattern: delta))
+      let newByteCount40 = n40u * pageSize40
+      let newPages40u = UInt64(oldPages40) + n40u
       let memMax40: UInt32? = module.memories.first?.max
       let exceedsMax40: Bool
       if let maxPages = memMax40 {
-        exceedsMax40 = newPages40 > Int(maxPages)
+        exceedsMax40 = newPages40u > UInt64(maxPages)
       } else {
         // No declared max: Wasm spec hard-limits to 65536 pages (4 GiB).
-        exceedsMax40 = newPages40 > 65536
+        exceedsMax40 = newPages40u > 65536
       }
-      // newByteCount40 > Int.max means the allocation would overflow Int on 32-bit targets.
-      if newByteCount40 > UInt64(Int.max) || exceedsMax40 {
+      // Guard in UInt64 throughout to avoid Int overflow on 32-bit targets.
+      // memoryCapacity is the arena-pre-allocated ceiling set at init.
+      if newByteCount40 > UInt64(Int.max) || exceedsMax40
+        || UInt64(memory.count) + newByteCount40 > UInt64(memoryCapacity)
+      {
         valueStack.append(.i32(-1))
       } else {
-        memory.append(contentsOf: repeatElement(0, count: Int(newByteCount40)))
+        // Safe to convert — checked above that newByteCount40 <= Int.max.
+        let newByteCount40Int = Int(newByteCount40)
+        // The arena pre-allocated up to memoryCapacity bytes at memory.baseAddress.
+        // The new pages are already zero-initialised (arena zeroed the full block at init).
+        memory = UnsafeMutableBufferPointer(
+          start: memory.baseAddress,
+          count: memory.count + newByteCount40Int)
         valueStack.append(.i32(oldPagesI32_40))
       }
       frames[fi].ip = UInt32(cursor)
@@ -2543,17 +2556,16 @@ extension WasmInterpreter {
           // Overlap-safe copy (memmove semantics).
           // Copy forward when dst <= src or regions do not overlap;
           // backward when dst > src and regions overlap to avoid clobbering src bytes.
-          memory.withUnsafeMutableBytes { buf in
-            let base = buf.baseAddress!
-            if dstOffFC10 <= srcOffFC10 || dstOffFC10 >= srcOffFC10 + copyCountFC10 {
-              base.advanced(by: dstOffFC10).copyMemory(
-                from: base.advanced(by: srcOffFC10), byteCount: copyCountFC10)
-            } else {
-              let dstPtr = base.advanced(by: dstOffFC10).assumingMemoryBound(to: UInt8.self)
-              let srcPtr = base.advanced(by: srcOffFC10).assumingMemoryBound(to: UInt8.self)
-              for i in stride(from: copyCountFC10 - 1, through: 0, by: -1) {
-                dstPtr.advanced(by: i).pointee = srcPtr.advanced(by: i).pointee
-              }
+          // UnsafeMutableBufferPointer.baseAddress gives direct access; no withUnsafeMutableBytes.
+          let base = UnsafeMutableRawPointer(memory.baseAddress!)
+          if dstOffFC10 <= srcOffFC10 || dstOffFC10 >= srcOffFC10 + copyCountFC10 {
+            base.advanced(by: dstOffFC10).copyMemory(
+              from: base.advanced(by: srcOffFC10), byteCount: copyCountFC10)
+          } else {
+            let dstPtr = base.advanced(by: dstOffFC10).assumingMemoryBound(to: UInt8.self)
+            let srcPtr = base.advanced(by: srcOffFC10).assumingMemoryBound(to: UInt8.self)
+            for i in stride(from: copyCountFC10 - 1, through: 0, by: -1) {
+              dstPtr.advanced(by: i).pointee = srcPtr.advanced(by: i).pointee
             }
           }
         }
@@ -2574,10 +2586,9 @@ extension WasmInterpreter {
         if fillCountFC11 > 0 {
           let byteFC11 = UInt8(UInt32(bitPattern: val) & 0xFF)
           // initializeMemory compiles to a single memset call.
-          memory.withUnsafeMutableBytes { buf in
-            _ = buf.baseAddress!.advanced(by: dstOffFC11)
-              .initializeMemory(as: UInt8.self, repeating: byteFC11, count: fillCountFC11)
-          }
+          // UnsafeMutableBufferPointer.baseAddress gives direct access; no withUnsafeMutableBytes.
+          _ = UnsafeMutableRawPointer(memory.baseAddress!).advanced(by: dstOffFC11)
+            .initializeMemory(as: UInt8.self, repeating: byteFC11, count: fillCountFC11)
         }
         frames[fi].ip = UInt32(cursor)
 
@@ -2680,11 +2691,19 @@ extension WasmInterpreter {
         }
         let tiFC15 = Int(tableIdxFC15)
         guard tiFC15 < tables.tableCount else { throw WasmError.undefinedElement }
-        let nFC15 = Int(UInt32(bitPattern: delta))
+        // Treat delta as unsigned per Wasm spec — guard before converting to Int
+        // to avoid a trap on 32-bit RP2350 when the unsigned value > Int32.max.
+        let nFC15u = UInt32(bitPattern: delta)
         let tableMaxFC15 =
           tiFC15 < module.tables.count ? module.tables[tiFC15].max.map(Int.init) : nil
-        let growResultFC15 = tables.grow(
-          tiFC15, by: nFC15, fillValue: refValFC15, max: tableMaxFC15)
+        let growResultFC15: Int32
+        // Compare in UInt64 to avoid UInt32(Int.max) truncation on 64-bit macOS.
+        if UInt64(nFC15u) > UInt64(Int.max) {
+          growResultFC15 = -1  // unsigned delta exceeds addressable range — fail
+        } else {
+          growResultFC15 = tables.grow(
+            tiFC15, by: Int(nFC15u), fillValue: refValFC15, max: tableMaxFC15)
+        }
         valueStack.append(.i32(growResultFC15))
         frames[fi].ip = UInt32(cursor)
 

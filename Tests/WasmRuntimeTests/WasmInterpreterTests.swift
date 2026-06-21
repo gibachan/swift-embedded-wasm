@@ -145,21 +145,24 @@ struct WasmInterpreterTests {
 
   @Test func i32Add() throws {
     let module = try parseModule("i32-add")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(3), .i32(4)])
     #expect(result == [.i32(7)])
   }
 
   @Test func i32AddWithNegatives() throws {
     let module = try parseModule("i32-add")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(-10), .i32(3)])
     #expect(result == [.i32(-7)])
   }
 
   @Test func i32AddWrapsAround() throws {
     let module = try parseModule("i32-add")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     // Wasm i32.add wraps around on overflow
     let result = try interp.callExport(nameBytes: i32AddName, args: [.i32(Int32.max), .i32(1)])
     #expect(result == [.i32(Int32.min)])
@@ -167,7 +170,8 @@ struct WasmInterpreterTests {
 
   @Test func throwsOnUnknownExport() throws {
     let module = try parseModule("i32-add")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     #expect(throws: WasmError.functionNotFound) {
       try interp.callExport(nameBytes: Array("nonexistent".utf8), args: [])
     }
@@ -175,7 +179,8 @@ struct WasmInterpreterTests {
 
   @Test func throwsOnArgumentCountMismatch() throws {
     let module = try parseModule("i32-add")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     #expect(throws: WasmError.argumentCountMismatch) {
       try interp.callExport(nameBytes: i32AddName, args: [.i32(1)])
     }
@@ -184,12 +189,14 @@ struct WasmInterpreterTests {
   @Test func instantiatesWithStart() throws {
     let module = try parseModule("memory")
     // The start function (() -> ()) should run without error at instantiation
-    _ = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    _ = try WasmInterpreter(module: module, arena: &arena)
   }
 
   @Test func executesLoop() throws {
     let module = try parseModule("loop")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     let result = try interp.callExport(nameBytes: Array("loop_test".utf8), args: [])
     #expect(result.isEmpty)
   }
@@ -219,7 +226,8 @@ struct WasmInterpreterTests {
       .memory("env", "buffer", 1),
     ]
 
-    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena, hostImports: hostImports)
     _ = try interp.callExport(nameBytes: Array("fizzbuzz".utf8), args: [.i32(16)])
 
     #expect(
@@ -244,7 +252,8 @@ struct WasmInterpreterTests {
           return []
         })
     ]
-    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena, hostImports: hostImports)
     _ = try interp.call(functionIndex: module.importedFunctionCount, args: [])
     #expect(blinkCount == 3)
   }
@@ -260,7 +269,8 @@ struct WasmInterpreterTests {
           return []
         })
     ]
-    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena, hostImports: hostImports)
     _ = try interp.call(functionIndex: module.importedFunctionCount, args: [])
     #expect(blinkCount == 5)
   }
@@ -276,7 +286,8 @@ struct WasmInterpreterTests {
           return []
         })
     ]
-    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena, hostImports: hostImports)
     _ = try interp.call(functionIndex: module.importedFunctionCount, args: [])
     #expect(blinkCount == 10)
   }
@@ -289,7 +300,8 @@ struct WasmInterpreterTests {
       .function("js", "increment", { _, _ in [.i32(0)] }),
       .function("js", "decrement", { _, _ in [.i32(0)] }),
     ]
-    var interp = try WasmInterpreter(module: module, hostImports: hostImports)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena, hostImports: hostImports)
 
     // global $i starts at 0
     // increment: $i = 0 + 1 = 1, returns 1
@@ -316,14 +328,16 @@ struct WasmInterpreterTests {
 
   @Test func callsAddExport_3plus4_returns7() throws {
     let module = try parseModule("add")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     let result = try interp.callExport(nameBytes: Array("add".utf8), args: [.i32(3), .i32(4)])
     #expect(result == [.i32(7)])
   }
 
   @Test func addExportWithNegativeInputs() throws {
     let module = try parseModule("add")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     #expect(
       try interp.callExport(nameBytes: Array("add".utf8), args: [.i32(-5), .i32(-3)])
         == [.i32(-8)])
@@ -334,7 +348,8 @@ struct WasmInterpreterTests {
 
   @Test func addExportWrapsOnOverflow() throws {
     let module = try parseModule("add")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     // Wasm i32.add uses wrapping arithmetic
     let result = try interp.callExport(
       nameBytes: Array("add".utf8), args: [.i32(Int32.max), .i32(1)])
@@ -346,7 +361,8 @@ struct WasmInterpreterTests {
     // This corresponds to the fallback branch in executeReceivedWasm():
     // when "add" is not found, dispatch falls through to "run".
     let module = try parseModule("i32-add")  // exports "i32-add", not "add"
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     #expect(throws: WasmError.functionNotFound) {
       try interp.callExport(nameBytes: Array("add".utf8), args: [.i32(3), .i32(4)])
     }
@@ -363,7 +379,8 @@ struct WasmInterpreterTests {
     }
     let bytes = [UInt8](data)
     let module = try parseBytes(bytes)
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     let even = Array("even".utf8)
     let odd = Array("odd".utf8)
     #expect(try interp.callExport(nameBytes: even, args: [Value.i32(13)]) == [Value.i32(0)])
@@ -374,7 +391,8 @@ struct WasmInterpreterTests {
 
   @Test func executionStatistics() throws {
     let module = try parseModule("i32-add")
-    var interp = try WasmInterpreter(module: module)
+    var arena = WasmArena(capacity: 256 * 1024)
+    var interp = try WasmInterpreter(module: module, arena: &arena)
     _ = try interp.callExport(nameBytes: Array("i32-add".utf8), args: [.i32(3), .i32(4)])
     #expect(interp.executedInstructions > 0)
     #expect(interp.peakValueStackDepth >= 1)

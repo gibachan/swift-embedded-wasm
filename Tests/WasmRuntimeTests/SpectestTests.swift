@@ -81,6 +81,14 @@ private struct WastValue: Decodable {
 
 // MARK: - Conformance runner
 
+// Pairs a WasmArena with a WasmInterpreter so the arena outlives the interpreter.
+// WasmInterpreter.memory is a raw pointer into the arena; the arena must not be
+// reset or deallocated while the interpreter is alive.
+private struct ModuleSlot {
+  var arena: WasmArena
+  var interp: WasmInterpreter
+}
+
 // Processes a single .json file produced by wast2json.
 // Failures are recorded via Issue.record() so all assertions run before the
 // test is marked failed - one test per .json file.
@@ -88,12 +96,20 @@ private struct ConformanceRunner {
   let baseDir: String
 
   // Current Wasm module state
-  var currentInterp: WasmInterpreter?
+  var currentSlot: ModuleSlot?
   var currentModuleSkipped = false
-  var namedModules: [String: WasmInterpreter] = [:]
+  var namedModules: [String: ModuleSlot] = [:]
   // Modules registered via "register" commands; keyed by the "as" name.
   // These are used to resolve cross-module function imports in subsequently loaded modules.
-  var registeredModules: [String: WasmInterpreter] = [:]
+  var registeredModules: [String: ModuleSlot] = [:]
+
+  // Convenience accessor for the current interpreter (used by assert_return, etc.)
+  var currentInterp: WasmInterpreter? {
+    get { currentSlot?.interp }
+    set {
+      if let v = newValue { currentSlot?.interp = v } else { currentSlot = nil }
+    }
+  }
 
   // Set to true after an assert_uninstantiable that we handled (pass or skip).
   // The spec applies element segments before a trap-on-instantiation, producing
@@ -151,21 +167,28 @@ private struct ConformanceRunner {
       // Build host imports: standard spectest imports plus any cross-module imports
       // from modules previously registered via the "register" command.
       let hostImports = spectestHostImports() + crossModuleImports(for: module)
-      let interp = try WasmInterpreter(module: module, hostImports: hostImports)
-      currentInterp = interp
+      // Each module gets its own arena so that arenas for named/registered modules
+      // (stored in namedModules / registeredModules) don't conflict.
+      // 1 MiB provides headroom for modules that grow memory: some spectest suites
+      // (e.g. memory_size) grow up to 8 pages = 512 KiB; 1 MiB covers that plus
+      // room for initial data and future expand headroom.
+      var arena = WasmArena(capacity: 1024 * 1024)
+      let interp = try WasmInterpreter(module: module, arena: &arena, hostImports: hostImports)
+      let slot = ModuleSlot(arena: arena, interp: interp)
+      currentSlot = slot
       currentModuleSkipped = false
       if let name = cmd.name {
-        namedModules[name] = interp
+        namedModules[name] = slot
       }
       passCount += 1
     } catch WasmError.invalidInstruction(_) {
       // Module uses an instruction we haven't implemented yet.
-      currentInterp = nil
+      currentSlot = nil
       currentModuleSkipped = true
       skipCount += 1
     } catch {
       // importNotFound, unsupportedElementSegment, etc.
-      currentInterp = nil
+      currentSlot = nil
       currentModuleSkipped = true
       skipCount += 1
     }
@@ -182,13 +205,13 @@ private struct ConformanceRunner {
     }
     // If the command names a specific module (via cmd.name), use that; otherwise
     // use the most recently instantiated module.
-    let interp: WasmInterpreter?
+    let slot: ModuleSlot?
     if let moduleName = cmd.name {
-      interp = namedModules[moduleName]
+      slot = namedModules[moduleName]
     } else {
-      interp = currentInterp
+      slot = currentSlot
     }
-    guard let reg = interp else {
+    guard let reg = slot else {
       skipCount += 1
       return
     }
@@ -201,21 +224,21 @@ private struct ConformanceRunner {
   // Builds HostImport entries for any function imports in `module` that refer to
   // a module name present in `registeredModules`.
   //
-  // The returned closures capture a value-copy of the registered interpreter.
-  // This is intentional: ef0-ef4 are pure constant functions and do not mutate
-  // state, so a value copy is safe and avoids shared-mutable state.
+  // The returned closures capture a value-copy of the registered slot (arena + interpreter).
+  // The arena is a class-backed value type on macOS, so the copy keeps the backing store alive.
   private func crossModuleImports(for module: WasmModule) -> [HostImport] {
     var result: [HostImport] = []
     for i in 0..<module.imports.count {
       let imp = module.imports[i]
       guard case .function(let fi) = imp else { continue }
       let modName = String(bytes: fi.module, encoding: .utf8) ?? ""
-      guard let regInterp = registeredModules[modName] else { continue }
-      // Value-copy the interpreter so the closure is self-contained.
-      var capturedInterp = regInterp
+      guard let regSlot = registeredModules[modName] else { continue }
+      // Value-copy the slot so the closure is self-contained.
+      // The arena's _ArenaStorage is reference-counted, so the copy keeps the backing alive.
+      var capturedSlot = regSlot
       let fieldBytes = fi.name  // [UInt8]; captured by value
       let hf: HostFunction = { args, _ in
-        return (try? capturedInterp.callExport(nameBytes: fieldBytes, args: args)) ?? []
+        return (try? capturedSlot.interp.callExport(nameBytes: fieldBytes, args: args)) ?? []
       }
       // Use functionDyn to match against runtime [UInt8] names from the module's import table.
       // StaticString cannot be constructed at runtime, so the Dyn variant is required here.
@@ -378,26 +401,27 @@ private struct ConformanceRunner {
   private mutating func invoke(_ action: WastAction) throws -> [Value] {
     // "get" (global read) is not yet supported.
     guard action.type == "invoke" else { throw WasmError.functionNotFound }
-    guard var interp = resolveModule(named: action.module) else {
+    guard var slot = resolveSlot(named: action.module) else {
       throw WasmError.functionNotFound
     }
     var args: [Value] = []
     for v in (action.args ?? []) {
       args.append(try convertValue(v))
     }
-    let result = try interp.callExport(nameBytes: Array(action.field.utf8), args: args)
-    // Persist mutations (updated globals etc.)
-    storeModule(named: action.module, interp: interp)
+    let result = try slot.interp.callExport(nameBytes: Array(action.field.utf8), args: args)
+    // Persist mutations (updated globals etc.) — write the whole slot back so
+    // the arena backing remains paired with the interpreter.
+    storeSlot(named: action.module, slot: slot)
     return result
   }
 
-  private func resolveModule(named name: String?) -> WasmInterpreter? {
+  private func resolveSlot(named name: String?) -> ModuleSlot? {
     if let name { return namedModules[name] }
-    return currentInterp
+    return currentSlot
   }
 
-  private mutating func storeModule(named name: String?, interp: WasmInterpreter) {
-    if let name { namedModules[name] = interp } else { currentInterp = interp }
+  private mutating func storeSlot(named name: String?, slot: ModuleSlot) {
+    if let name { namedModules[name] = slot } else { currentSlot = slot }
   }
 
   // MARK: Value helpers

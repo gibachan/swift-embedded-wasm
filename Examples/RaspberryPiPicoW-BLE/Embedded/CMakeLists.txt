@@ -19,6 +19,7 @@ file(GLOB WASM_RUNTIME_SOURCES "${WASM_RUNTIME_DIR}/*.swift")
 add_executable(pico-ble
     Main.swift
     wasm_recv_buf.c
+    wasm_arena.c
     posix_memalign.c
     ${WASM_RUNTIME_SOURCES}
 )
@@ -90,6 +91,7 @@ target_compile_options(pico-ble PUBLIC
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:
         -target armv6m-none-none-eabi
         -enable-experimental-feature Embedded
+        -enable-experimental-feature Extern
         -enable-upcoming-feature NonisolatedNonsendingByDefault
         -enable-upcoming-feature InferIsolatedConformances
         -parse-as-library

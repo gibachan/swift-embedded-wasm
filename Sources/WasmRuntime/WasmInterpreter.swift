@@ -1170,7 +1170,14 @@ struct FlatTableStorage {
 // Does not conform to Sendable because HostFunction (a closure) is not Sendable in non-Embedded builds.
 struct WasmInterpreter {
   let module: WasmModule
-  var memory: [UInt8]
+  // Arena-backed linear memory pointer.  The lifetime of this buffer is owned by the
+  // WasmArena passed to init; the WasmInterpreter must be destroyed before the arena
+  // is reset.  UnsafeMutableBufferPointer is used on both platforms so that the type
+  // is uniform and dispatchEmbedded needs no #if for memory access.
+  var memory: UnsafeMutableBufferPointer<UInt8>
+  // Total bytes pre-allocated from the arena at init time (>= memory.count).
+  // memory.grow extends memory.count up to this limit without a new allocation.
+  var memoryCapacity: Int
   #if hasFeature(Embedded)
     // In Embedded builds, host functions are @convention(c) pointers in a fixed-size buffer —
     // no heap allocation. internal (no modifier) so WasmInterpreterEmbedded.swift (same module,
@@ -1212,17 +1219,19 @@ struct WasmInterpreter {
   // MARK: - Init
 
   /// Convenience: instantiate module with no host imports.
-  init(module: WasmModule) throws(WasmError) {
-    try self.init(module: module, hostImports: Fixed4_HostImport())
+  init(module: WasmModule, arena: inout WasmArena) throws(WasmError) {
+    try self.init(module: module, arena: &arena, hostImports: Fixed4_HostImport())
   }
 
   /// Instantiates the module.
   ///
+  /// - arena: Arena allocator from which linear memory is allocated.  The caller must
+  ///   keep the arena alive (and not call reset()) for the lifetime of this interpreter.
   /// - hostImports: host-provided imports (functions and memories) required by the module.
   ///   Accepts any Sequence of HostImport — pass [HostImport] on macOS or Fixed4_HostImport
   ///   on Embedded to avoid heap allocation. Throws .importNotFound if an import is declared
   ///   but no matching entry is provided.
-  init<S: Sequence>(module: WasmModule, hostImports: S) throws(WasmError)
+  init<S: Sequence>(module: WasmModule, arena: inout WasmArena, hostImports: S) throws(WasmError)
   where S.Element == HostImport {
     self.module = module
 
@@ -1381,20 +1390,55 @@ struct WasmInterpreter {
       memPageCount = localMem.min
     }
 
-    // Allocate memory and initialize it from active data segments only (1 page = 64 KiB).
+    // Allocate linear memory from the arena (1 page = 64 KiB).
+    // Using the arena eliminates the repeated malloc/free cycle that [UInt8] allocation
+    // would incur on every executeReceivedWasm() call.
+    //
+    // memory.grow support: pre-allocate the declared maximum capacity so that
+    // memory.grow can extend memory.count within the same backing block.
+    // The active view (memory) starts at initialPages; memoryCapacity tracks the full
+    // pre-allocated size so that memory.grow knows the hard upper bound.
     // Passive segments (offset == nil) are retained in module.data for use by memory.init
     // at runtime; they are not applied at instantiation.
     // Use an index loop for Embedded compatibility (Fixed16_DataSegment is the Embedded-path type; see WasmModule.swift).
-    var mem = [UInt8](repeating: 0, count: Int(memPageCount) * 65536)
+    let initialByteCount = Int(memPageCount) * 65536
+    // Pre-allocate up to the declared max pages so that memory.grow can extend
+    // memory.count within the same backing block (no second malloc).
+    // When no max is declared the Wasm spec allows up to 65536 pages (4 GiB), which
+    // we obviously cannot reserve; instead we use however many full pages fit in the
+    // remaining arena space, rounded down to a page boundary.
+    // This keeps memory.grow working for realistic workloads on both macOS (256 KiB
+    // arena, up to 4 pages) and Embedded (96 KiB arena).
+    let arenaAvailablePages = arena.availableBytes / 65536
+    let maxPages: Int
+    if let declaredMax = module.memories.first?.max {
+      maxPages = min(Int(declaredMax), arenaAvailablePages)
+    } else {
+      // No declared max: use full available arena space.
+      maxPages = arenaAvailablePages
+    }
+    // Ensure the capacity is at least the initial page count (edge case: arena is almost full).
+    let capacityByteCount = max(maxPages, Int(memPageCount)) * 65536
+    guard let memSlice = arena.allocate(count: capacityByteCount, alignment: 4) else {
+      throw WasmError.resourceLimitExceeded
+    }
+    // Zero-initialise: arena does not guarantee zeroed memory after reset().
+    // This matches the Wasm spec (§4.5.4): linear memory is zero-initialised at
+    // instantiation.  memset-equivalent; fast for typical 64 KiB sizes.
+    memSlice.initialize(repeating: 0)
     for di in 0..<module.data.count {
       let seg = module.data[di]
       guard let offset = seg.offset else { continue }  // skip passive segments
       let start = Int(offset)
       let end = start + seg.bytes.count
-      guard start >= 0 && end <= mem.count else { throw .memoryAccessOutOfBounds }
-      mem.replaceSubrange(start..<end, with: seg.bytes)
+      guard start >= 0 && end <= initialByteCount else { throw .memoryAccessOutOfBounds }
+      for i in start..<end { memSlice[i] = seg.bytes[i - start] }
     }
-    self.memory = mem
+    // memory initially covers only the initial pages; the remaining pre-allocated bytes
+    // serve as grow headroom (see memory.grow opcode 0x40 in WasmInterpreterEmbedded.swift).
+    self.memory = UnsafeMutableBufferPointer(
+      start: memSlice.baseAddress, count: initialByteCount)
+    self.memoryCapacity = capacityByteCount
     // UInt64 bitmap supports at most 64 data segments.
     guard module.data.count <= 64 else { throw .resourceLimitExceeded }
     self.droppedDataSegments = 0  // all bits clear = no segments dropped
@@ -1455,7 +1499,13 @@ struct WasmInterpreter {
       #if hasFeature(Embedded)
         return callHostFunction(index: functionIndex, args: args)
       #else
-        return hostFunctions[functionIndex](args, memory)
+        // HostFunction takes [UInt8] (macOS public API); convert from UnsafeMutableBufferPointer.
+        // Array(UnsafeBufferPointer(memory)) copies the bytes into a new [UInt8] — acceptable
+        // since host function calls are rare and keeping HostFunction's signature stable avoids
+        // cascading changes through all test call sites.
+        // TODO: Arena Step 3b — change HostFunction to take UnsafeBufferPointer<UInt8> directly,
+        //        eliminating this copy.
+        return hostFunctions[functionIndex](args, Array(UnsafeBufferPointer(memory)))
       #endif
     }
 
@@ -1496,12 +1546,12 @@ struct WasmInterpreter {
           let argsPtr: UnsafeRawPointer? = argsRaw.baseAddress
           let resultsRaw: UnsafeMutableRawPointer? =
             resultCount > 0 ? UnsafeMutableRawPointer(resultsBuf.baseAddress!) : nil
-          memory.withUnsafeMutableBytes { memBuf in
-            let memPtr = memBuf.baseAddress?.assumingMemoryBound(to: UInt8.self)
-            let memLen = Int32(memBuf.count)
-            // Pass args as UnsafeRawPointer — callee reinterprets to UnsafePointer<Value>.
-            hostFunctions[index](argsPtr, Int32(args.count), memPtr, memLen, resultsRaw)
-          }
+          // memory is UnsafeMutableBufferPointer<UInt8> — baseAddress gives direct mutable
+          // pointer access; withUnsafeMutableBytes does not exist on this type.
+          let memPtr = memory.baseAddress
+          let memLen = Int32(memory.count)
+          // Pass args as UnsafeRawPointer — callee reinterprets to UnsafePointer<Value>.
+          hostFunctions[index](argsPtr, Int32(args.count), memPtr, memLen, resultsRaw)
         }
         for i in 0..<resultCount {
           results.append(resultsBuf[i])

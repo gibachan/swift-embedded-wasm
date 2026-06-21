@@ -8,3 +8,6 @@
 
 uint8_t *wasm_recv_buf_ptr(void);
 uint32_t wasm_recv_buf_size(void);
+
+uint8_t *wasm_arena_ptr(void);
+uint32_t wasm_arena_size(void);

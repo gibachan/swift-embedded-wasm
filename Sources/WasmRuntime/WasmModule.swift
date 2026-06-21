@@ -479,7 +479,16 @@ enum Import: Sendable {
 /// for use by `memory.init` and can be invalidated by `data.drop`.
 struct DataSegment: Sendable {
   let offset: Int32?  // nil = passive segment; non-nil = active (write offset into memory)
-  let bytes: [UInt8]  // data bytes
+  // On Embedded, bytes is a zero-copy slice into module.rawBytes (the static BLE receive buffer).
+  // The receive buffer outlives WasmModule for the entire execution cycle, so the pointer is safe.
+  // On macOS, bytes is a heap-allocated [UInt8] copy; WasmModule.rawBytes is also a [UInt8] copy
+  // owned by WasmModule, and WasmModule is sometimes copied (e.g. into WasmInterpreter.module),
+  // making a UnsafeBufferPointer slice into module.rawBytes unsafe across copies.
+  #if hasFeature(Embedded)
+    let bytes: UnsafeBufferPointer<UInt8>  // zero-copy slice into rawBytes
+  #else
+    let bytes: [UInt8]  // heap-allocated copy
+  #endif
 }
 
 // MARK: - Exports
@@ -554,7 +563,13 @@ extension ElementSegment {
 
 extension DataSegment {
   /// Sentinel used to fill uninitialised slots in Fixed16_DataSegment.
-  static var zero: DataSegment { DataSegment(offset: nil, bytes: []) }
+  static var zero: DataSegment {
+    #if hasFeature(Embedded)
+      DataSegment(offset: nil, bytes: UnsafeBufferPointer(start: nil, count: 0))
+    #else
+      DataSegment(offset: nil, bytes: [])
+    #endif
+  }
 }
 
 extension ValueType {
