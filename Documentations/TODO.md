@@ -6,12 +6,10 @@
 
 ### Remaining Dynamic Allocations
 
-The following heap allocations in `Examples/RaspberryPiPicoW-BLE/Embedded/Main.swift` still use `[T]`:
+The following heap allocations are intentional and remain:
 
 | Allocation | Note |
 |---|---|
-| `[HostImport]` in `executeReceivedWasm` | 4-element array; replace with a fixed-size buffer once `Fixed4_HostImport` is designed |
-| `[UInt8]` literals for `addName`/`runName` | 3-byte arrays; replace with `withUnsafeBytes(of: &tuple)` once `callExport` accepts `UnsafeBufferPointer<UInt8>` |
 | macOS `var frames: [EmbeddedFrame]` | Intentional stack-pressure workaround; Embedded path already uses fixed-size `CallStack` |
 | macOS `CallFrame.locals: [Value]` | Intentional stack-pressure workaround; Embedded path stores locals on shared `ValueStack` |
 

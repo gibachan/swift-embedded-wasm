@@ -61,6 +61,52 @@ enum HostImport {
   #endif
 }
 
+// MARK: - Fixed4_HostImport
+
+/// Stack-allocated container for up to 4 HostImport values.
+/// Conforms to Sequence so it can be passed to WasmInterpreter.init in place of [HostImport].
+/// On Embedded, this avoids the heap allocation that [HostImport] would require.
+struct Fixed4_HostImport: Sequence {
+  private var e0: HostImport?
+  private var e1: HostImport?
+  private var e2: HostImport?
+  private var e3: HostImport?
+  private(set) var count: Int = 0
+
+  init() {}
+
+  mutating func append(_ hi: HostImport) {
+    if count < 4 {
+      switch count {
+      case 0: e0 = hi
+      case 1: e1 = hi
+      case 2: e2 = hi
+      case 3: e3 = hi
+      default: break
+      }
+      count += 1
+    }
+  }
+
+  struct Iterator: IteratorProtocol {
+    let base: Fixed4_HostImport
+    var index: Int = 0
+    mutating func next() -> HostImport? {
+      guard index < base.count else { return nil }
+      defer { index += 1 }
+      switch index {
+      case 0: return base.e0
+      case 1: return base.e1
+      case 2: return base.e2
+      case 3: return base.e3
+      default: return nil
+      }
+    }
+  }
+
+  func makeIterator() -> Iterator { Iterator(base: self) }
+}
+
 // MARK: - Fixed32_HostFunctionPtr (Embedded only)
 
 // 32-slot fixed buffer for Embedded host functions (max WasmLimits.maxImports = 32).
@@ -1165,11 +1211,19 @@ struct WasmInterpreter {
 
   // MARK: - Init
 
+  /// Convenience: instantiate module with no host imports.
+  init(module: WasmModule) throws(WasmError) {
+    try self.init(module: module, hostImports: Fixed4_HostImport())
+  }
+
   /// Instantiates the module.
   ///
-  /// - hostImports: host-provided functions and memories required by the module's imports.
-  ///   Throws .importNotFound if an import is declared but no matching HostImport is given.
-  init(module: WasmModule, hostImports: [HostImport] = []) throws(WasmError) {
+  /// - hostImports: host-provided imports (functions and memories) required by the module.
+  ///   Accepts any Sequence of HostImport — pass [HostImport] on macOS or Fixed4_HostImport
+  ///   on Embedded to avoid heap allocation. Throws .importNotFound if an import is declared
+  ///   but no matching entry is provided.
+  init<S: Sequence>(module: WasmModule, hostImports: S) throws(WasmError)
+  where S.Element == HostImport {
     self.module = module
 
     // Match host functions to imports, preserving import order.
@@ -1378,6 +1432,16 @@ struct WasmInterpreter {
       if exp.nameBytes.elementsEqual(nameBytes) && exp.kind == .function {
         return try call(functionIndex: Int(exp.index), args: args)
       }
+    }
+    throw WasmError.functionNotFound
+  }
+
+  /// Calls an exported function by StaticString name — zero-copy, no heap allocation.
+  mutating func callExport(_ name: StaticString, args: [Value]) throws(WasmError) -> [Value] {
+    for i in 0..<module.exports.count {
+      let exp = module.exports[i]
+      let matches = name.withUTF8Buffer { exp.nameBytes.elementsEqual($0) && exp.kind == .function }
+      if matches { return try call(functionIndex: Int(exp.index), args: args) }
     }
     throw WasmError.functionNotFound
   }

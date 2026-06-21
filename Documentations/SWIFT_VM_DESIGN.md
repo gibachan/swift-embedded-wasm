@@ -379,27 +379,36 @@ private func jumpCursorForIp(_ ip: UInt32, in jumpTable: [JumpEntry]) -> Int {
 }
 ```
 
-#### Phase 4 fixed-buffer status
+#### Phase 4 / Phase 5 fixed-buffer status
 
 - `LabelStack` (32 entries): **complete** — both macOS and Embedded use `LabelStack` for `EmbeddedFrame.labels`. Embedded uses a 32-element tuple internally; macOS uses `[Label]` (heap) to keep `EmbeddedFrame` small. The `#if` is encapsulated inside `LabelStack`; no call-site branching required.
 - `ValueStack` (256 entries): **complete** — replaces `valueStack: [Value]` in Embedded builds.
 - `CallStack` (64 entries): **complete** — replaces `frames: [EmbeddedFrame]` in Embedded builds.
-- `WasmModule` section fields: **complete (Embedded)** — `types`, `functions`, `imports`, `exports`, `globals`, `tables`, `memories`, `elements`, `data`, and `importedFunctionTypeIndices` use fixed-buffer types (`Fixed64_FunctionType`, `Fixed64_UInt32`, `Fixed32_Import`, etc.) in Embedded builds. `code: [FunctionHandle]` and `rawBytes: [UInt8]` remain dynamic in both builds (marked `// TODO: Embedded Phase 5`).
+- `WasmModule` section fields: **complete (Embedded)** — `types`, `functions`, `imports`, `exports`, `globals`, `tables`, `memories`, `elements`, `data`, and `importedFunctionTypeIndices` use fixed-buffer types (`Fixed64_FunctionType`, `Fixed64_UInt32`, `Fixed32_Import`, etc.) in Embedded builds. `rawBytes: [UInt8]` remains dynamic in both builds (marked `// TODO: Embedded Phase 5`).
+- `FixedLocals_ValueType` (32 entries): **complete** — replaces `FunctionHandle.locals: [ValueType]`. Throws `.resourceLimitExceeded` at parse time if locals count exceeds `WasmLimits.maxLocalsPerFunction`.
+- `FixedJumpTable_JumpEntry` (64 entries): **complete** — replaces `FunctionHandle.jumpTable: [JumpEntry]`. Throws `.resourceLimitExceeded` at parse time if jump table overflows `WasmLimits.maxJumpEntriesPerFunction`.
+- `Fixed64_FunctionHandle` (64 entries): **complete (Phase 5)** — replaces `code: [FunctionHandle]` on `WasmModule`. Embedded: 64-slot tuple; macOS: `[FunctionHandle]` (heap). The `#if` is encapsulated inside `Fixed64_FunctionHandle`; no call-site branching required.
+- `Fixed4_HostImport`: **complete (Phase 5)** — stack-allocated 4-slot container for `HostImport` values. Passed to `WasmInterpreter.init<S: Sequence>(module:hostImports:S)` on Embedded to avoid `[HostImport]` heap allocation.
+- `Fixed32_HostFunctionPtr`: **complete (Phase 5)** — Embedded-only internal buffer holding up to 32 `HostFunctionPtr` values during `WasmInterpreter.init`. Eliminates `[HostFunctionPtr]` heap allocation. Not part of the public API.
 - `FlatTableStorage`: **defined, not yet connected** — `tables: [[Value]]` replacement is tracked as `// TODO: Embedded Phase 5`.
-- `[JumpEntry]` fixed buffer: **not yet done** — `FunctionHandle.jumpTable` remains `[JumpEntry]`; fixed-buffer replacement is tracked as `// TODO: Embedded Phase 4` in source.
 
-The `WasmLimits` enum in `WasmModule.swift` now includes four runtime constants used by the fixed buffers:
+The `WasmLimits` enum in `WasmModule.swift` includes six runtime constants used by the fixed buffers:
 
 ```swift
-static let maxTableElements: Int  = 256  // max elements per table
-static let maxValueStackDepth: Int = 256 // max operand stack depth
-static let maxCallDepth: Int       = 64  // max call stack depth (call frames)
-static let maxLabelDepth: Int      = 32  // max nested block/loop/if depth per frame
+static let maxImports: Int             = 32   // max number of imports
+static let maxTableElements: Int       = 256  // max elements per table
+static let maxValueStackDepth: Int     = 256  // max operand stack depth
+static let maxCallDepth: Int           = 64   // max call stack depth (call frames)
+static let maxLabelDepth: Int          = 32   // max nested block/loop/if depth per frame
+static let maxLocalsPerFunction: Int   = 32   // max declared locals per function body
+static let maxJumpEntriesPerFunction: Int = 64 // max block/loop/if instructions per function body
 ```
 
-Overflow is currently caught by `precondition` (traps on violation). `WasmError.stackOverflow`
-is defined and reserved for future explicit `throw` paths. The macOS execution path retains
-dynamic `[Value]` / `[EmbeddedFrame]` storage with `// TODO: Embedded Phase 5` markers.
+Overflow is currently caught by `precondition` in runtime stacks (traps on violation) and by
+`throws(.resourceLimitExceeded)` in the parser for locals and jump-table limits.
+`WasmError.stackOverflow` is defined and reserved for future explicit `throw` paths on runtime
+stack overflows. The macOS execution path retains dynamic `[Value]` / `[EmbeddedFrame]` storage
+with `// TODO: Embedded Phase 5` markers.
 
 ---
 
@@ -440,6 +449,91 @@ wasm3 uses signature strings like `"v(ii)"` for runtime type checking.
 This project registers host functions in an array indexed by import order, with the
 representation differing between macOS and Embedded builds.
 
+### `HostImport` Enum
+
+Module and field names are `StaticString` (compile-time constants) in both builds,
+so that no heap allocation is required for string storage in either environment.
+
+```swift
+// WasmInterpreter.swift
+enum HostImport {
+  #if hasFeature(Embedded)
+    case function(StaticString, StaticString, HostFunctionPtr)  // (module, name, body)
+    case memory(StaticString, StaticString, UInt32)              // (module, name, pages)
+  #else
+    case function(StaticString, StaticString, HostFunction)      // (module, name, body)
+    case memory(StaticString, StaticString, UInt32)              // (module, name, pages)
+    case functionDyn([UInt8], [UInt8], HostFunction)             // (moduleBytes, nameBytes, body)
+    case memoryDyn([UInt8], [UInt8], UInt32)                     // (moduleBytes, nameBytes, pages)
+  #endif
+}
+```
+
+The `functionDyn` / `memoryDyn` variants are available only in non-Embedded builds and exist
+for test infrastructure that constructs module/name byte arrays at runtime (e.g., spectest).
+Production call sites always use the `StaticString` variants.
+
+### `WasmInterpreter.init` — Generic over Sequence
+
+The initialiser is generic over any `Sequence` of `HostImport`, so callers can pass
+either `[HostImport]` (macOS, heap-allocated) or `Fixed4_HostImport` (Embedded, stack-allocated)
+without changing the call site:
+
+```swift
+// Convenience: no host imports
+init(module: WasmModule) throws(WasmError)
+
+// Primary generic initialiser — accepts [HostImport] or Fixed4_HostImport
+init<S: Sequence>(module: WasmModule, hostImports: S) throws(WasmError)
+where S.Element == HostImport
+```
+
+### `Fixed4_HostImport` — Stack-Allocated Import Container
+
+`Fixed4_HostImport` is a `struct` that holds up to 4 `HostImport` values in optional
+storage (no backing array), conforming to `Sequence`.  It avoids the heap allocation
+that `[HostImport]` would require on Embedded.
+
+```swift
+// WasmInterpreter.swift (both builds)
+struct Fixed4_HostImport: Sequence {
+    mutating func append(_ hi: HostImport)
+    func makeIterator() -> Iterator
+}
+```
+
+```swift
+// Usage (Embedded — no heap allocation)
+var hostImports = Fixed4_HostImport()
+hostImports.append(.function("env", "gpio_put", hostGpioPut))
+hostImports.append(.memory("env", "memory", 1))
+let interpreter = try WasmInterpreter(module: module, hostImports: hostImports)
+```
+
+```swift
+// Usage (macOS — [HostImport] is also accepted)
+let hostImports: [HostImport] = [
+    .function("env", "gpio_put") { args, _ in return [] }
+]
+let interpreter = try WasmInterpreter(module: module, hostImports: hostImports)
+```
+
+### `callExport` — StaticString Overload
+
+Two overloads exist for calling exported functions by name:
+
+```swift
+// Zero-copy StaticString name matching — preferred on Embedded
+mutating func callExport(_ name: StaticString, args: [Value]) throws(WasmError) -> [Value]
+
+// Legacy [UInt8] byte-array overload — for test infrastructure
+mutating func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value]
+```
+
+The `StaticString` overload uses `withUTF8Buffer` for zero-copy byte comparison against
+`exp.nameBytes` and requires no heap allocation at the call site.  String literals are
+accepted directly: `try interp.callExport("add", args: [.i32(3), .i32(4)])`.
+
 ### macOS Build
 
 Host functions are registered as Swift closures.
@@ -447,22 +541,10 @@ Host functions are registered as Swift closures.
 ```swift
 // WasmInterpreter.swift (non-Embedded)
 typealias HostFunction = ([Value], [UInt8]) -> [Value]
-
-enum HostImport {
-    case function(String, String, HostFunction) // (module, name, body)
-    case memory(String, String, UInt32)          // (module, name, pages)
-}
 ```
 
-```swift
-// Usage (macOS)
-let hostImports: [HostImport] = [
-    .function("env", "gpio_put") { args, _ in
-        return []
-    }
-]
-let interpreter = try WasmInterpreter(module: module, hostImports: hostImports)
-```
+The macOS `[Value]` return type requires heap allocation for multi-value returns, but
+this is acceptable in the development/debug phase.
 
 ### Embedded Build
 
@@ -474,29 +556,54 @@ heap allocation at the call site.
 ```swift
 // WasmInterpreter.swift (Embedded)
 #if hasFeature(Embedded)
-typealias HostFunctionPtr = @convention(c) (UnsafeRawPointer, Int, UnsafeMutableRawPointer, Int) -> Void
-
-enum HostImport {
-    case function(String, String, HostFunctionPtr)
-    case memory(String, String, UInt32)
-}
+typealias HostFunctionPtr =
+    @convention(c) (
+        UnsafeRawPointer?,    // args pointer (raw packed Value bytes)
+        Int32,                // args count
+        UnsafeMutablePointer<UInt8>?,  // results buffer
+        Int32,                // results count
+        UnsafeMutableRawPointer?       // context (unused)
+    ) -> Void
 #endif
 ```
 
 ```swift
 // Examples/RaspberryPiPicoW-BLE/Embedded/Main.swift
 @_cdecl("hostBlink")
-func hostBlink(_ argsPtr: UnsafeRawPointer, _ argsCount: Int,
-               _ resultsPtr: UnsafeMutableRawPointer, _ resultsCount: Int) {
+func hostBlink(
+    _ args: UnsafeRawPointer?, _ argsCount: Int32,
+    _ memory: UnsafeMutablePointer<UInt8>?, _ memorySize: Int32,
+    _ results: UnsafeMutableRawPointer?
+) {
     // GPIO blink implementation — no closure capture
 }
+```
+
+### `Fixed32_HostFunctionPtr` — Internal Embedded-Only Buffer
+
+`Fixed32_HostFunctionPtr` is a private `struct` used internally by `WasmInterpreter.init`
+in Embedded builds to hold up to 32 `HostFunctionPtr` values without heap allocation.
+It replaces the `[HostFunctionPtr]` array that would otherwise be required.  This type
+is an implementation detail of the initialiser and is not exposed in the public API.
+
+```swift
+// WasmInterpreter.swift (Embedded only, internal)
+#if hasFeature(Embedded)
+struct Fixed32_HostFunctionPtr {
+    mutating func append(_ fn: HostFunctionPtr)
+    subscript(index: Int) -> HostFunctionPtr { get }
+    var count: Int { get }
+}
+#endif
 ```
 
 ### Common Benefits
 
 - No `class` — Embedded Swift compatible
-- Array instead of `Dictionary` (`[String: ...]`) avoids dynamic hash computation
-- Module/function name comparison uses `elementsEqual` byte comparison (avoids `String ==`)
+- `Fixed4_HostImport` avoids `[HostImport]` heap allocation when registering imports
+- `Fixed32_HostFunctionPtr` avoids `[HostFunctionPtr]` heap allocation during `init`
+- `callExport(_ name: StaticString, ...)` avoids `[UInt8]` heap allocation at call sites
+- Module/function name comparison uses `withUTF8Buffer` + `elementsEqual` (avoids `String ==`)
 
 ---
 

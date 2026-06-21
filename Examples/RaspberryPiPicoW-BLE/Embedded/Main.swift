@@ -364,23 +364,17 @@ func executeReceivedWasm(conHandle: UInt16) {
     var execStats: (instr: UInt64, vs: Int, cs: Int)? = nil
     do throws(WasmError) {
         let module = try parser.parse()
-        // TODO: Embedded Phase 5 — replace [HostImport] with a stack-allocated fixed buffer.
-        let hostImports: [HostImport] = [
-            .function("env", "blink", hostBlink),
-            .function("env", "digitalWrite", hostDigitalWrite),
-            .function("env", "digitalRead", hostDigitalRead),
-            .function("env", "sleep", hostSleep),
-        ]
+        var hostImports = Fixed4_HostImport()
+        hostImports.append(.function("env", "blink", hostBlink))
+        hostImports.append(.function("env", "digitalWrite", hostDigitalWrite))
+        hostImports.append(.function("env", "digitalRead", hostDigitalRead))
+        hostImports.append(.function("env", "sleep", hostSleep))
         var interp = try WasmInterpreter(module: module, hostImports: hostImports)
 
         // --- Try "add(3, 4)" first (i32-add.wasm) ---
-        // nameBytes literal: "add" = [0x61, 0x64, 0x64].
-        // No String == comparison — byte array passed directly to callExport(nameBytes:).
-        // TODO: Embedded Phase 5 — replace [UInt8] literals with stack-allocated byte tuples.
-        let addName: [UInt8] = [0x61, 0x64, 0x64]  // "add"
         var calledAdd = false
         do throws(WasmError) {
-            let result = try interp.callExport(nameBytes: addName, args: [.i32(3), .i32(4)])
+            let result = try interp.callExport("add", args: [.i32(3), .i32(4)])
             calledAdd = true
             if !result.isEmpty, case .i32(let v) = result[0] {
                 uartWriteResult(v)
@@ -391,11 +385,8 @@ func executeReceivedWasm(conHandle: UInt16) {
 
         if !calledAdd {
             // --- Fall back to "run()" (blink/gpio demos) ---
-            // nameBytes literal: "run" = [0x72, 0x75, 0x6E].
-            // TODO: Embedded Phase 5 — replace [UInt8] literal with stack-allocated byte tuple.
-            let runName: [UInt8] = [0x72, 0x75, 0x6E]  // "run"
             do throws(WasmError) {
-                _ = try interp.callExport(nameBytes: runName, args: [])
+                _ = try interp.callExport("run", args: [])
             } catch {
                 // "run" not found or execution error — leave hardware unchanged.
             }
