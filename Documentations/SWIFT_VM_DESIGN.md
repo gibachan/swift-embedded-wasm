@@ -415,6 +415,51 @@ Overflow is currently caught by `precondition` in runtime stacks (traps on viola
 stack overflows. The macOS execution path retains dynamic `[Value]` / `[EmbeddedFrame]` storage
 with `// TODO: Embedded Phase 5` markers.
 
+### Phase 5: Pointer-Based Module Access (implemented, Embedded builds)
+
+`WasmModule` is approximately 5,288 bytes after all fixed-buffer conversions. When
+`dispatchEmbedded()` receives a `module: WasmModule` value parameter, the compiler
+materialises a full copy of that struct on the native stack. Across the combined call
+chain `_runIterativeEmbeddedCore → dispatchEmbedded → pushEmbeddedFrame → handleEmbeddedBranch`,
+this copy accounts for roughly 18 KB of the peak native stack requirement.
+
+**Solution**: the five interpreter functions that access module fields now receive
+`moduleRef: UnsafePointer<WasmModule>` instead of a value copy. Field accesses via
+`moduleRef.pointee.xxx` compile to direct loads from the BSS global address — no
+`WasmModule` copy is materialised on the stack.
+
+Functions that carry the `moduleRef: UnsafePointer<WasmModule>` parameter:
+- `dispatchEmbedded`
+- `embeddedBlockArity`
+- `embeddedLoopBrArity`
+- `pushEmbeddedFrame`
+- `handleEmbeddedBranch`
+
+`_runIterativeEmbeddedCore` (the caller) passes `self.moduleRef`, which is a stored
+property on `WasmInterpreter` pointing to the BSS global `_embeddedModule`.
+
+```swift
+// WasmInterpreterEmbedded.swift — BSS global, filled at load time
+#if hasFeature(Embedded)
+nonisolated(unsafe) var _embeddedModule = WasmModule.empty
+#endif
+```
+
+On the macOS path, where native stack depth is not a constraint, `_runIterativeEmbeddedCore`
+takes a value copy as `var localModule = self.module` and passes `&localModule` to the same
+functions. The function signatures are identical across both paths; the only difference is
+what the pointer points to.
+
+**Why a pointer and not `inout`?** Swift's `inout` is semantically an in-out borrow with
+exclusivity enforcement — passing `&self.module` as `inout` while `self` is also accessed by
+other parts of the call would trigger an exclusivity violation. `UnsafePointer` is a raw
+address with no exclusivity tracking, which is safe here because `_embeddedModule` is a
+module-level global that is not written to during interpreter execution.
+
+**Why not a value parameter?** Swift's ABI does not guarantee that a large struct passed
+by value is placed in-place on the callee's stack without copying. The pointer pattern is
+the only reliable way to guarantee zero struct copies along the call chain in Embedded Swift.
+
 ---
 
 ## 6. Linear Memory
@@ -824,9 +869,86 @@ result |= T(byte & 0x7F) &<< shift
 Embedded Swift may require types to have a fixed memory layout.
 Consider `@frozen` for publicly exposed types.
 
-### Stack Size
+### Stack Size and Custom Linker Script
 
-The Pico's default stack size is a few KB. Avoid deep recursion and large stack variables.
+#### The Problem: Default 4 KB Core 0 Stack
+
+The default pico-sdk linker script places the Core 0 stack in `SCRATCH_Y` (4 KB at
+`0x20041000`). The WebAssembly interpreter's peak native call chain is:
+
+```
+_runIterativeEmbeddedCore → dispatchEmbedded → pushEmbeddedFrame → handleEmbeddedBranch
+```
+
+Even after the Phase 5 pointer-based module access optimization (which eliminated the
+~18 KB `WasmModule` copy), the peak stack requirement is approximately 28,400 bytes —
+more than 7× the default 4 KB limit. Exceeding the stack boundary causes a HardFault
+on RP2040. Therefore two complementary measures are required: keep individual frame sizes
+small (the pointer pattern) and reserve enough total stack space (the linker script).
+
+#### The Solution: `memmap_wasm.ld`
+
+A custom linker script at `Examples/RaspberryPiPicoW-BLE/Embedded/memmap_wasm.ld`
+moves the Core 0 stack from `SCRATCH_Y` into the top of main RAM, reserving 64 KB:
+
+```ld
+/* Force the stack region to the top 64 KB of main RAM */
+. = ORIGIN(RAM) + LENGTH(RAM) - 65536;
+.stack_dummy (NOLOAD): { KEEP(*(.stack*)) } > RAM
+
+__StackTop    = ORIGIN(RAM) + LENGTH(RAM);    /* 0x20040000 */
+__StackBottom = __StackTop - SIZEOF(.stack_dummy); /* 0x20030000 */
+__HeapLimit   = __StackBottom;
+ASSERT(__StackBottom >= __bss_end__, "Stack overflows into BSS — increase RAM or reduce stack size")
+```
+
+Activated in `CMakeLists.txt`:
+
+```cmake
+pico_set_linker_script(pico-ble ${CMAKE_CURRENT_LIST_DIR}/memmap_wasm.ld)
+
+# 64 KB Core 0 stack — matches the reserved region in memmap_wasm.ld.
+# PICO_STACK_SIZE is defined on pico-ble (not pico_crt0) because pico_crt0 is an
+# INTERFACE library; crt0.S compiles with the consuming target's definitions.
+target_compile_definitions(pico-ble PRIVATE PICO_STACK_SIZE=65536)
+```
+
+#### RP2040 RAM Layout After `memmap_wasm.ld`
+
+RP2040 has 256 KB of SRAM at `0x20000000`.
+
+```
+Address        Region                        Size / Notes
+0x20000000     .data / .bss / static bufs    ~159 KB (includes 96 KB WasmArena backing store)
+                                             BSS ends at ~0x200277C8
+0x200277C8     heap (grows upward)           ~34 KB available for malloc (BLE stack etc.)
+0x20030000     Core 0 stack bottom (SP_min)  \
+               stack grows downward           > 64 KB reserved
+0x20040000     Core 0 stack top (initial SP) /   [= end of RAM]
+0x20040000     SCRATCH_X (4 KB)              freed from stack use; available for future use
+0x20041000     SCRATCH_Y (4 KB)              freed from stack use; available for future use
+```
+
+Verified ELF symbols from a linked binary:
+
+| Symbol | Value | Meaning |
+|--------|-------|---------|
+| `StackSize` | 0x10000 (65,536) | Stack reservation in bytes |
+| `__StackTop` | 0x20040000 | Initial SP; top of Core 0 stack |
+| `__StackBottom` | 0x20030000 | Minimum SP; stack grows down to here |
+| `__bss_end__` | 0x200277C8 | End of BSS; well clear of stack bottom |
+| `__HeapLimit` | 0x20030000 | Heap ceiling; heap cannot grow into stack |
+
+The linker `ASSERT` guards against BSS growing so large that it would collide with
+the reserved stack region.
+
+#### Complementary Optimization: Pointer-Based Module Access
+
+Even with 64 KB of stack headroom, keeping individual frame sizes small extends the
+maximum call depth. The `moduleRef: UnsafePointer<WasmModule>` pattern (see Section 5,
+Phase 5) eliminates the ~18 KB `WasmModule` copy from `dispatchEmbedded`'s frame. Both
+techniques are required: the linker script provides the headroom; the pointer pattern
+keeps peak usage well within it.
 
 ### Debugging
 

@@ -22,6 +22,8 @@ Steps 1–4 are complete. See `Documentations/ARENA_ALLOCATOR.md` for the full d
 - [x] **Step 3**: `DataSegment.bytes` / import/export name bytes changed to zero-copy `UnsafeBufferPointer<UInt8>` slices of `rawBytes` (no arena copy needed)
 - [x] **Step 4**: `Main.swift` updated with `var wasmArena = WasmArena()` global and `wasmArena.reset()` per-cycle; `memory.grow` (0x40) and `table.grow` (FC 0x15) fixed to operate in `UInt64` domain to avoid 32-bit Int overflow traps on RP2350; `-enable-experimental-feature Extern` added to `Makefile` and `CMakeLists.txt`
 - [ ] **Step 5**: Measure `wasmArena.usedBytes` on real hardware via BLE notification; adjust Arena size based on actual measurements
+  - Implementation complete: `bleNotifyStats` now sends `STATS:<instr>,<vs>,<cs>,<arenaBytes>\n`; iOS StatsView shows "Arena Used" in Latest Run and a bar chart across runs
+  - Pending: flash to Pico, run demo Wasm binaries, read arenaUsed values, tune `WASM_ARENA_SIZE` in `wasm_arena.c`
 
 ### Host Function Extensions
 
@@ -58,9 +60,15 @@ Steps 1–4 are complete. See `Documentations/ARENA_ALLOCATOR.md` for the full d
   | Interpreter ValueStack | ~4 KB (256 elements × 16 bytes) |
   | Interpreter CallStack | ~8 KB (64 frames × 128 bytes) |
   | WasmModule (fixed buffers) | ~8 KB |
+  | WasmArena static backing store | 96 KB (C static array in `wasm_arena.c`) |
   | BLE stack (CYW43) | ~50 KB |
   | Pico SDK / system | ~20 KB |
-  | **Total (estimate)** | **~154 KB** |
+  | Core 0 native stack (linker script) | 64 KB (reserved at top of RAM by `memmap_wasm.ld`) |
+  | **Total (estimate)** | **~314 KB** |
+
+  Note: RP2040 has 264 KB total SRAM; this estimate exceeds that. The WasmArena backing
+  store (96 KB) and Wasm Linear Memory (64 KB) are the dominant allocations and would need
+  reduction to support RP2040. RP2350 has 520 KB SRAM and comfortably fits the full budget.
 
   Use `peakValueStackDepth` and `peakCallStackDepth` from `WasmInterpreter` as runtime watermarks
   to verify that the fixed-size buffer capacities are sufficient in practice.

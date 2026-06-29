@@ -277,7 +277,7 @@ wasmArena.reset()         ← Arena リセット（次のサイクル開始）
 | **2** | `WasmInterpreter.memory` を `UnsafeMutableBufferPointer<UInt8>` へ変更。`init(module:arena:)` で Arena から確保。`memoryCapacity` プロパティ追加 | `swift test` + `make compile` | ✅ 完了 |
 | **3** | `DataSegment.bytes` / 名前バイト列をゼロコピースライスへ変更（`WasmParser` 変更） | `swift test` + `make compile` | ✅ 完了 |
 | **4** | `Main.swift` を更新（`wasmArena` グローバル、`reset()`、`init(arena:)`）。`memory.grow`（0x40）と `table.grow`（FC 0x15）を UInt64 ドメインで処理し 32-bit Int オーバーフロートラップを修正 | `make build` | ✅ 完了 |
-| **5** | 実機で `wasmArena.usedBytes` を BLE 通知に含め、Arena サイズを実測ベースで調整 | 実機計測 | ⏳ 未実施 |
+| **5** | 実機で `wasmArena.usedBytes` を BLE 通知に含め、Arena サイズを実測ベースで調整 | 実機計測 | ⏳ 実装済み・実機計測待ち |
 
 ### Step 1 実装ノート
 

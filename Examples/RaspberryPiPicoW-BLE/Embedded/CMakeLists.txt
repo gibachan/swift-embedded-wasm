@@ -105,4 +105,14 @@ target_compile_options(pico-ble PUBLIC
         ${IMPLICIT_INCLUDES}
     >")
 
+# Use a custom linker script that moves Core 0 stack to main RAM (64 KB).
+# The default SCRATCH_Y allocation is only 4 KB; the WebAssembly interpreter
+# requires ~28 KB of stack depth (dispatchEmbedded + pushEmbeddedFrame + callers).
+pico_set_linker_script(pico-ble ${CMAKE_CURRENT_LIST_DIR}/memmap_wasm.ld)
+
+# 64 KB Core 0 stack (matches the reserved region in memmap_wasm.ld).
+# pico_crt0 is an INTERFACE library: crt0.S compiles as part of pico-ble,
+# so PRIVATE definitions reach the assembler correctly.
+target_compile_definitions(pico-ble PRIVATE PICO_STACK_SIZE=65536)
+
 pico_add_extra_outputs(pico-ble)

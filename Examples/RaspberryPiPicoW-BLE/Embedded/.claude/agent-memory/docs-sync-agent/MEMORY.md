@@ -1,0 +1,2 @@
+- [SWIFT_VM_DESIGN.md structure](project_swift_vm_design_structure.md) — Section map for the primary VM design doc; which sections to update for which change types
+- [Docs cross-references](project_docs_cross_references.md) — Cross-reference map between docs; numbers that appear in multiple places (stack size, arena size, buffer counts)

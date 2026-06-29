@@ -4,6 +4,16 @@ var ledCharHandle: UInt16 = 0
 var logNotifyHandle: UInt16 = 0
 let ledPin = UInt32(CYW43_WL_GPIO_LED_PIN)
 
+// Deferred Wasm execution flag.
+// Wasm must NOT run synchronously inside attWriteCallback: doing so blocks the BTstack
+// event loop and prevents the ATT Write Response from being sent.  Instead, attWriteCallback
+// sets pendingWasmExec = true and returns immediately.  The main polling loop detects the
+// flag, calls executeReceivedWasm outside of any BTstack callback context, and then resumes
+// normal cyw43_arch_poll() processing.  This also makes cyw43_arch_poll() calls inside
+// pollingWait safe (non-re-entrant) because we are no longer inside BTstack callbacks.
+var pendingWasmExec = false
+var pendingWasmConHandle: UInt16 = 0
+
 // 64-byte static log buffer for BLE notification output — tuple avoids heap allocation.
 var logBuf: (
   UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
@@ -123,7 +133,11 @@ func attWriteCallback(
             wasmRecvExpected = 0
             return 0
         }
-        executeReceivedWasm(conHandle: conHandle)
+        // Signal the main polling loop to execute the Wasm after this callback returns.
+        // Returning 0 causes BTstack to send the ATT Write Response to iOS immediately,
+        // re-enabling the send button before Wasm execution begins.
+        pendingWasmConHandle = conHandle
+        pendingWasmExec = true
 
     default:
         break
@@ -142,6 +156,11 @@ func hostBlink(
   _ memory: UnsafeMutablePointer<UInt8>?, _ memorySize: Int32,
   _ results: UnsafeMutableRawPointer?
 ) {
+  // Use sleep_ms (not pollingWait) to keep cyw43_arch_poll() off the deep interpreter
+  // call stack.  pollingWait calls cyw43_arch_poll() which uses enough C stack to overflow
+  // the RP2040's 4 KB main stack when called from within the Wasm execution chain:
+  //   _runIterativeEmbeddedCore → dispatchEmbedded → pushEmbeddedFrame → hostBlink → cyw43_arch_poll.
+  // BLE connectivity is sacrificed during the blink (~600 ms dead time) — acceptable for demos.
   cyw43_arch_gpio_put(ledPin, true)
   sleep_ms(300)
   cyw43_arch_gpio_put(ledPin, false)
@@ -210,9 +229,22 @@ func hostSleep(
   guard argsCount >= 1 else { return }
   let args32 = args?.assumingMemoryBound(to: Value.self)
   guard case .i32(let ms) = args32?[0] else { return }
-  // Clamp to [0, 60_000] ms to prevent BLE disconnection due to very long sleeps.
+  // Clamp to [0, 60_000] ms to prevent excessively long blocking.
   let clamped = max(0, min(ms, 60_000))
-  sleep_ms(UInt32(clamped))
+  pollingWait(ms: UInt32(clamped))
+}
+
+// Wait for `ms` milliseconds while polling CYW43/BTstack every 1 ms.
+// Safe to call cyw43_arch_poll() here because this runs from the main polling loop,
+// not from inside a BTstack callback (which would be re-entrant).
+// This keeps BLE alive during long-running Wasm host function calls.
+func pollingWait(ms: UInt32) {
+    var remaining = ms
+    while remaining > 0 {
+        cyw43_arch_poll()
+        sleep_ms(1)
+        remaining -= 1
+    }
 }
 
 // Append one byte to logBuf (silently drops if the buffer is full).
@@ -272,11 +304,13 @@ func logAppendDecimalU64(_ v: UInt64) {
     }
 }
 
-// Send execution statistics as a BLE Notification in the format "STATS:<instr>,<vs>,<cs>\n".
+// Send execution statistics as a BLE Notification in the format
+// "STATS:<instr>,<vs>,<cs>,<arenaBytes>\n".
 // Uses the same logNotifyHandle as the log characteristic.
 // iOS parses the "STATS:" prefix to separate stats from log output.
+// arenaUsed = wasmArena.usedBytes after execution — used to tune arena capacity.
 // Must be called after bleNotifyLog() — logBuf is empty after bleNotifyLog resets logBufLen.
-func bleNotifyStats(conHandle: UInt16, instr: UInt64, vsDepth: Int, csDepth: Int) {
+func bleNotifyStats(conHandle: UInt16, instr: UInt64, vsDepth: Int, csDepth: Int, arenaUsed: Int) {
     logBufLen = 0  // defensive reset; bleNotifyLog() already sets this to 0 after sending
     // "STATS:" = 0x53 0x54 0x41 0x54 0x53 0x3A
     logAppendByte(0x53); logAppendByte(0x54); logAppendByte(0x41)
@@ -286,6 +320,8 @@ func bleNotifyStats(conHandle: UInt16, instr: UInt64, vsDepth: Int, csDepth: Int
     logAppendDecimalU64(UInt64(vsDepth))
     logAppendByte(0x2C)  // ','
     logAppendDecimalU64(UInt64(csDepth))
+    logAppendByte(0x2C)  // ','
+    logAppendDecimalU64(UInt64(arenaUsed))
     logAppendByte(0x0A)  // '\n'
     bleNotifyLog(conHandle: conHandle)
 }
@@ -351,6 +387,32 @@ func uartWriteResult(_ v: Int32) {
     writeByte(0x0A)  // '\n'
 }
 
+// Send a one-character diagnostic notification "D:<ch>\n" immediately.
+// Calls cyw43_arch_poll() once after posting so BTstack flushes the HCI packet.
+// Safe to call outside BTstack callbacks (main-loop context only).
+func sendDiag(_ ch: UInt8, conHandle: UInt16) {
+    logBufLen = 0
+    logAppendByte(0x44); logAppendByte(0x3A)  // "D:"
+    logAppendByte(ch)
+    logAppendByte(0x0A)  // '\n'
+    bleNotifyLog(conHandle: conHandle)
+    cyw43_arch_poll()
+}
+
+// Blink the onboard LED `n` times (100 ms on / 100 ms off per blink).
+// Uses sleep_ms (not pollingWait) so BTstack is fully blocked — this is intentional:
+// the blink sequence is a crash-safe diagnostic that must complete without interference.
+// A 300 ms pause after the sequence makes consecutive blink counts visually distinct.
+func ledBlink(times: Int) {
+    for _ in 0..<times {
+        cyw43_arch_gpio_put(ledPin, true)
+        sleep_ms(100)
+        cyw43_arch_gpio_put(ledPin, false)
+        sleep_ms(100)
+    }
+    sleep_ms(300)
+}
+
 // Execute the WASM binary that has been written into the static receive buffer.
 //
 // Dispatch strategy (in order):
@@ -364,51 +426,76 @@ func uartWriteResult(_ v: Int32) {
 // conHandle is the BLE connection handle used to send the log notification after execution.
 func executeReceivedWasm(conHandle: UInt16) {
     logBufLen = 0  // clear log buffer for this execution run
+    ledBlink(times: 1)  // blink 1 = entered executeReceivedWasm (BLE-independent)
+    sendDiag(0x41, conHandle: conHandle)  // 'A' — function entered
     // Reset the arena first so all allocations from the previous cycle are reclaimed (O(1)).
     // WasmInterpreter from the previous cycle has already been destroyed (end of do-block below).
     wasmArena.reset()
-    guard wasmRecvLen > 0, let ptr = wasm_recv_buf_ptr() else { return }
+    guard wasmRecvLen > 0, let ptr = wasm_recv_buf_ptr() else {
+        sendDiag(0x3F, conHandle: conHandle)  // '?' — guard failed (no data)
+        return
+    }
+    ledBlink(times: 2)  // blink 2 = guard passed, have data
+    sendDiag(0x42, conHandle: conHandle)  // 'B' — guard passed, have data
     let wasmBuf = UnsafeBufferPointer<UInt8>(start: ptr, count: Int(wasmRecvLen))
     var parser = WasmParser(wasmBuf)
     var execStats: (instr: UInt64, vs: Int, cs: Int)? = nil
     do throws(WasmError) {
-        let module = try parser.parse()
+        // Parse directly into _embeddedModule (BSS global) to avoid placing WasmModule
+        // (~2–5 KB) on the RP2040's 4 KB main stack.
+        _embeddedModule = try parser.parse()
+        ledBlink(times: 3)  // blink 3 = parse succeeded
+        sendDiag(0x43, conHandle: conHandle)  // 'C' — parse succeeded
         var hostImports = Fixed4_HostImport()
         hostImports.append(.function("env", "blink", hostBlink))
         hostImports.append(.function("env", "digitalWrite", hostDigitalWrite))
         hostImports.append(.function("env", "digitalRead", hostDigitalRead))
         hostImports.append(.function("env", "sleep", hostSleep))
-        var interp = try WasmInterpreter(module: module, arena: &wasmArena, hostImports: hostImports)
+        // WasmInterpreter is stored in the BSS global _embeddedInterp (not a local variable)
+        // to avoid placing its ~1.2 KB struct on the RP2040's 4 KB main stack.
+        _embeddedInterp = try WasmInterpreter(
+            moduleRef: &_embeddedModule, arena: &wasmArena, hostImports: hostImports)
+        ledBlink(times: 4)  // blink 4 = interpreter initialised
+        sendDiag(0x44, conHandle: conHandle)  // 'D' — interpreter initialised
 
         // --- Try "add(3, 4)" first (i32-add.wasm) ---
+        sendDiag(0x61, conHandle: conHandle)  // 'a' — about to call callExport("add")
         var calledAdd = false
         do throws(WasmError) {
-            let result = try interp.callExport("add", args: [.i32(3), .i32(4)])
+            let result = try _embeddedInterp.callExport("add", args: [.i32(3), .i32(4)])
             calledAdd = true
             if !result.isEmpty, case .i32(let v) = result[0] {
                 uartWriteResult(v)
             }
         } catch WasmError.functionNotFound {
-            // "add" export not present — fall through to "run" below.
+            sendDiag(0x62, conHandle: conHandle)  // 'b' — "add" not found, falling through
         }
 
         if !calledAdd {
             // --- Fall back to "run()" (blink/gpio demos) ---
+            sendDiag(0x72, conHandle: conHandle)  // 'r' — about to call callExport("run")
             do throws(WasmError) {
-                _ = try interp.callExport("run", args: [])
+                _ = try _embeddedInterp.callExport("run", args: [])
+                ledBlink(times: 5)  // blink 5 = run() returned normally
+                sendDiag(0x45, conHandle: conHandle)  // 'E' — run() returned normally
             } catch {
-                // "run" not found or execution error — leave hardware unchanged.
+                sendDiag(0x65, conHandle: conHandle)  // 'e' — run() threw an error
             }
         }
-        execStats = (interp.executedInstructions, interp.peakValueStackDepth, interp.peakCallStackDepth)
+        execStats = (
+            _embeddedInterp.executedInstructions,
+            _embeddedInterp.peakValueStackDepth,
+            _embeddedInterp.peakCallStackDepth)
     } catch {
-        // On WASM error, leave hardware state unchanged
+        sendDiag(0x46, conHandle: conHandle)  // 'F' — parse or interp-init failed
     }
     // Send accumulated output (e.g. "result: 7\n") to iOS as a BLE Notification.
     bleNotifyLog(conHandle: conHandle)
     // Send execution statistics as a separate "STATS:..." notification.
     if let s = execStats {
-        bleNotifyStats(conHandle: conHandle, instr: s.instr, vsDepth: s.vs, csDepth: s.cs)
+        bleNotifyStats(
+            conHandle: conHandle, instr: s.instr, vsDepth: s.vs, csDepth: s.cs,
+            arenaUsed: wasmArena.usedBytes)
     }
     // Reset transfer state. Safe here: `interp` and `module` are already dropped
     // (end of the `do` block above), so module.rawBytes (UnsafeBufferPointer into the
@@ -502,6 +589,19 @@ struct Main {
 
         // ── Power on and run forever ────────────────────────────────────────
         hci_power_control(HCI_POWER_ON)
-        btstack_run_loop_execute()
+
+        // Manual polling loop replaces btstack_run_loop_execute().
+        // In pico_cyw43_arch_lwip_poll, cyw43_arch_poll() drives both CYW43 hardware
+        // and the BTstack event loop (HCI transport, timers, data sources).
+        // Running Wasm here — outside any BTstack callback — means cyw43_arch_poll()
+        // can be called freely inside pollingWait without re-entrancy issues.
+        while true {
+            if pendingWasmExec {
+                pendingWasmExec = false
+                executeReceivedWasm(conHandle: pendingWasmConHandle)
+            }
+            cyw43_arch_poll()
+            sleep_ms(1)
+        }
     }
 }

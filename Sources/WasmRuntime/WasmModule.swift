@@ -26,14 +26,26 @@ enum WasmLimits {
   static let maxExports: Int = 32  // max number of exports
   static let maxGlobals: Int = 32  // max number of global variables
   static let maxTables: Int = 4  // max number of tables
-  static let maxTableElements: Int = 256  // max elements per table (for fixed-buffer Embedded target)
+  #if hasFeature(Embedded)
+    // 4 × 16 = 64 total slots; FlatTableStorage ≈ 1 KB — safe to copy onto the 4 KB Pico stack.
+    static let maxTableElements: Int = 16
+  #else
+    static let maxTableElements: Int = 256  // max elements per table (for fixed-buffer Embedded target)
+  #endif
   static let maxMemories: Int = 1  // Wasm MVP spec §5.5.8 allows at most 1 memory; also matches the Embedded fixed-buffer limit.
   static let maxElements: Int = 16  // max number of element segments
   static let maxData: Int = 16  // max number of data segments
   // Interpreter runtime limits (used by fixed-size buffer implementations in Embedded builds)
   static let maxValueStackDepth: Int = 256  // max operand stack depth
   static let maxCallDepth: Int = 64  // max call stack depth (call frames)
-  static let maxLabelDepth: Int = 32  // max nested block/loop/if depth per frame
+  #if hasFeature(Embedded)
+    // 8 slots keeps EmbeddedFrame at ~156 bytes so the 4 KB Pico stack can absorb multiple
+    // frame temporaries (created when the subscript get copies the frame to read a field).
+    // Wasm programs that nest more than 8 block/loop/if levels will precondition-fail.
+    static let maxLabelDepth: Int = 8
+  #else
+    static let maxLabelDepth: Int = 32  // max nested block/loop/if depth per frame
+  #endif
   static let maxLocalsPerFunction: Int = 32  // max declared locals per function body
   static let maxJumpEntriesPerFunction: Int = 64  // max block/loop/if instructions per function body
 }
@@ -1362,7 +1374,7 @@ struct Fixed32_Value {
   private var s0, s1, s2, s3: (Value, Value, Value, Value, Value, Value, Value, Value)
   var _count: Int
 
-  init(_ arr: [Value]) {
+  init() {
     let z = Value.i32(0)
     let row = (z, z, z, z, z, z, z, z)
     s0 = row
@@ -1370,6 +1382,10 @@ struct Fixed32_Value {
     s2 = row
     s3 = row
     _count = 0
+  }
+
+  init(_ arr: [Value]) {
+    self.init()
     for e in arr { append(e) }
   }
 
@@ -1867,20 +1883,24 @@ struct FixedLocals_ValueType: Sendable {
 
 // MARK: FixedJumpTable_JumpEntry
 
-/// 64-slot fixed buffer for the jump table of a function body (max WasmLimits.maxJumpEntriesPerFunction = 64).
+/// Fixed buffer for the jump table of a function body.
 ///
 /// JumpEntry holds three UInt32 fields — BitwiseCopyable — so withUnsafeBytes is safe for reads.
 /// Needs a mutable subscript setter for backpatching: the parser writes jumpTable[jumpEntryIdx] = JumpEntry(...)
 /// after computing the final target addresses.
 ///
-/// Embedded: storage is 8 × 8-element sub-tuples of JumpEntry — no malloc.
+/// Embedded: storage is 2 × 8-element sub-tuples of JumpEntry (16 entries, 196 bytes) — no malloc.
+///           Capacity reduced from 64 to 16 to keep FunctionHandle small (~244 bytes) and
+///           WasmModule within the BSS global budget. 16 jump entries is sufficient for
+///           simple Wasm programs on Pico. Increase if deeper nesting is needed.
 /// macOS:    storage is [JumpEntry] (heap) — keeps struct size manageable.
 struct FixedJumpTable_JumpEntry: Sendable {
   #if hasFeature(Embedded)
     // JumpEntry is three UInt32 fields — BitwiseCopyable — withUnsafeBytes is safe for reads.
     // Direct tuple assignment is used for writes (via setElement).
-    private var s0, s1, s2, s3, s4, s5, s6,
-      s7: (JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry)
+    // Embedded: 2 rows × 8 = 16 entries (196 bytes). macOS: 64-entry heap array (see else branch).
+    private var s0,
+      s1: (JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry, JumpEntry)
     private var _count: Int
 
     init() {
@@ -1888,12 +1908,6 @@ struct FixedJumpTable_JumpEntry: Sendable {
       let row = (z, z, z, z, z, z, z, z)
       s0 = row
       s1 = row
-      s2 = row
-      s3 = row
-      s4 = row
-      s5 = row
-      s6 = row
-      s7 = row
       _count = 0
     }
 
@@ -1920,32 +1934,8 @@ struct FixedJumpTable_JumpEntry: Sendable {
         return withUnsafeBytes(of: s0) {
           body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
         }
-      case 1:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
-        }
-      case 2:
-        return withUnsafeBytes(of: s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
-        }
-      case 3:
-        return withUnsafeBytes(of: s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
-        }
-      case 4:
-        return withUnsafeBytes(of: s4) {
-          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
-        }
-      case 5:
-        return withUnsafeBytes(of: s5) {
-          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
-        }
-      case 6:
-        return withUnsafeBytes(of: s6) {
-          body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
-        }
       default:
-        return withUnsafeBytes(of: s7) {
+        return withUnsafeBytes(of: s1) {
           body($0.baseAddress!.assumingMemoryBound(to: JumpEntry.self))
         }
       }
@@ -1966,7 +1956,7 @@ struct FixedJumpTable_JumpEntry: Sendable {
         case 6: s0.6 = value
         default: s0.7 = value
         }
-      case 1:
+      default:
         switch col {
         case 0: s1.0 = value
         case 1: s1.1 = value
@@ -1977,77 +1967,14 @@ struct FixedJumpTable_JumpEntry: Sendable {
         case 6: s1.6 = value
         default: s1.7 = value
         }
-      case 2:
-        switch col {
-        case 0: s2.0 = value
-        case 1: s2.1 = value
-        case 2: s2.2 = value
-        case 3: s2.3 = value
-        case 4: s2.4 = value
-        case 5: s2.5 = value
-        case 6: s2.6 = value
-        default: s2.7 = value
-        }
-      case 3:
-        switch col {
-        case 0: s3.0 = value
-        case 1: s3.1 = value
-        case 2: s3.2 = value
-        case 3: s3.3 = value
-        case 4: s3.4 = value
-        case 5: s3.5 = value
-        case 6: s3.6 = value
-        default: s3.7 = value
-        }
-      case 4:
-        switch col {
-        case 0: s4.0 = value
-        case 1: s4.1 = value
-        case 2: s4.2 = value
-        case 3: s4.3 = value
-        case 4: s4.4 = value
-        case 5: s4.5 = value
-        case 6: s4.6 = value
-        default: s4.7 = value
-        }
-      case 5:
-        switch col {
-        case 0: s5.0 = value
-        case 1: s5.1 = value
-        case 2: s5.2 = value
-        case 3: s5.3 = value
-        case 4: s5.4 = value
-        case 5: s5.5 = value
-        case 6: s5.6 = value
-        default: s5.7 = value
-        }
-      case 6:
-        switch col {
-        case 0: s6.0 = value
-        case 1: s6.1 = value
-        case 2: s6.2 = value
-        case 3: s6.3 = value
-        case 4: s6.4 = value
-        case 5: s6.5 = value
-        case 6: s6.6 = value
-        default: s6.7 = value
-        }
-      default:
-        switch col {
-        case 0: s7.0 = value
-        case 1: s7.1 = value
-        case 2: s7.2 = value
-        case 3: s7.3 = value
-        case 4: s7.4 = value
-        case 5: s7.5 = value
-        case 6: s7.6 = value
-        default: s7.7 = value
-        }
       }
     }
 
     mutating func append(_ e: JumpEntry) {
-      precondition(_count < 64, "FixedJumpTable_JumpEntry overflow")
+      precondition(
+        _count < 16,
+        "FixedJumpTable_JumpEntry overflow: maxJumpEntriesPerFunction exceeded on Embedded (limit=16)"
+      )
       let row = _count / 8
       let col = _count % 8
       setElement(row: row, col: col, value: e)
@@ -2085,185 +2012,75 @@ extension FunctionHandle {
   }
 }
 
-/// 64-slot fixed buffer for the Code section (max WasmLimits.maxFunctions = 64).
+/// Fixed buffer for the Code section.
 ///
 /// FunctionHandle contains FixedLocals_ValueType and FixedJumpTable_JumpEntry — both value types
 /// with no heap references in Embedded builds — so direct tuple element assignment is safe.
 /// Built incrementally via append() as parseFunctionHandles builds handles one by one.
 ///
-/// Embedded: storage is 8 × 8-element sub-tuples of FunctionHandle — no malloc.
+/// Embedded: storage is 1 row of 8 FunctionHandle slots (~1,952 bytes) — no malloc.
+///           Capacity reduced from 64 to 8 to keep WasmModule within the BSS global budget.
+///           For Pico demos, 8 functions is sufficient; increase WasmLimits.maxFunctions if needed.
+///           The type is still named Fixed64_FunctionHandle (matching non-Embedded capacity) to
+///           minimise churn at all call sites.
 /// macOS:    storage is [FunctionHandle] (heap) — keeps struct size manageable.
 struct Fixed64_FunctionHandle: Sendable {
   #if hasFeature(Embedded)
-    private var s0, s1, s2, s3, s4, s5, s6,
-      s7:
-        (
-          FunctionHandle, FunctionHandle, FunctionHandle, FunctionHandle,
-          FunctionHandle, FunctionHandle, FunctionHandle, FunctionHandle
-        )
+    // Embedded: 1 row × 8 slots = 8 FunctionHandle entries (~1,952 bytes total).
+    // Direct inout tuple-element assignment — FunctionHandle is not BitwiseCopyable
+    // (contains FixedLocals_ValueType and FixedJumpTable_JumpEntry with their own internals),
+    // so we avoid withUnsafeMutableBytes and use named element assignment.
+    private var s0:
+      (
+        FunctionHandle, FunctionHandle, FunctionHandle, FunctionHandle,
+        FunctionHandle, FunctionHandle, FunctionHandle, FunctionHandle
+      )
     private var _count: Int
 
     init() {
       let z = FunctionHandle.zero
-      let row = (z, z, z, z, z, z, z, z)
-      s0 = row
-      s1 = row
-      s2 = row
-      s3 = row
-      s4 = row
-      s5 = row
-      s6 = row
-      s7 = row
+      s0 = (z, z, z, z, z, z, z, z)
       _count = 0
     }
 
     var count: Int { _count }
 
+    // @inline(__always): eliminates the 1,956-byte stack copy the compiler makes when passing
+    // self by address to a non-inlined subscript getter.  With inlining the switch-case expands
+    // at each call site and reads tuple elements directly from module.code's in-place address.
+    // Switch-case also avoids the 1,952-byte copy that withUnsafeBytes(of: s0) would require.
+    @inline(__always)
     subscript(index: Int) -> FunctionHandle {
       precondition(index >= 0 && index < _count)
-      let row = index / 8
-      let col = index % 8
-      return withRow(row) { $0[col] }
-    }
-
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<FunctionHandle>) -> R) -> R {
-      switch row {
-      case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
-        }
-      case 1:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
-        }
-      case 2:
-        return withUnsafeBytes(of: s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
-        }
-      case 3:
-        return withUnsafeBytes(of: s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
-        }
-      case 4:
-        return withUnsafeBytes(of: s4) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
-        }
-      case 5:
-        return withUnsafeBytes(of: s5) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
-        }
-      case 6:
-        return withUnsafeBytes(of: s6) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
-        }
-      default:
-        return withUnsafeBytes(of: s7) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionHandle.self))
-        }
+      switch index {
+      case 0: return s0.0
+      case 1: return s0.1
+      case 2: return s0.2
+      case 3: return s0.3
+      case 4: return s0.4
+      case 5: return s0.5
+      case 6: return s0.6
+      default: return s0.7
       }
     }
 
-    // Direct inout tuple-element assignment — FunctionHandle is not BitwiseCopyable
-    // (contains FixedLocals_ValueType and FixedJumpTable_JumpEntry with their own internals),
-    // so we avoid withUnsafeMutableBytes and use named element assignment.
-    private mutating func setElement(row: Int, col: Int, value: FunctionHandle) {
-      switch row {
-      case 0:
-        switch col {
-        case 0: s0.0 = value
-        case 1: s0.1 = value
-        case 2: s0.2 = value
-        case 3: s0.3 = value
-        case 4: s0.4 = value
-        case 5: s0.5 = value
-        case 6: s0.6 = value
-        default: s0.7 = value
-        }
-      case 1:
-        switch col {
-        case 0: s1.0 = value
-        case 1: s1.1 = value
-        case 2: s1.2 = value
-        case 3: s1.3 = value
-        case 4: s1.4 = value
-        case 5: s1.5 = value
-        case 6: s1.6 = value
-        default: s1.7 = value
-        }
-      case 2:
-        switch col {
-        case 0: s2.0 = value
-        case 1: s2.1 = value
-        case 2: s2.2 = value
-        case 3: s2.3 = value
-        case 4: s2.4 = value
-        case 5: s2.5 = value
-        case 6: s2.6 = value
-        default: s2.7 = value
-        }
-      case 3:
-        switch col {
-        case 0: s3.0 = value
-        case 1: s3.1 = value
-        case 2: s3.2 = value
-        case 3: s3.3 = value
-        case 4: s3.4 = value
-        case 5: s3.5 = value
-        case 6: s3.6 = value
-        default: s3.7 = value
-        }
-      case 4:
-        switch col {
-        case 0: s4.0 = value
-        case 1: s4.1 = value
-        case 2: s4.2 = value
-        case 3: s4.3 = value
-        case 4: s4.4 = value
-        case 5: s4.5 = value
-        case 6: s4.6 = value
-        default: s4.7 = value
-        }
-      case 5:
-        switch col {
-        case 0: s5.0 = value
-        case 1: s5.1 = value
-        case 2: s5.2 = value
-        case 3: s5.3 = value
-        case 4: s5.4 = value
-        case 5: s5.5 = value
-        case 6: s5.6 = value
-        default: s5.7 = value
-        }
-      case 6:
-        switch col {
-        case 0: s6.0 = value
-        case 1: s6.1 = value
-        case 2: s6.2 = value
-        case 3: s6.3 = value
-        case 4: s6.4 = value
-        case 5: s6.5 = value
-        case 6: s6.6 = value
-        default: s6.7 = value
-        }
-      default:
-        switch col {
-        case 0: s7.0 = value
-        case 1: s7.1 = value
-        case 2: s7.2 = value
-        case 3: s7.3 = value
-        case 4: s7.4 = value
-        case 5: s7.5 = value
-        case 6: s7.6 = value
-        default: s7.7 = value
-        }
+    private mutating func setElement(col: Int, value: FunctionHandle) {
+      switch col {
+      case 0: s0.0 = value
+      case 1: s0.1 = value
+      case 2: s0.2 = value
+      case 3: s0.3 = value
+      case 4: s0.4 = value
+      case 5: s0.5 = value
+      case 6: s0.6 = value
+      default: s0.7 = value
       }
     }
 
     mutating func append(_ h: FunctionHandle) {
-      precondition(_count < 64, "Fixed64_FunctionHandle overflow: maxFunctions exceeded")
-      let row = _count / 8
-      let col = _count % 8
-      setElement(row: row, col: col, value: h)
+      precondition(
+        _count < 8, "Fixed64_FunctionHandle overflow: maxFunctions exceeded on Embedded (limit=8)")
+      setElement(col: _count, value: h)
       _count += 1
     }
 
@@ -2371,6 +2188,37 @@ struct WasmModule: Sendable {
     return types[Int(functions[localIdx])]
   }
 }
+
+// MARK: - WasmModule.empty (Embedded BSS sentinel)
+
+#if hasFeature(Embedded)
+  extension WasmModule {
+    /// A zero-initialised WasmModule used as a BSS-resident global on Embedded builds.
+    ///
+    /// `_embeddedModule` (declared in WasmInterpreterEmbedded.swift) is assigned from this
+    /// value at program start so the linker places the storage in BSS (zero-filled) rather
+    /// than .data (ROM image).  parser.parse() overwrites it before any interpreter runs.
+    ///
+    /// Not for use on macOS — the init() call here uses a nil UnsafeBufferPointer which would
+    /// be unsafe to dereference, but Embedded never reads rawBytes until after parse() fills it.
+    static var empty: WasmModule {
+      WasmModule(
+        types: [],
+        imports: [],
+        functions: [],
+        tables: [],
+        memories: [],
+        globals: [],
+        exports: [],
+        code: Fixed64_FunctionHandle(),
+        start: nil,
+        elements: [],
+        data: [],
+        rawBytes: UnsafeBufferPointer(start: nil, count: 0)
+      )
+    }
+  }
+#endif
 
 // MARK: - Runtime Value
 
