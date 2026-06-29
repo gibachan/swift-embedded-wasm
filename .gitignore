@@ -66,4 +66,7 @@ Tests/WasmRuntimeTests/spectest/
 .swiftpm/
 
 ## Claude Code agent memory (local only)
-.claude/agent-memory/
+**/.claude/agent-memory/
+
+## Embedded linker script (generated per-project, local only)
+memmap_wasm.ld
