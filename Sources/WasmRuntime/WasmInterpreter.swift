@@ -297,13 +297,35 @@ struct Label {
 /// dispatchEmbedded / handleEmbeddedBranch / pushEmbeddedFrame require no conditional
 /// compilation beyond the single #if inside this struct.
 ///
-/// Embedded builds: storage is a 32-element homogeneous tuple on the C stack — no malloc.
-/// macOS builds:    storage is a [Label] array (heap-allocated) to keep EmbeddedFrame
-///                  small (~56 bytes) so that CallStack (64 frames) fits on the call stack.
+/// Embedded builds: storage is an 8-element homogeneous tuple on the C stack — no malloc.
+/// macOS builds:    storage is a [Label] array (heap-allocated), capacity 32.
 ///
-/// The single #if hasFeature(Embedded) inside this struct is Approach A from the
-/// design notes: one conditional at the boundary between stack and heap storage, with a
-/// uniform API exposed to all callers.
+/// This is intentionally NOT unified onto the Embedded 8-slot tuple (unlike the sibling
+/// Fixed*_X buffers in WasmModule.swift — see Documentations/hasFeature削除計画.md §5.4).
+/// The original justification written here — "keep EmbeddedFrame small so that CallStack
+/// (64 tuple-frames) fits on the call stack" — does not hold for *macOS*, since macOS's
+/// `EmbeddedCallStack` type alias resolves to `[EmbeddedFrame]` (a heap array defined in
+/// WasmInterpreterEmbedded.swift), not to the tuple-based `CallStack` below; `CallStack` is
+/// never instantiated on macOS. However, unifying storage onto a single capacity was tried
+/// and reverted after two real regressions were found:
+///   1. Growing WasmModule's Fixed*_X containers to unconditional tuple storage (§5.1–5.3 of
+///      the plan) was, on its own, sufficient to overflow Swift Testing's 512 KB
+///      worker-thread stack inside the already near-the-limit `_runIterativeEmbeddedCore` /
+///      `dispatchEmbedded` machinery on macOS — reproduced as a SIGBUS crash. This falsified
+///      the plan's assumption that `moduleRef`/pointer-passing makes container size growth
+///      harmless; the margin was razor-thin to begin with.
+///   2. Raising LabelStack's capacity to 32 (to match macOS's prior test coverage) risks the
+///      same class of failure on the *real* Embedded target: `EmbeddedFrame` (which embeds
+///      LabelStack) is stored in `CallStack`, a 64-frame tuple kept as a BSS global
+///      (`_wasmCallStack` in WasmInterpreterEmbedded.swift) specifically to avoid the RP2040
+///      stack overflow fixed by reducing LabelStack from 32 to 8 slots (see git history:
+///      "Phase 5: fix RP2040 stack overflow — ... LabelStack 32→8 ..."). Reverting that
+///      capacity reduction was not attempted here without on-device verification.
+/// Keeping macOS on a 32-slot heap array preserves its wider test coverage (e.g. the
+/// `switch` spectest, which nests more than 8 blocks) while leaving Embedded's already
+/// hardware-verified 8-slot budget untouched. The single #if hasFeature(Embedded) inside
+/// this struct remains Approach A from the design notes: one conditional at the boundary
+/// between stack and heap storage, with a uniform API exposed to all callers.
 struct LabelStack {
   #if hasFeature(Embedded)
     // 8-element tuple (was 32); reduces EmbeddedFrame from 540 → 156 bytes so that the

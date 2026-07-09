@@ -596,12 +596,33 @@ extension JumpEntry {
 
 // MARK: - Fixed-Buffer Types
 
-// These types provide a uniform API for WasmModule fields on both macOS and Embedded builds,
-// following the same "Approach A" pattern as LabelStack in WasmInterpreter.swift:
-// the #if hasFeature(Embedded) lives INSIDE each type, not outside it.
+// These types provide a uniform API for WasmModule fields on both macOS and Embedded builds.
 //
-// Embedded builds: storage is a homogeneous tuple on the stack — no malloc.
-// macOS builds:    storage is a [T] array (heap-allocated) to keep struct sizes manageable.
+// Fixed64_UInt32, Fixed32_GlobalDef, Fixed32_UInt32, Fixed4_TableType, Fixed1_MemoryType, and
+// FixedLocals_ValueType use a single tuple-based storage implementation shared by both
+// platforms — no malloc on either. This is safe because WasmModule fields are read only
+// through `subscript` after the parser builds them once, and `WasmModule` is always accessed
+// through `moduleRef: UnsafePointer<WasmModule>` rather than passed inout into the
+// `dispatchEmbedded` hot loop. See Documentations/hasFeature削除計画.md §5 for the design
+// rationale.
+//
+// Fixed64_FunctionType, Fixed32_Import, Fixed32_Export, Fixed16_ElementSegment, and
+// Fixed16_DataSegment still keep a per-platform `#if hasFeature(Embedded)` for their storage
+// (Embedded tuple vs. macOS `[T]`). Unifying these onto tuple storage on both platforms was
+// attempted and reverted: even after fixing an unrelated ARC-safety bug in their Embedded-only
+// read path (see the `getElement` comment on Fixed64_FunctionType below), the cumulative
+// growth of `WasmModule` was enough, on its own, to overflow Swift Testing's 512 KB
+// worker-thread stack inside the already near-the-limit `_runIterativeEmbeddedCore` /
+// `dispatchEmbedded` machinery on macOS (reproduced as a SIGBUS crash in `swift test`). This
+// falsifies the assumption that passing `WasmModule` by pointer makes its size growth
+// harmless everywhere; the actual margin turned out to be only a few KB. Fully unifying these
+// 5 types is deferred until `dispatchEmbedded`'s stack-frame-size risk (already documented
+// for `ValueStack` / `CallStack` / `FlatTableStorage`) is addressed as its own piece of work.
+//
+// `FixedJumpTable_JumpEntry` and `Fixed64_FunctionHandle` further below also keep a
+// per-platform `#if` for a different, deliberate reason: their Embedded capacities were
+// shrunk (16 / 8 slots) specifically to fix a real RP2040 stack overflow, and forcing macOS
+// down to the same tiny capacity would limit what test programs can express.
 //
 // Each type exposes:
 //   - init(_ arr: [T])    — copies from a [T] (macOS parse path)
@@ -645,42 +666,107 @@ struct Fixed64_FunctionType {
       precondition(index >= 0 && index < _count)
       let row = index / 8
       let col = index % 8
-      return withRow(row) { $0[col] }
+      return getElement(row: row, col: col)
     }
 
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<FunctionType>) -> R) -> R {
+    // Direct element access avoids withUnsafeBytes/assumingMemoryBound on non-BitwiseCopyable
+    // FunctionType (which holds [ValueType] arrays): reinterpreting tuple bytes as a typed
+    // pointer and dereferencing does not reliably perform the retain that reading an
+    // array-backed struct out of raw memory requires. This was verified to corrupt ARC
+    // bookkeeping (a reproducible SIGBUS) when this same read pattern was exercised under a
+    // full (non-Embedded) Swift runtime during an attempt to unify this type's storage across
+    // platforms — see Documentations/hasFeature削除計画.md §5. Named tuple-element access
+    // lets the compiler generate a correct copy/retain, matching `setElement` below and
+    // `Fixed64_FunctionHandle`'s existing read pattern.
+    private func getElement(row: Int, col: Int) -> FunctionType {
       switch row {
       case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionType.self))
+        switch col {
+        case 0: return s0.0
+        case 1: return s0.1
+        case 2: return s0.2
+        case 3: return s0.3
+        case 4: return s0.4
+        case 5: return s0.5
+        case 6: return s0.6
+        default: return s0.7
         }
       case 1:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionType.self))
+        switch col {
+        case 0: return s1.0
+        case 1: return s1.1
+        case 2: return s1.2
+        case 3: return s1.3
+        case 4: return s1.4
+        case 5: return s1.5
+        case 6: return s1.6
+        default: return s1.7
         }
       case 2:
-        return withUnsafeBytes(of: s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionType.self))
+        switch col {
+        case 0: return s2.0
+        case 1: return s2.1
+        case 2: return s2.2
+        case 3: return s2.3
+        case 4: return s2.4
+        case 5: return s2.5
+        case 6: return s2.6
+        default: return s2.7
         }
       case 3:
-        return withUnsafeBytes(of: s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionType.self))
+        switch col {
+        case 0: return s3.0
+        case 1: return s3.1
+        case 2: return s3.2
+        case 3: return s3.3
+        case 4: return s3.4
+        case 5: return s3.5
+        case 6: return s3.6
+        default: return s3.7
         }
       case 4:
-        return withUnsafeBytes(of: s4) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionType.self))
+        switch col {
+        case 0: return s4.0
+        case 1: return s4.1
+        case 2: return s4.2
+        case 3: return s4.3
+        case 4: return s4.4
+        case 5: return s4.5
+        case 6: return s4.6
+        default: return s4.7
         }
       case 5:
-        return withUnsafeBytes(of: s5) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionType.self))
+        switch col {
+        case 0: return s5.0
+        case 1: return s5.1
+        case 2: return s5.2
+        case 3: return s5.3
+        case 4: return s5.4
+        case 5: return s5.5
+        case 6: return s5.6
+        default: return s5.7
         }
       case 6:
-        return withUnsafeBytes(of: s6) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionType.self))
+        switch col {
+        case 0: return s6.0
+        case 1: return s6.1
+        case 2: return s6.2
+        case 3: return s6.3
+        case 4: return s6.4
+        case 5: return s6.5
+        case 6: return s6.6
+        default: return s6.7
         }
       default:
-        return withUnsafeBytes(of: s7) {
-          body($0.baseAddress!.assumingMemoryBound(to: FunctionType.self))
+        switch col {
+        case 0: return s7.0
+        case 1: return s7.1
+        case 2: return s7.2
+        case 3: return s7.3
+        case 4: return s7.4
+        case 5: return s7.5
+        case 6: return s7.6
+        default: return s7.7
         }
       }
     }
@@ -802,131 +888,124 @@ struct Fixed64_FunctionType {
 
 /// 64-slot fixed buffer for the Function section (max WasmLimits.maxFunctions = 64).
 ///
-/// Embedded: tuple storage — no malloc.
-/// macOS:    [UInt32] array (heap).
+/// Tuple storage on both macOS and Embedded — no malloc on either platform. Safe on macOS
+/// too: WasmModule fields are read only through `subscript` after the parser builds them
+/// once, and `WasmModule` is always accessed through `moduleRef: UnsafePointer<WasmModule>`
+/// rather than passed inout into the `dispatchEmbedded` hot loop, so this element type
+/// (UInt32, bitwise-copyable) growing to tuple storage does not affect any stack frame.
 struct Fixed64_UInt32 {
-  #if hasFeature(Embedded)
-    private var s0, s1, s2, s3, s4, s5, s6,
-      s7: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
-    private var _count: Int
+  private var s0, s1, s2, s3, s4, s5, s6,
+    s7: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
+  private var _count: Int
 
-    init(_ arr: [UInt32]) {
-      let row: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (
-        0, 0, 0, 0, 0, 0, 0, 0
-      )
-      s0 = row
-      s1 = row
-      s2 = row
-      s3 = row
-      s4 = row
-      s5 = row
-      s6 = row
-      s7 = row
-      _count = 0
-      for e in arr { append(e) }
-    }
+  init(_ arr: [UInt32]) {
+    let row: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (
+      0, 0, 0, 0, 0, 0, 0, 0
+    )
+    s0 = row
+    s1 = row
+    s2 = row
+    s3 = row
+    s4 = row
+    s5 = row
+    s6 = row
+    s7 = row
+    _count = 0
+    for e in arr { append(e) }
+  }
 
-    var count: Int { _count }
+  var count: Int { _count }
 
-    subscript(index: Int) -> UInt32 {
-      precondition(index >= 0 && index < _count)
-      let row = index / 8
-      let col = index % 8
-      return withRow(row) { $0[col] }
-    }
+  subscript(index: Int) -> UInt32 {
+    precondition(index >= 0 && index < _count)
+    let row = index / 8
+    let col = index % 8
+    return withRow(row) { $0[col] }
+  }
 
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<UInt32>) -> R) -> R {
-      switch row {
-      case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 1:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 2:
-        return withUnsafeBytes(of: s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 3:
-        return withUnsafeBytes(of: s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 4:
-        return withUnsafeBytes(of: s4) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 5:
-        return withUnsafeBytes(of: s5) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 6:
-        return withUnsafeBytes(of: s6) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      default:
-        return withUnsafeBytes(of: s7) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
+  private func withRow<R>(_ row: Int, _ body: (UnsafePointer<UInt32>) -> R) -> R {
+    switch row {
+    case 0:
+      return withUnsafeBytes(of: s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 1:
+      return withUnsafeBytes(of: s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 2:
+      return withUnsafeBytes(of: s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 3:
+      return withUnsafeBytes(of: s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 4:
+      return withUnsafeBytes(of: s4) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 5:
+      return withUnsafeBytes(of: s5) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 6:
+      return withUnsafeBytes(of: s6) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    default:
+      return withUnsafeBytes(of: s7) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
       }
     }
+  }
 
-    private mutating func withMutableRow<R>(
-      _ row: Int, _ body: (UnsafeMutablePointer<UInt32>) -> R
-    ) -> R {
-      switch row {
-      case 0:
-        return withUnsafeMutableBytes(of: &s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 1:
-        return withUnsafeMutableBytes(of: &s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 2:
-        return withUnsafeMutableBytes(of: &s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 3:
-        return withUnsafeMutableBytes(of: &s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 4:
-        return withUnsafeMutableBytes(of: &s4) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 5:
-        return withUnsafeMutableBytes(of: &s5) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 6:
-        return withUnsafeMutableBytes(of: &s6) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      default:
-        return withUnsafeMutableBytes(of: &s7) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
+  private mutating func withMutableRow<R>(
+    _ row: Int, _ body: (UnsafeMutablePointer<UInt32>) -> R
+  ) -> R {
+    switch row {
+    case 0:
+      return withUnsafeMutableBytes(of: &s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 1:
+      return withUnsafeMutableBytes(of: &s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 2:
+      return withUnsafeMutableBytes(of: &s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 3:
+      return withUnsafeMutableBytes(of: &s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 4:
+      return withUnsafeMutableBytes(of: &s4) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 5:
+      return withUnsafeMutableBytes(of: &s5) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 6:
+      return withUnsafeMutableBytes(of: &s6) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    default:
+      return withUnsafeMutableBytes(of: &s7) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
       }
     }
+  }
 
-    private mutating func append(_ e: UInt32) {
-      precondition(_count < 64, "Fixed64_UInt32 overflow")
-      let row = _count / 8
-      let col = _count % 8
-      withMutableRow(row) { $0[col] = e }
-      _count += 1
-    }
-  #else
-    // macOS: heap-allocated.
-    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
-    private var storage: [UInt32]  // TODO: Embedded Phase 5 — replace with tuple storage
-
-    init(_ arr: [UInt32]) { storage = arr }
-    var count: Int { storage.count }
-    subscript(index: Int) -> UInt32 { storage[index] }
-  #endif
+  private mutating func append(_ e: UInt32) {
+    precondition(_count < 64, "Fixed64_UInt32 overflow")
+    let row = _count / 8
+    let col = _count % 8
+    withMutableRow(row) { $0[col] = e }
+    _count += 1
+  }
 }
 
 // MARK: Fixed32_Import
@@ -957,26 +1036,58 @@ struct Fixed32_Import {
       precondition(index >= 0 && index < _count)
       let row = index / 8
       let col = index % 8
-      return withRow(row) { $0[col] }
+      return getElement(row: row, col: col)
     }
 
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<Import>) -> R) -> R {
+    // Direct element access avoids withUnsafeBytes/assumingMemoryBound on non-BitwiseCopyable
+    // Import (which contains [UInt8] fields) — see the comment on
+    // Fixed64_FunctionType.getElement above for why the byte-reinterpret pattern corrupts ARC
+    // state under a real Swift runtime.
+    private func getElement(row: Int, col: Int) -> Import {
       switch row {
       case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: Import.self))
+        switch col {
+        case 0: return s0.0
+        case 1: return s0.1
+        case 2: return s0.2
+        case 3: return s0.3
+        case 4: return s0.4
+        case 5: return s0.5
+        case 6: return s0.6
+        default: return s0.7
         }
       case 1:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: Import.self))
+        switch col {
+        case 0: return s1.0
+        case 1: return s1.1
+        case 2: return s1.2
+        case 3: return s1.3
+        case 4: return s1.4
+        case 5: return s1.5
+        case 6: return s1.6
+        default: return s1.7
         }
       case 2:
-        return withUnsafeBytes(of: s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: Import.self))
+        switch col {
+        case 0: return s2.0
+        case 1: return s2.1
+        case 2: return s2.2
+        case 3: return s2.3
+        case 4: return s2.4
+        case 5: return s2.5
+        case 6: return s2.6
+        default: return s2.7
         }
       default:
-        return withUnsafeBytes(of: s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: Import.self))
+        switch col {
+        case 0: return s3.0
+        case 1: return s3.1
+        case 2: return s3.2
+        case 3: return s3.3
+        case 4: return s3.4
+        case 5: return s3.5
+        case 6: return s3.6
+        default: return s3.7
         }
       }
     }
@@ -1078,26 +1189,58 @@ struct Fixed32_Export {
       precondition(index >= 0 && index < _count)
       let row = index / 8
       let col = index % 8
-      return withRow(row) { $0[col] }
+      return getElement(row: row, col: col)
     }
 
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<Export>) -> R) -> R {
+    // Direct element access avoids withUnsafeBytes/assumingMemoryBound on non-BitwiseCopyable
+    // Export (which holds nameBytes: [UInt8]) — see the comment on
+    // Fixed64_FunctionType.getElement above for why the byte-reinterpret pattern corrupts ARC
+    // state under a real Swift runtime.
+    private func getElement(row: Int, col: Int) -> Export {
       switch row {
       case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: Export.self))
+        switch col {
+        case 0: return s0.0
+        case 1: return s0.1
+        case 2: return s0.2
+        case 3: return s0.3
+        case 4: return s0.4
+        case 5: return s0.5
+        case 6: return s0.6
+        default: return s0.7
         }
       case 1:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: Export.self))
+        switch col {
+        case 0: return s1.0
+        case 1: return s1.1
+        case 2: return s1.2
+        case 3: return s1.3
+        case 4: return s1.4
+        case 5: return s1.5
+        case 6: return s1.6
+        default: return s1.7
         }
       case 2:
-        return withUnsafeBytes(of: s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: Export.self))
+        switch col {
+        case 0: return s2.0
+        case 1: return s2.1
+        case 2: return s2.2
+        case 3: return s2.3
+        case 4: return s2.4
+        case 5: return s2.5
+        case 6: return s2.6
+        default: return s2.7
         }
       default:
-        return withUnsafeBytes(of: s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: Export.self))
+        switch col {
+        case 0: return s3.0
+        case 1: return s3.1
+        case 2: return s3.2
+        case 3: return s3.3
+        case 4: return s3.4
+        case 5: return s3.5
+        case 6: return s3.6
+        default: return s3.7
         }
       }
     }
@@ -1175,191 +1318,172 @@ struct Fixed32_Export {
 
 /// 32-slot fixed buffer for the Global section (max WasmLimits.maxGlobals = 32).
 ///
-/// Embedded: tuple storage — no malloc.
-/// macOS:    [GlobalDef] array (heap).
+/// Tuple storage on both macOS and Embedded — no malloc on either platform. `GlobalDef`
+/// contains no reference-counted fields (its `Value` payload is bitwise-copyable), so the
+/// existing `withUnsafeBytes`-based reads below are safe. See `Fixed64_UInt32` above for why
+/// the larger struct size is safe on macOS too.
 struct Fixed32_GlobalDef {
-  #if hasFeature(Embedded)
-    private var s0, s1, s2,
-      s3: (GlobalDef, GlobalDef, GlobalDef, GlobalDef, GlobalDef, GlobalDef, GlobalDef, GlobalDef)
-    private var _count: Int
+  private var s0, s1, s2,
+    s3: (GlobalDef, GlobalDef, GlobalDef, GlobalDef, GlobalDef, GlobalDef, GlobalDef, GlobalDef)
+  private var _count: Int
 
-    init(_ arr: [GlobalDef]) {
-      let z = GlobalDef.zero
-      let row = (z, z, z, z, z, z, z, z)
-      s0 = row
-      s1 = row
-      s2 = row
-      s3 = row
-      _count = 0
-      for e in arr { append(e) }
-    }
+  init(_ arr: [GlobalDef]) {
+    let z = GlobalDef.zero
+    let row = (z, z, z, z, z, z, z, z)
+    s0 = row
+    s1 = row
+    s2 = row
+    s3 = row
+    _count = 0
+    for e in arr { append(e) }
+  }
 
-    var count: Int { _count }
+  var count: Int { _count }
 
-    subscript(index: Int) -> GlobalDef {
-      precondition(index >= 0 && index < _count)
-      let row = index / 8
-      let col = index % 8
-      return withRow(row) { $0[col] }
-    }
+  subscript(index: Int) -> GlobalDef {
+    precondition(index >= 0 && index < _count)
+    let row = index / 8
+    let col = index % 8
+    return withRow(row) { $0[col] }
+  }
 
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<GlobalDef>) -> R) -> R {
-      switch row {
-      case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
-        }
-      case 1:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
-        }
-      case 2:
-        return withUnsafeBytes(of: s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
-        }
-      default:
-        return withUnsafeBytes(of: s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
-        }
+  private func withRow<R>(_ row: Int, _ body: (UnsafePointer<GlobalDef>) -> R) -> R {
+    switch row {
+    case 0:
+      return withUnsafeBytes(of: s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
+      }
+    case 1:
+      return withUnsafeBytes(of: s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
+      }
+    case 2:
+      return withUnsafeBytes(of: s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
+      }
+    default:
+      return withUnsafeBytes(of: s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
       }
     }
+  }
 
-    private mutating func withMutableRow<R>(
-      _ row: Int, _ body: (UnsafeMutablePointer<GlobalDef>) -> R
-    ) -> R {
-      switch row {
-      case 0:
-        return withUnsafeMutableBytes(of: &s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
-        }
-      case 1:
-        return withUnsafeMutableBytes(of: &s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
-        }
-      case 2:
-        return withUnsafeMutableBytes(of: &s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
-        }
-      default:
-        return withUnsafeMutableBytes(of: &s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
-        }
+  private mutating func withMutableRow<R>(
+    _ row: Int, _ body: (UnsafeMutablePointer<GlobalDef>) -> R
+  ) -> R {
+    switch row {
+    case 0:
+      return withUnsafeMutableBytes(of: &s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
+      }
+    case 1:
+      return withUnsafeMutableBytes(of: &s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
+      }
+    case 2:
+      return withUnsafeMutableBytes(of: &s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
+      }
+    default:
+      return withUnsafeMutableBytes(of: &s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: GlobalDef.self))
       }
     }
+  }
 
-    private mutating func append(_ e: GlobalDef) {
-      precondition(_count < 32, "Fixed32_GlobalDef overflow")
-      let row = _count / 8
-      let col = _count % 8
-      withMutableRow(row) { $0[col] = e }
-      _count += 1
-    }
-  #else
-    // macOS: heap-allocated.
-    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
-    private var storage: [GlobalDef]  // TODO: Embedded Phase 5 — replace with tuple storage
-
-    init(_ arr: [GlobalDef]) { storage = arr }
-    var count: Int { storage.count }
-    subscript(index: Int) -> GlobalDef { storage[index] }
-  #endif
+  private mutating func append(_ e: GlobalDef) {
+    precondition(_count < 32, "Fixed32_GlobalDef overflow")
+    let row = _count / 8
+    let col = _count % 8
+    withMutableRow(row) { $0[col] = e }
+    _count += 1
+  }
 }
 
 // MARK: Fixed32_UInt32
 
 /// 32-slot fixed buffer for importedFunctionTypeIndices (max WasmLimits.maxImports = 32).
 ///
-/// Embedded: tuple storage — no malloc.
-/// macOS:    [UInt32] array (heap).
+/// Tuple storage on both macOS and Embedded — no malloc on either platform. See
+/// `Fixed64_UInt32` above for why the larger struct size is safe on macOS too.
 struct Fixed32_UInt32 {
-  #if hasFeature(Embedded)
-    private var s0, s1, s2, s3: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
-    private var _count: Int
+  private var s0, s1, s2, s3: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32)
+  private var _count: Int
 
-    init(_ arr: [UInt32]) {
-      let row: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (
-        0, 0, 0, 0, 0, 0, 0, 0
-      )
-      s0 = row
-      s1 = row
-      s2 = row
-      s3 = row
-      _count = 0
-      for e in arr { append(e) }
-    }
+  init(_ arr: [UInt32]) {
+    let row: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (
+      0, 0, 0, 0, 0, 0, 0, 0
+    )
+    s0 = row
+    s1 = row
+    s2 = row
+    s3 = row
+    _count = 0
+    for e in arr { append(e) }
+  }
 
-    var count: Int { _count }
+  var count: Int { _count }
 
-    subscript(index: Int) -> UInt32 {
-      precondition(index >= 0 && index < _count)
-      let row = index / 8
-      let col = index % 8
-      return withRow(row) { $0[col] }
-    }
+  subscript(index: Int) -> UInt32 {
+    precondition(index >= 0 && index < _count)
+    let row = index / 8
+    let col = index % 8
+    return withRow(row) { $0[col] }
+  }
 
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<UInt32>) -> R) -> R {
-      switch row {
-      case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 1:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 2:
-        return withUnsafeBytes(of: s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      default:
-        return withUnsafeBytes(of: s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
+  private func withRow<R>(_ row: Int, _ body: (UnsafePointer<UInt32>) -> R) -> R {
+    switch row {
+    case 0:
+      return withUnsafeBytes(of: s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 1:
+      return withUnsafeBytes(of: s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 2:
+      return withUnsafeBytes(of: s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    default:
+      return withUnsafeBytes(of: s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
       }
     }
+  }
 
-    private mutating func withMutableRow<R>(
-      _ row: Int, _ body: (UnsafeMutablePointer<UInt32>) -> R
-    ) -> R {
-      switch row {
-      case 0:
-        return withUnsafeMutableBytes(of: &s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 1:
-        return withUnsafeMutableBytes(of: &s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      case 2:
-        return withUnsafeMutableBytes(of: &s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
-      default:
-        return withUnsafeMutableBytes(of: &s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
-        }
+  private mutating func withMutableRow<R>(
+    _ row: Int, _ body: (UnsafeMutablePointer<UInt32>) -> R
+  ) -> R {
+    switch row {
+    case 0:
+      return withUnsafeMutableBytes(of: &s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 1:
+      return withUnsafeMutableBytes(of: &s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    case 2:
+      return withUnsafeMutableBytes(of: &s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
+      }
+    default:
+      return withUnsafeMutableBytes(of: &s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: UInt32.self))
       }
     }
+  }
 
-    // fileprivate so WasmModule.init can build this buffer directly without
-    // an intermediate [UInt32] heap allocation on the Embedded path.
-    fileprivate mutating func append(_ e: UInt32) {
-      precondition(_count < 32, "Fixed32_UInt32 overflow")
-      let row = _count / 8
-      let col = _count % 8
-      withMutableRow(row) { $0[col] = e }
-      _count += 1
-    }
-  #else
-    // macOS: heap-allocated.
-    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
-    private var storage: [UInt32]  // TODO: Embedded Phase 5 — replace with tuple storage
-
-    init(_ arr: [UInt32]) { storage = arr }
-    var count: Int { storage.count }
-    subscript(index: Int) -> UInt32 { storage[index] }
-    fileprivate mutating func append(_ e: UInt32) { storage.append(e) }
-  #endif
+  // fileprivate so WasmModule.init can build this buffer directly without
+  // an intermediate [UInt32] heap allocation on the Embedded path.
+  fileprivate mutating func append(_ e: UInt32) {
+    precondition(_count < 32, "Fixed32_UInt32 overflow")
+    let row = _count / 8
+    let col = _count % 8
+    withMutableRow(row) { $0[col] = e }
+    _count += 1
+  }
 }
 
 // MARK: Fixed32_Value
@@ -1484,86 +1608,66 @@ struct Fixed32_Value {
 
 /// 4-slot fixed buffer for the Table section (max WasmLimits.maxTables = 4).
 ///
-/// Embedded: tuple storage — no malloc.
-/// macOS:    [TableType] array (heap).
+/// Tuple storage on both macOS and Embedded — no malloc on either platform. `TableType`
+/// contains no reference-counted fields, so the existing `withUnsafeBytes`-based
+/// read/append below are safe. See `Fixed64_UInt32` above for why the larger struct size is
+/// safe on macOS too.
 struct Fixed4_TableType {
-  #if hasFeature(Embedded)
-    private var storage: (TableType, TableType, TableType, TableType)
-    private var _count: Int
+  private var storage: (TableType, TableType, TableType, TableType)
+  private var _count: Int
 
-    init(_ arr: [TableType]) {
-      let z = TableType.zero
-      storage = (z, z, z, z)
-      _count = 0
-      for e in arr { append(e) }
+  init(_ arr: [TableType]) {
+    let z = TableType.zero
+    storage = (z, z, z, z)
+    _count = 0
+    for e in arr { append(e) }
+  }
+
+  var count: Int { _count }
+
+  subscript(index: Int) -> TableType {
+    precondition(index >= 0 && index < _count)
+    return withUnsafeBytes(of: storage) {
+      $0.baseAddress!.assumingMemoryBound(to: TableType.self)[index]
     }
+  }
 
-    var count: Int { _count }
-
-    subscript(index: Int) -> TableType {
-      precondition(index >= 0 && index < _count)
-      return withUnsafeBytes(of: storage) {
-        $0.baseAddress!.assumingMemoryBound(to: TableType.self)[index]
-      }
+  private mutating func append(_ e: TableType) {
+    precondition(_count < 4, "Fixed4_TableType overflow")
+    withUnsafeMutableBytes(of: &storage) {
+      $0.baseAddress!.assumingMemoryBound(to: TableType.self)[_count] = e
     }
-
-    private mutating func append(_ e: TableType) {
-      precondition(_count < 4, "Fixed4_TableType overflow")
-      withUnsafeMutableBytes(of: &storage) {
-        $0.baseAddress!.assumingMemoryBound(to: TableType.self)[_count] = e
-      }
-      _count += 1
-    }
-  #else
-    // macOS: heap-allocated.
-    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
-    private var storage: [TableType]  // TODO: Embedded Phase 5 — replace with tuple storage
-
-    init(_ arr: [TableType]) { storage = arr }
-    var count: Int { storage.count }
-    subscript(index: Int) -> TableType { storage[index] }
-  #endif
+    _count += 1
+  }
 }
 
 // MARK: Fixed1_MemoryType
 
 /// 1-slot fixed buffer for the Memory section (max WasmLimits.maxMemories = 1).
 ///
-/// Embedded: Optional<MemoryType> storage — no malloc.
-/// macOS:    [MemoryType] array (heap).
+/// `Optional<MemoryType>` storage on both macOS and Embedded — no malloc on either platform.
 struct Fixed1_MemoryType {
-  #if hasFeature(Embedded)
-    private var _storage: MemoryType?
-    private var _count: Int
+  private var _storage: MemoryType?
+  private var _count: Int
 
-    init(_ arr: [MemoryType]) {
-      if let first = arr.first {
-        _storage = first
-        _count = 1
-      } else {
-        _storage = nil
-        _count = 0
-      }
+  init(_ arr: [MemoryType]) {
+    if let first = arr.first {
+      _storage = first
+      _count = 1
+    } else {
+      _storage = nil
+      _count = 0
     }
+  }
 
-    var count: Int { _count }
+  var count: Int { _count }
 
-    var first: MemoryType? { _storage }
+  var first: MemoryType? { _storage }
 
-    subscript(index: Int) -> MemoryType {
-      precondition(index == 0 && _count == 1)
-      return _storage!
-    }
-  #else
-    // macOS: heap-allocated.
-    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
-    private var storage: [MemoryType]  // TODO: Embedded Phase 5 — replace with Optional storage
-
-    init(_ arr: [MemoryType]) { storage = arr }
-    var count: Int { storage.count }
-    var first: MemoryType? { storage.first }
-    subscript(index: Int) -> MemoryType { storage[index] }
-  #endif
+  subscript(index: Int) -> MemoryType {
+    precondition(index == 0 && _count == 1)
+    return _storage!
+  }
 }
 
 // MARK: Fixed16_ElementSegment
@@ -1597,18 +1701,36 @@ struct Fixed16_ElementSegment {
       precondition(index >= 0 && index < _count)
       let row = index / 8
       let col = index % 8
-      return withRow(row) { $0[col] }
+      return getElement(row: row, col: col)
     }
 
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<ElementSegment>) -> R) -> R {
+    // Direct element access avoids withUnsafeBytes/assumingMemoryBound on non-BitwiseCopyable
+    // ElementSegment (which holds functionIndices: [UInt32?]) — see the comment on
+    // Fixed64_FunctionType.getElement above for why the byte-reinterpret pattern corrupts ARC
+    // state under a real Swift runtime.
+    private func getElement(row: Int, col: Int) -> ElementSegment {
       switch row {
       case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: ElementSegment.self))
+        switch col {
+        case 0: return s0.0
+        case 1: return s0.1
+        case 2: return s0.2
+        case 3: return s0.3
+        case 4: return s0.4
+        case 5: return s0.5
+        case 6: return s0.6
+        default: return s0.7
         }
       default:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: ElementSegment.self))
+        switch col {
+        case 0: return s1.0
+        case 1: return s1.1
+        case 2: return s1.2
+        case 3: return s1.3
+        case 4: return s1.4
+        case 5: return s1.5
+        case 6: return s1.6
+        default: return s1.7
         }
       }
     }
@@ -1691,18 +1813,36 @@ struct Fixed16_DataSegment {
       precondition(index >= 0 && index < _count)
       let row = index / 8
       let col = index % 8
-      return withRow(row) { $0[col] }
+      return getElement(row: row, col: col)
     }
 
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<DataSegment>) -> R) -> R {
+    // Direct element access avoids withUnsafeBytes/assumingMemoryBound on non-BitwiseCopyable
+    // DataSegment (which holds bytes: [UInt8] on macOS or UnsafeBufferPointer on Embedded) —
+    // see the comment on Fixed64_FunctionType.getElement above for why the byte-reinterpret
+    // pattern corrupts ARC state under a real Swift runtime.
+    private func getElement(row: Int, col: Int) -> DataSegment {
       switch row {
       case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: DataSegment.self))
+        switch col {
+        case 0: return s0.0
+        case 1: return s0.1
+        case 2: return s0.2
+        case 3: return s0.3
+        case 4: return s0.4
+        case 5: return s0.5
+        case 6: return s0.6
+        default: return s0.7
         }
       default:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: DataSegment.self))
+        switch col {
+        case 0: return s1.0
+        case 1: return s1.1
+        case 2: return s1.2
+        case 3: return s1.3
+        case 4: return s1.4
+        case 5: return s1.5
+        case 6: return s1.6
+        default: return s1.7
         }
       }
     }
@@ -1761,124 +1901,114 @@ struct Fixed16_DataSegment {
 /// ValueType is a UInt8 enum — BitwiseCopyable — so we can use withUnsafeBytes for reads.
 /// Built incrementally via append(); no array initialiser because the parser builds it entry-by-entry.
 ///
-/// Embedded: storage is 4 × 8-element sub-tuples of ValueType — no malloc.
-/// macOS:    storage is [ValueType] (heap) — keeps struct size manageable.
+/// Tuple storage on both macOS and Embedded — no malloc on either platform (4 × 8-element
+/// sub-tuples of ValueType). See `Fixed64_UInt32` above for why the larger struct size is
+/// safe on macOS too.
 struct FixedLocals_ValueType: Sendable {
-  #if hasFeature(Embedded)
-    // ValueType is a UInt8 enum — BitwiseCopyable — withUnsafeBytes is safe for reads.
-    // Direct tuple assignment is used for writes (via setElement).
-    private var s0, s1, s2,
-      s3: (ValueType, ValueType, ValueType, ValueType, ValueType, ValueType, ValueType, ValueType)
-    private var _count: Int
+  // ValueType is a UInt8 enum — BitwiseCopyable — withUnsafeBytes is safe for reads.
+  // Direct tuple assignment is used for writes (via setElement).
+  private var s0, s1, s2,
+    s3: (ValueType, ValueType, ValueType, ValueType, ValueType, ValueType, ValueType, ValueType)
+  private var _count: Int
 
-    init() {
-      let z = ValueType.zero
-      let row = (z, z, z, z, z, z, z, z)
-      s0 = row
-      s1 = row
-      s2 = row
-      s3 = row
-      _count = 0
-    }
+  init() {
+    let z = ValueType.zero
+    let row = (z, z, z, z, z, z, z, z)
+    s0 = row
+    s1 = row
+    s2 = row
+    s3 = row
+    _count = 0
+  }
 
-    var count: Int { _count }
+  var count: Int { _count }
 
-    subscript(index: Int) -> ValueType {
-      precondition(index >= 0 && index < _count)
-      let row = index / 8
-      let col = index % 8
-      return withRow(row) { $0[col] }
-    }
+  subscript(index: Int) -> ValueType {
+    precondition(index >= 0 && index < _count)
+    let row = index / 8
+    let col = index % 8
+    return withRow(row) { $0[col] }
+  }
 
-    private func withRow<R>(_ row: Int, _ body: (UnsafePointer<ValueType>) -> R) -> R {
-      switch row {
-      case 0:
-        return withUnsafeBytes(of: s0) {
-          body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
-        }
-      case 1:
-        return withUnsafeBytes(of: s1) {
-          body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
-        }
-      case 2:
-        return withUnsafeBytes(of: s2) {
-          body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
-        }
-      default:
-        return withUnsafeBytes(of: s3) {
-          body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
-        }
+  private func withRow<R>(_ row: Int, _ body: (UnsafePointer<ValueType>) -> R) -> R {
+    switch row {
+    case 0:
+      return withUnsafeBytes(of: s0) {
+        body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
+      }
+    case 1:
+      return withUnsafeBytes(of: s1) {
+        body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
+      }
+    case 2:
+      return withUnsafeBytes(of: s2) {
+        body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
+      }
+    default:
+      return withUnsafeBytes(of: s3) {
+        body($0.baseAddress!.assumingMemoryBound(to: ValueType.self))
       }
     }
+  }
 
-    // Direct inout assignment — ValueType is BitwiseCopyable (UInt8 enum) so direct
-    // tuple element assignment is correct and avoids any ARC overhead.
-    private mutating func setElement(row: Int, col: Int, value: ValueType) {
-      switch row {
-      case 0:
-        switch col {
-        case 0: s0.0 = value
-        case 1: s0.1 = value
-        case 2: s0.2 = value
-        case 3: s0.3 = value
-        case 4: s0.4 = value
-        case 5: s0.5 = value
-        case 6: s0.6 = value
-        default: s0.7 = value
-        }
-      case 1:
-        switch col {
-        case 0: s1.0 = value
-        case 1: s1.1 = value
-        case 2: s1.2 = value
-        case 3: s1.3 = value
-        case 4: s1.4 = value
-        case 5: s1.5 = value
-        case 6: s1.6 = value
-        default: s1.7 = value
-        }
-      case 2:
-        switch col {
-        case 0: s2.0 = value
-        case 1: s2.1 = value
-        case 2: s2.2 = value
-        case 3: s2.3 = value
-        case 4: s2.4 = value
-        case 5: s2.5 = value
-        case 6: s2.6 = value
-        default: s2.7 = value
-        }
-      default:
-        switch col {
-        case 0: s3.0 = value
-        case 1: s3.1 = value
-        case 2: s3.2 = value
-        case 3: s3.3 = value
-        case 4: s3.4 = value
-        case 5: s3.5 = value
-        case 6: s3.6 = value
-        default: s3.7 = value
-        }
+  // Direct inout assignment — ValueType is BitwiseCopyable (UInt8 enum) so direct
+  // tuple element assignment is correct and avoids any ARC overhead.
+  private mutating func setElement(row: Int, col: Int, value: ValueType) {
+    switch row {
+    case 0:
+      switch col {
+      case 0: s0.0 = value
+      case 1: s0.1 = value
+      case 2: s0.2 = value
+      case 3: s0.3 = value
+      case 4: s0.4 = value
+      case 5: s0.5 = value
+      case 6: s0.6 = value
+      default: s0.7 = value
+      }
+    case 1:
+      switch col {
+      case 0: s1.0 = value
+      case 1: s1.1 = value
+      case 2: s1.2 = value
+      case 3: s1.3 = value
+      case 4: s1.4 = value
+      case 5: s1.5 = value
+      case 6: s1.6 = value
+      default: s1.7 = value
+      }
+    case 2:
+      switch col {
+      case 0: s2.0 = value
+      case 1: s2.1 = value
+      case 2: s2.2 = value
+      case 3: s2.3 = value
+      case 4: s2.4 = value
+      case 5: s2.5 = value
+      case 6: s2.6 = value
+      default: s2.7 = value
+      }
+    default:
+      switch col {
+      case 0: s3.0 = value
+      case 1: s3.1 = value
+      case 2: s3.2 = value
+      case 3: s3.3 = value
+      case 4: s3.4 = value
+      case 5: s3.5 = value
+      case 6: s3.6 = value
+      default: s3.7 = value
       }
     }
+  }
 
-    mutating func append(_ e: ValueType) {
-      precondition(_count < 32, "FixedLocals_ValueType overflow")
-      let row = _count / 8
-      let col = _count % 8
-      setElement(row: row, col: col, value: e)
-      _count += 1
-    }
-  #else
-    // macOS: heap-allocated to keep struct size manageable.
-    // TODO: Embedded Phase 5 — remove this branch once the Embedded path is the only target.
-    private var storage: [ValueType]  // TODO: Embedded Phase 5 — replace with tuple storage
-
-    init() { storage = [] }
-    var count: Int { storage.count }
-    subscript(index: Int) -> ValueType { storage[index] }
-    mutating func append(_ e: ValueType) { storage.append(e) }
-  #endif
+  mutating func append(_ e: ValueType) {
+    precondition(_count < 32, "FixedLocals_ValueType overflow")
+    let row = _count / 8
+    let col = _count % 8
+    setElement(row: row, col: col, value: e)
+    _count += 1
+  }
 }
 
 // MARK: FixedJumpTable_JumpEntry

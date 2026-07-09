@@ -312,7 +312,9 @@ struct EmbeddedFrame {
   let localBase: Int  // index of first local (= first param) on valueStack
   let localCount: Int  // total locals (params + declared); valueStack depth at body start
   let resultCount: Int  // number of return values
-  var labels: LabelStack  // unified on both platforms (Approach A: LabelStack uses [Label] internally on macOS)
+  var labels: LabelStack  // Approach A: LabelStack uses [Label] (heap, capacity 32) on macOS,
+  // an 8-slot tuple on Embedded — see the doc comment on LabelStack in WasmInterpreter.swift
+  // for why these were not unified onto a single capacity.
 
   /// Zero-value sentinel used to fill uninitialised slots in the fixed-size CallStack buffer.
   static let zero = EmbeddedFrame(
@@ -665,7 +667,22 @@ extension WasmInterpreter {
     // MARK: Seed and run
 
     #if !hasFeature(Embedded)
-      var localModule = self.module
+      // `module` is a `let` stored property, so `&module` cannot be taken directly; a
+      // mutable local used to be made here (`var localModule = self.module`) purely to get
+      // a WasmModule pointer. That local was a full-value copy of WasmModule, which was
+      // negligible (~112 bytes) before the Fixed*_X section buffers were unified onto tuple
+      // storage for both platforms (Documentations/hasFeature削除計画.md §5) but is now
+      // several KB — large enough that a stack copy risks overflowing Swift Testing's
+      // 512 KB worker-thread stack when combined with this function's other locals (this
+      // was observed as a real SIGBUS crash during that unification work). Heap-allocating
+      // the copy instead keeps the stack frame unchanged; this path never compiles for
+      // Embedded (which uses self.moduleRef directly against a BSS global, with no copy).
+      let localModulePtr = UnsafeMutablePointer<WasmModule>.allocate(capacity: 1)
+      localModulePtr.initialize(to: self.module)
+      defer {
+        localModulePtr.deinitialize(count: 1)
+        localModulePtr.deallocate()
+      }
     #endif
     valueStack.append(contentsOf: args)
     #if hasFeature(Embedded)
@@ -673,7 +690,7 @@ extension WasmInterpreter {
         self.moduleRef, functionIndex, args.count, &valueStack, &frames, &localMemory)
     #else
       try pushEmbeddedFrame(
-        &localModule, functionIndex, args.count, &valueStack, &frames, &localMemory)
+        localModulePtr, functionIndex, args.count, &valueStack, &frames, &localMemory)
     #endif
     if valueStack.count > localPeakValueStack { localPeakValueStack = valueStack.count }
     if frames.count > localPeakCallStack { localPeakCallStack = frames.count }
@@ -683,7 +700,7 @@ extension WasmInterpreter {
       #if hasFeature(Embedded)
         let handle = self.moduleRef.pointee.code[frames.handleIdx(at: fi)]
       #else
-        let handle = localModule.code[frames.handleIdx(at: fi)]
+        let handle = localModulePtr.pointee.code[frames.handleIdx(at: fi)]
       #endif
       let codeEnd = handle.codeOffset &+ handle.codeSize
 
@@ -726,7 +743,7 @@ extension WasmInterpreter {
         // On macOS, rawBytes is [UInt8]. withUnsafeBytes closure cannot throw directly
         // (it is typed throws(Never)), so we capture the error in a local and re-throw.
         var opcodeErr: WasmError? = nil
-        localModule.rawBytes.withUnsafeBytes { rawBuf throws(Never) in
+        localModulePtr.pointee.rawBytes.withUnsafeBytes { rawBuf throws(Never) in
           let typedBuf = rawBuf.bindMemory(to: UInt8.self)
           var reader = BinaryReader(buffer: typedBuf, offset: Int(frames.ip(at: fi)))
           do throws(WasmError) {
@@ -755,7 +772,7 @@ extension WasmInterpreter {
           execInstr: &localExecInstr)
       #else
         try dispatchEmbedded(
-          moduleRef: &localModule,
+          moduleRef: localModulePtr,
           opcode: opcode,
           nextIp: nextIp,
           fi: fi,
