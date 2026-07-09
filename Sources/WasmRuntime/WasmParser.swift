@@ -1429,17 +1429,40 @@ struct WasmParser {
     }
   }
 
+  /// Reads the `byteLen` data bytes belonging to a single DataSegment.
+  ///
+  /// All three DataSegment flavours (active / passive / active-with-explicit-memory) read
+  /// their trailing byte payload the same way, so this helper collapses what used to be
+  /// three duplicated `#if hasFeature(Embedded)` blocks in parseDataSection down to one
+  /// (Phase 2 dedup — see Documentations/hasFeature削除計画.md §6.1). The root cause of the
+  /// branch itself — DataSegment.bytes' differing ownership model — is unchanged: on
+  /// Embedded this returns a zero-copy UnsafeBufferPointer slice into the raw module bytes
+  /// (the static BLE receive buffer, which outlives the module); on macOS it returns a
+  /// heap-allocated [UInt8] copy, because WasmModule (and thus DataSegment) can be copied
+  /// on macOS, which would make a pointer into a copied buffer unsafe.
+  #if hasFeature(Embedded)
+    private mutating func readDataBytes(byteLen: UInt32) throws(WasmError)
+      -> UnsafeBufferPointer<UInt8>
+    {
+      let bytesStart = stream.offset
+      for _ in 0..<byteLen { _ = try readByte() }
+      return UnsafeBufferPointer(rebasing: buffer[bytesStart..<stream.offset])
+    }
+  #else
+    private mutating func readDataBytes(byteLen: UInt32) throws(WasmError) -> [UInt8] {
+      var bytes: [UInt8] = []
+      bytes.reserveCapacity(Int(byteLen))
+      for _ in 0..<byteLen { bytes.append(try readByte()) }
+      return bytes
+    }
+  #endif
+
   /// Data section (id=11): array of initial data segments for linear memory
   ///
   /// Supported flags:
   ///   0 — active, memory 0, i32.const offset expression, data bytes
   ///   1 — passive: no offset expression; segment is not applied at instantiation
   ///   2 — active with explicit memory index, i32.const offset expression, data bytes
-  ///
-  /// On Embedded, DataSegment.bytes is a zero-copy UnsafeBufferPointer slice into the
-  /// raw module bytes (the static BLE receive buffer).  We read the byte length, record
-  /// the start offset before consuming the bytes via readByte(), and create a subrange.
-  /// On macOS, DataSegment.bytes is a [UInt8] copy (heap-allocated).
   private mutating func parseDataSection() throws(WasmError) -> [DataSegment] {
     let count = try readU32()
     guard count <= WasmLimits.maxData else { throw .resourceLimitExceeded }
@@ -1455,28 +1478,13 @@ struct WasmParser {
         let endOp = try readByte()
         guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
         let byteLen = try readU32()
-        #if hasFeature(Embedded)
-          // Zero-copy: create a subrange of the raw bytes buffer.
-          let bytesStart = stream.offset
-          for _ in 0..<byteLen { _ = try readByte() }
-          let bytes = UnsafeBufferPointer(rebasing: buffer[bytesStart..<stream.offset])
-        #else
-          var bytes: [UInt8] = []
-          for _ in 0..<byteLen { bytes.append(try readByte()) }
-        #endif
+        let bytes = try readDataBytes(byteLen: byteLen)
         segments.append(DataSegment(offset: offset, bytes: bytes))
       case 1:
         // Passive segment: no memory index, no offset expression; just raw data bytes.
         // Not applied at instantiation; used by memory.init / data.drop at runtime.
         let byteLen = try readU32()
-        #if hasFeature(Embedded)
-          let bytesStart1 = stream.offset
-          for _ in 0..<byteLen { _ = try readByte() }
-          let bytes = UnsafeBufferPointer(rebasing: buffer[bytesStart1..<stream.offset])
-        #else
-          var bytes: [UInt8] = []
-          for _ in 0..<byteLen { bytes.append(try readByte()) }
-        #endif
+        let bytes = try readDataBytes(byteLen: byteLen)
         segments.append(DataSegment(offset: nil, bytes: bytes))
       case 2:
         // Active segment with explicit memory index.
@@ -1487,14 +1495,7 @@ struct WasmParser {
         let endOp = try readByte()
         guard endOp == 0x0B else { throw .invalidInstruction(endOp) }
         let byteLen = try readU32()
-        #if hasFeature(Embedded)
-          let bytesStart2 = stream.offset
-          for _ in 0..<byteLen { _ = try readByte() }
-          let bytes = UnsafeBufferPointer(rebasing: buffer[bytesStart2..<stream.offset])
-        #else
-          var bytes: [UInt8] = []
-          for _ in 0..<byteLen { bytes.append(try readByte()) }
-        #endif
+        let bytes = try readDataBytes(byteLen: byteLen)
         segments.append(DataSegment(offset: offset, bytes: bytes))
       default:
         throw .unsupportedElementSegment

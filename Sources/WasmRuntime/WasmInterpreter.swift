@@ -1165,6 +1165,102 @@ struct WasmInterpreter {
     peakCallStackDepth = 0
   }
 
+  // MARK: - Instantiation Helpers (shared between Embedded and macOS init)
+  //
+  // The Embedded and macOS `init` bodies below build largely identical data from the
+  // module's Fixed*_X sections (Global/Table/Element/Data/Memory). Since Phase 1
+  // (Documentations/hasFeature削除計画.md §5), these Fixed*_X types expose the same
+  // count/subscript API on both platforms even where their internal storage still
+  // differs, so the index-loops that only *read* module sections can be shared verbatim
+  // as the private helpers below (Phase 2 of the same plan, §6.1).
+  //
+  // What remains platform-specific — and stays inside the two `#if hasFeature(Embedded)`
+  // init bodies rather than being folded into these helpers — is: how `module` itself is
+  // obtained (moduleRef global vs a value parameter), how `hostFunctions` is built
+  // (`@convention(c)` pointers vs closures — deferred unification, see plan §6.3(b)), and
+  // how `tables` is built (`FlatTableStorage` vs `[[Value]]` storage — deferred to Phase 3
+  // pending the dispatchEmbedded stack-frame work, see plan §6.2).
+
+  /// Builds the initial global-variable slots from the module's Global section.
+  private static func buildGlobals(_ globals: Fixed32_GlobalDef) -> Fixed32_Value {
+    var globalsArr = Fixed32_Value()
+    for gi in 0..<globals.count { globalsArr.append(globals[gi].initValue) }
+    return globalsArr
+  }
+
+  /// Maps an element segment's function index to the Value variant matching the
+  /// destination table's declared reftype.
+  @inline(__always)
+  private static func tableRefValue(_ funcIdx: UInt32?, refType: RefType) -> Value {
+    refType == .externRef ? .externref(funcIdx) : .funcref(funcIdx)
+  }
+
+  /// Page count declared by the module's own Memory section, used as a fallback when no
+  /// host import supplies a memory. Returns 0 (no memory) if the module declares none.
+  private static func declaredMemoryPages(_ memories: Fixed1_MemoryType) -> UInt32 {
+    memories.first?.min ?? 0
+  }
+
+  /// Computes the byte size of the active memory view and the total capacity to
+  /// pre-allocate from the arena, honouring the module's declared max page count (if any)
+  /// and however much space the arena has left. Pre-allocating the full capacity up front
+  /// lets memory.grow extend `memory.count` in place without a second allocation.
+  private static func memoryByteCounts(
+    memPageCount: UInt32, declaredMaxPages: UInt32?, arenaAvailableBytes: Int
+  ) -> (initial: Int, capacity: Int) {
+    let initialByteCount = Int(memPageCount) * 65536
+    let arenaAvailablePages = arenaAvailableBytes / 65536
+    let maxPages: Int
+    if let declaredMax = declaredMaxPages {
+      maxPages = min(Int(declaredMax), arenaAvailablePages)
+    } else {
+      maxPages = arenaAvailablePages
+    }
+    let capacityByteCount = max(maxPages, Int(memPageCount)) * 65536
+    return (initialByteCount, capacityByteCount)
+  }
+
+  /// Copies active data segments (offset != nil) into freshly-allocated linear memory.
+  /// Passive segments are left untouched in `data` for use by memory.init at runtime.
+  private static func applyDataSegments(
+    _ data: Fixed16_DataSegment, into memSlice: UnsafeMutableBufferPointer<UInt8>,
+    initialByteCount: Int
+  ) throws(WasmError) {
+    for di in 0..<data.count {
+      let seg = data[di]
+      guard let offset = seg.offset else { continue }
+      let start = Int(offset)
+      let end = start + seg.bytes.count
+      guard start >= 0 && end <= initialByteCount else { throw .memoryAccessOutOfBounds }
+      for i in start..<end { memSlice[i] = seg.bytes[i - start] }
+    }
+  }
+
+  /// Computes the dropped-element-segment bitmap per Wasm spec §4.5.4: active segments are
+  /// dropped immediately after instantiation, and declarative segments (flags 3, 7) are
+  /// pre-dropped so that ref.func stays valid while table.init can never reach them. Only
+  /// true passive segments (flags 1, 5) remain available for table.init at runtime.
+  private static func initialDroppedElementSegments(
+    _ elements: Fixed16_ElementSegment
+  ) throws(WasmError) -> UInt64 {
+    guard elements.count <= 64 else { throw .resourceLimitExceeded }
+    var droppedElems: UInt64 = 0
+    for ei in 0..<elements.count {
+      let seg = elements[ei]
+      if !seg.isPassive || seg.isDeclarative { droppedElems |= UInt64(1) << ei }
+    }
+    return droppedElems
+  }
+
+  /// Computes the initial dropped-data-segment bitmap. All bits start clear (no segments
+  /// dropped) — data.drop only ever sets bits at runtime — but instantiation still enforces
+  /// the same 64-segment ceiling the bitmap's width allows, matching the element-segment
+  /// counterpart above.
+  private static func droppedDataSegmentsInitial(count: Int) throws(WasmError) -> UInt64 {
+    guard count <= 64 else { throw .resourceLimitExceeded }
+    return 0
+  }
+
   // MARK: - Init
 
   #if hasFeature(Embedded)
@@ -1223,11 +1319,7 @@ struct WasmInterpreter {
       self.hostFunctions = funcs
 
       // Initialise globals from _embeddedModule.globals.initValue.
-      var globalsArr = Fixed32_Value([])
-      for gi in 0..<_embeddedModule.globals.count {
-        globalsArr.append(_embeddedModule.globals[gi].initValue)
-      }
-      self.globals = globalsArr
+      self.globals = Self.buildGlobals(_embeddedModule.globals)
 
       // Build per-table storage — Embedded: FlatTableStorage, no heap allocation.
       var tbls = FlatTableStorage()
@@ -1246,7 +1338,7 @@ struct WasmInterpreter {
         for (i, funcIdx) in seg.functionIndices.enumerated() {
           let pos = start + i
           guard pos < tbls.count(ofTable: ti) else { throw .memoryAccessOutOfBounds }
-          tbls[ti, pos] = refType == .externRef ? .externref(funcIdx) : .funcref(funcIdx)
+          tbls[ti, pos] = Self.tableRefValue(funcIdx, refType: refType)
         }
       }
       self.tables = tbls
@@ -1275,43 +1367,25 @@ struct WasmInterpreter {
         }
         guard found else { throw .importNotFound }
       }
-      if memPageCount == 0, let localMem = _embeddedModule.memories.first {
-        memPageCount = localMem.min
-      }
+      if memPageCount == 0 { memPageCount = Self.declaredMemoryPages(_embeddedModule.memories) }
 
-      let initialByteCount = Int(memPageCount) * 65536
-      let arenaAvailablePages = arena.availableBytes / 65536
-      let maxPages: Int
-      if let declaredMax = _embeddedModule.memories.first?.max {
-        maxPages = min(Int(declaredMax), arenaAvailablePages)
-      } else {
-        maxPages = arenaAvailablePages
-      }
-      let capacityByteCount = max(maxPages, Int(memPageCount)) * 65536
+      let byteCounts = Self.memoryByteCounts(
+        memPageCount: memPageCount, declaredMaxPages: _embeddedModule.memories.first?.max,
+        arenaAvailableBytes: arena.availableBytes)
+      let initialByteCount = byteCounts.initial
+      let capacityByteCount = byteCounts.capacity
       guard let memSlice = arena.allocate(count: capacityByteCount, alignment: 4) else {
         throw WasmError.resourceLimitExceeded
       }
       memSlice.initialize(repeating: 0)
-      for di in 0..<_embeddedModule.data.count {
-        let seg = _embeddedModule.data[di]
-        guard let offset = seg.offset else { continue }
-        let start = Int(offset)
-        let end = start + seg.bytes.count
-        guard start >= 0 && end <= initialByteCount else { throw .memoryAccessOutOfBounds }
-        for i in start..<end { memSlice[i] = seg.bytes[i - start] }
-      }
+      try Self.applyDataSegments(
+        _embeddedModule.data, into: memSlice, initialByteCount: initialByteCount)
       self.memory = UnsafeMutableBufferPointer(start: memSlice.baseAddress, count: initialByteCount)
       self.memoryCapacity = capacityByteCount
-      guard _embeddedModule.data.count <= 64 else { throw .resourceLimitExceeded }
-      self.droppedDataSegments = 0
+      self.droppedDataSegments = try Self.droppedDataSegmentsInitial(
+        count: _embeddedModule.data.count)
 
-      guard _embeddedModule.elements.count <= 64 else { throw .resourceLimitExceeded }
-      var droppedElems: UInt64 = 0
-      for ei in 0..<_embeddedModule.elements.count {
-        let seg = _embeddedModule.elements[ei]
-        if !seg.isPassive || seg.isDeclarative { droppedElems |= UInt64(1) << ei }
-      }
-      self.droppedElementSegments = droppedElems
+      self.droppedElementSegments = try Self.initialDroppedElementSegments(_embeddedModule.elements)
 
       if let startIdx = _embeddedModule.start {
         _ = try call(functionIndex: Int(startIdx), args: [])
@@ -1386,16 +1460,14 @@ struct WasmInterpreter {
       self.hostFunctions = funcs
 
       // Initialise globals from module.globals.initValue.
-      // Index-based loop works on both Fixed32_GlobalDef (Embedded) and [GlobalDef] (macOS)
-      // now that Fixed32_GlobalDef exposes count + subscript on both platforms.
-      var globalsArr = Fixed32_Value([])
-      for gi in 0..<module.globals.count { globalsArr.append(module.globals[gi].initValue) }
-      self.globals = globalsArr
+      self.globals = Self.buildGlobals(module.globals)
 
       // Build per-table storage from the Table section; one entry per declared table.
       // Each table slot holds a Value (.funcref or .externref) matching the table's declared refType.
       // Only active segments are applied at instantiation; passive segments are skipped
       // and remain available for use by table.init / elem.drop at runtime.
+      // TODO: Embedded Phase 5 — replace [[Value]] with FlatTableStorage (see plan §6.2);
+      // until then this loop can't be folded into the Embedded branch's FlatTableStorage build.
       var tbls: [[Value]] = []
       for ti2 in 0..<module.tables.count {
         let tbl = module.tables[ti2]
@@ -1414,7 +1486,7 @@ struct WasmInterpreter {
         for (i, funcIdx) in seg.functionIndices.enumerated() {
           let pos = start + i
           guard pos < tbls[ti].count else { throw .memoryAccessOutOfBounds }
-          tbls[ti][pos] = refType == .externRef ? .externref(funcIdx) : .funcref(funcIdx)
+          tbls[ti][pos] = Self.tableRefValue(funcIdx, refType: refType)
         }
       }
       self.tables = tbls
@@ -1448,9 +1520,7 @@ struct WasmInterpreter {
         }
         guard found else { throw .importNotFound }
       }
-      if memPageCount == 0, let localMem = module.memories.first {
-        memPageCount = localMem.min
-      }
+      if memPageCount == 0 { memPageCount = Self.declaredMemoryPages(module.memories) }
 
       // Allocate linear memory from the arena (1 page = 64 KiB).
       // Using the arena eliminates the repeated malloc/free cycle that [UInt8] allocation
@@ -1462,24 +1532,11 @@ struct WasmInterpreter {
       // pre-allocated size so that memory.grow knows the hard upper bound.
       // Passive segments (offset == nil) are retained in module.data for use by memory.init
       // at runtime; they are not applied at instantiation.
-      let initialByteCount = Int(memPageCount) * 65536
-      // Pre-allocate up to the declared max pages so that memory.grow can extend
-      // memory.count within the same backing block (no second malloc).
-      // When no max is declared the Wasm spec allows up to 65536 pages (4 GiB), which
-      // we obviously cannot reserve; instead we use however many full pages fit in the
-      // remaining arena space, rounded down to a page boundary.
-      // This keeps memory.grow working for realistic workloads on both macOS (256 KiB
-      // arena, up to 4 pages) and Embedded (96 KiB arena).
-      let arenaAvailablePages = arena.availableBytes / 65536
-      let maxPages: Int
-      if let declaredMax = module.memories.first?.max {
-        maxPages = min(Int(declaredMax), arenaAvailablePages)
-      } else {
-        // No declared max: use full available arena space.
-        maxPages = arenaAvailablePages
-      }
-      // Ensure the capacity is at least the initial page count (edge case: arena is almost full).
-      let capacityByteCount = max(maxPages, Int(memPageCount)) * 65536
+      let byteCounts = Self.memoryByteCounts(
+        memPageCount: memPageCount, declaredMaxPages: module.memories.first?.max,
+        arenaAvailableBytes: arena.availableBytes)
+      let initialByteCount = byteCounts.initial
+      let capacityByteCount = byteCounts.capacity
       guard let memSlice = arena.allocate(count: capacityByteCount, alignment: 4) else {
         throw WasmError.resourceLimitExceeded
       }
@@ -1487,38 +1544,21 @@ struct WasmInterpreter {
       // This matches the Wasm spec (§4.5.4): linear memory is zero-initialised at
       // instantiation.  memset-equivalent; fast for typical 64 KiB sizes.
       memSlice.initialize(repeating: 0)
-      for di in 0..<module.data.count {
-        let seg = module.data[di]
-        guard let offset = seg.offset else { continue }  // skip passive segments
-        let start = Int(offset)
-        let end = start + seg.bytes.count
-        guard start >= 0 && end <= initialByteCount else { throw .memoryAccessOutOfBounds }
-        for i in start..<end { memSlice[i] = seg.bytes[i - start] }
-      }
+      try Self.applyDataSegments(module.data, into: memSlice, initialByteCount: initialByteCount)
       // memory initially covers only the initial pages; the remaining pre-allocated bytes
       // serve as grow headroom (see memory.grow opcode 0x40 in WasmInterpreterEmbedded.swift).
       self.memory = UnsafeMutableBufferPointer(
         start: memSlice.baseAddress, count: initialByteCount)
       self.memoryCapacity = capacityByteCount
-      // UInt64 bitmap supports at most 64 data segments.
-      guard module.data.count <= 64 else { throw .resourceLimitExceeded }
-      self.droppedDataSegments = 0  // all bits clear = no segments dropped
+      // UInt64 bitmap supports at most 64 data segments (enforced inside the helper).
+      self.droppedDataSegments = try Self.droppedDataSegmentsInitial(count: module.data.count)
 
       // Active element segments are treated as dropped after instantiation per Wasm spec §4.5.4.
       // Declarative segments (flags=3, 7) are also pre-dropped — they exist only to make
       // ref.func instructions valid, and must never be accessible via table.init.
       // flags=5 is passive (not declarative) and remains available for table.init.
-      // Only true passive segments (isPassive==true, isDeclarative==false) remain available
-      // for table.init at runtime.
       // UInt64 bitmap supports at most 64 element segments.
-      // Use an index loop for Embedded compatibility (Fixed16_ElementSegment is the Embedded-path type; see WasmModule.swift).
-      guard module.elements.count <= 64 else { throw .resourceLimitExceeded }
-      var droppedElems: UInt64 = 0
-      for ei in 0..<module.elements.count {
-        let seg = module.elements[ei]
-        if !seg.isPassive || seg.isDeclarative { droppedElems |= UInt64(1) << ei }
-      }
-      self.droppedElementSegments = droppedElems
+      self.droppedElementSegments = try Self.initialDroppedElementSegments(module.elements)
 
       // Wasm spec: the start function is called automatically at instantiation
       if let startIdx = module.start {
