@@ -440,12 +440,23 @@ func executeReceivedWasm(conHandle: UInt16) {
     let wasmBuf = UnsafeBufferPointer<UInt8>(start: ptr, count: Int(wasmRecvLen))
     var parser = WasmParser(wasmBuf)
     var execStats: (instr: UInt64, vs: Int, cs: Int)? = nil
-    do throws(WasmError) {
+    do throws(ParserError) {
         // Parse directly into _embeddedModule (BSS global) to avoid placing WasmModule
         // (~2–5 KB) on the RP2040's 4 KB main stack.
         _embeddedModule = try parser.parse()
         ledBlink(times: 3)  // blink 3 = parse succeeded
         sendDiag(0x43, conHandle: conHandle)  // 'C' — parse succeeded
+    } catch {
+        sendDiag(0x46, conHandle: conHandle)  // 'F' — parse failed
+        // Mirror the tail of this function (below) for the early-return path, since
+        // we bail out before reaching it: flush the log, then reset transfer state.
+        bleNotifyLog(conHandle: conHandle)
+        wasmRecvLen = 0
+        wasmRecvExpected = 0
+        return
+    }
+
+    do throws(InterpreterError) {
         var hostImports = Fixed4_HostImport()
         hostImports.append(.function("env", "blink", hostBlink))
         hostImports.append(.function("env", "digitalWrite", hostDigitalWrite))
@@ -461,20 +472,20 @@ func executeReceivedWasm(conHandle: UInt16) {
         // --- Try "add(3, 4)" first (i32-add.wasm) ---
         sendDiag(0x61, conHandle: conHandle)  // 'a' — about to call callExport("add")
         var calledAdd = false
-        do throws(WasmError) {
+        do throws(InterpreterError) {
             let result = try _embeddedInterp.callExport("add", args: [.i32(3), .i32(4)])
             calledAdd = true
             if !result.isEmpty, case .i32(let v) = result[0] {
                 uartWriteResult(v)
             }
-        } catch WasmError.functionNotFound {
+        } catch InterpreterError.functionNotFound {
             sendDiag(0x62, conHandle: conHandle)  // 'b' — "add" not found, falling through
         }
 
         if !calledAdd {
             // --- Fall back to "run()" (blink/gpio demos) ---
             sendDiag(0x72, conHandle: conHandle)  // 'r' — about to call callExport("run")
-            do throws(WasmError) {
+            do throws(InterpreterError) {
                 _ = try _embeddedInterp.callExport("run", args: [])
                 ledBlink(times: 5)  // blink 5 = run() returned normally
                 sendDiag(0x45, conHandle: conHandle)  // 'E' — run() returned normally
@@ -487,7 +498,7 @@ func executeReceivedWasm(conHandle: UInt16) {
             _embeddedInterp.peakValueStackDepth,
             _embeddedInterp.peakCallStackDepth)
     } catch {
-        sendDiag(0x46, conHandle: conHandle)  // 'F' — parse or interp-init failed
+        sendDiag(0x46, conHandle: conHandle)  // 'F' — interp-init or exec failed
     }
     // Send accumulated output (e.g. "result: 7\n") to iOS as a BLE Notification.
     bleNotifyLog(conHandle: conHandle)

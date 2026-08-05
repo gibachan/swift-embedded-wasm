@@ -191,8 +191,8 @@ struct BinaryReader {
   var offset: Int
 
   @inline(__always)
-  mutating func readByte() throws(WasmError) -> UInt8 {
-    guard offset < buffer.count else { throw WasmError.unexpectedEnd }
+  mutating func readByte() throws(InterpreterError) -> UInt8 {
+    guard offset < buffer.count else { throw InterpreterError.unexpectedEnd }
     let b = buffer[offset]
     offset &+= 1
     return b
@@ -200,7 +200,7 @@ struct BinaryReader {
 
   /// Unsigned LEB128 → UInt32
   @inline(__always)
-  mutating func readU32() throws(WasmError) -> UInt32 {
+  mutating func readU32() throws(InterpreterError) -> UInt32 {
     var result: UInt32 = 0
     var shift: UInt = 0
     while true {
@@ -208,13 +208,13 @@ struct BinaryReader {
       result |= UInt32(byte & 0x7F) << shift
       if byte & 0x80 == 0 { return result }
       shift += 7
-      if shift >= 35 { throw WasmError.unexpectedEnd }
+      if shift >= 35 { throw InterpreterError.unexpectedEnd }
     }
   }
 
   /// Signed LEB128 → Int32 (used for i32.const and block type s33)
   @inline(__always)
-  mutating func readS32() throws(WasmError) -> Int32 {
+  mutating func readS32() throws(InterpreterError) -> Int32 {
     var result: Int32 = 0
     var shift = 0
     var byte: UInt8 = 0
@@ -223,7 +223,7 @@ struct BinaryReader {
       result |= Int32(byte & 0x7F) &<< shift
       shift += 7
       if byte & 0x80 == 0 { break }
-      if shift > 35 { throw WasmError.unexpectedEnd }
+      if shift > 35 { throw InterpreterError.unexpectedEnd }
     }
     // Sign extend
     if shift < 32 && (byte & 0x40) != 0 {
@@ -234,7 +234,7 @@ struct BinaryReader {
 
   /// Signed LEB128 → Int64 (used for i64.const)
   @inline(__always)
-  mutating func readS64() throws(WasmError) -> Int64 {
+  mutating func readS64() throws(InterpreterError) -> Int64 {
     var result: Int64 = 0
     var shift = 0
     var byte: UInt8 = 0
@@ -243,7 +243,7 @@ struct BinaryReader {
       result |= Int64(byte & 0x7F) &<< shift
       shift += 7
       if byte & 0x80 == 0 { break }
-      if shift > 70 { throw WasmError.unexpectedEnd }
+      if shift > 70 { throw InterpreterError.unexpectedEnd }
     }
     // Sign extend
     if shift < 64 && (byte & 0x40) != 0 {
@@ -254,7 +254,7 @@ struct BinaryReader {
 
   /// 4-byte little-endian IEEE 754 float (f32.const)
   @inline(__always)
-  mutating func readF32() throws(WasmError) -> Float {
+  mutating func readF32() throws(InterpreterError) -> Float {
     let b0 = UInt32(try readByte())
     let b1 = UInt32(try readByte())
     let b2 = UInt32(try readByte())
@@ -264,7 +264,7 @@ struct BinaryReader {
 
   /// 8-byte little-endian IEEE 754 double (f64.const)
   @inline(__always)
-  mutating func readF64() throws(WasmError) -> Double {
+  mutating func readF64() throws(InterpreterError) -> Double {
     let b0 = UInt64(try readByte())
     let b1 = UInt64(try readByte())
     let b2 = UInt64(try readByte())
@@ -281,12 +281,12 @@ struct BinaryReader {
 
   /// Block type (s33 encoding): negative → value type or void, non-negative → type index
   @inline(__always)
-  mutating func readBlockType() throws(WasmError) -> BlockType {
+  mutating func readBlockType() throws(InterpreterError) -> BlockType {
     let raw = try readS32()
     if raw >= 0 { return .typeIndex(UInt32(raw)) }
     let byte = UInt8(raw & 0x7F)
     if byte == 0x40 { return .void }
-    guard let vt = ValueType(rawValue: byte) else { throw WasmError.invalidValueType(byte) }
+    guard let vt = ValueType(rawValue: byte) else { throw InterpreterError.invalidValueType(byte) }
     return .value(vt)
   }
 }
@@ -351,9 +351,9 @@ struct EmbeddedFrame {
 func intBinaryOp<T: WasmInteger>(
   _ type: T.Type, _ stack: inout EmbeddedValueStack, _ op: (T, T) -> T
 )
-  throws(WasmError)
+  throws(InterpreterError)
 {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
   stack.append(op(a, b).toValue())
@@ -366,9 +366,9 @@ func intBinaryOp<T: WasmInteger>(
 func intCmpOp<T: WasmInteger>(
   _ type: T.Type, _ stack: inout EmbeddedValueStack, _ op: (T, T) -> Bool
 )
-  throws(WasmError)
+  throws(InterpreterError)
 {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
   stack.append(.i32(op(a, b) ? 1 : 0))
@@ -380,8 +380,8 @@ func intCmpOp<T: WasmInteger>(
 @inline(__always)
 func intSignedCmpOp<T: WasmInteger>(
   _ type: T.Type, _ stack: inout EmbeddedValueStack, _ op: (T.Signed, T.Signed) -> Bool
-) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+) throws(InterpreterError) {
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = (try T.fromValue(stack.removeLast())).toSigned()
   let a = (try T.fromValue(stack.removeLast())).toSigned()
   stack.append(.i32(op(a, b) ? 1 : 0))
@@ -389,8 +389,10 @@ func intSignedCmpOp<T: WasmInteger>(
 
 /// eqz: pop T, push i32 1 if zero, else 0.
 @inline(__always)
-func intEqzOp<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard !stack.isEmpty else { throw WasmError.stackUnderflow }
+func intEqzOp<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard !stack.isEmpty else { throw InterpreterError.stackUnderflow }
   let a = try T.fromValue(stack.removeLast())
   stack.append(.i32(a == 0 ? 1 : 0))
 }
@@ -400,59 +402,69 @@ func intEqzOp<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
 /// Per Wasm spec, clz/ctz/popcnt on i32 return i32 and on i64 return i64.
 @inline(__always)
 func intCountOp<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack, _ op: (T) -> Int)
-  throws(WasmError)
+  throws(InterpreterError)
 {
-  guard !stack.isEmpty else { throw WasmError.stackUnderflow }
+  guard !stack.isEmpty else { throw InterpreterError.stackUnderflow }
   let a = try T.fromValue(stack.removeLast())
   stack.append(T(truncatingIfNeeded: op(a)).toValue())
 }
 
 /// div_s: signed division; traps on /0 and T.Signed.min / -1.
 @inline(__always)
-func intDivS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+func intDivS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = (try T.fromValue(stack.removeLast())).toSigned()
   let a = (try T.fromValue(stack.removeLast())).toSigned()
-  guard b != 0 else { throw WasmError.divisionByZero }
-  guard !(a == T.Signed.min && b == -1) else { throw WasmError.integerOverflow }
+  guard b != 0 else { throw InterpreterError.divisionByZero }
+  guard !(a == T.Signed.min && b == -1) else { throw InterpreterError.integerOverflow }
   stack.append(T.fromSigned(a / b).toValue())
 }
 
 /// div_u: unsigned division; traps on /0.
 @inline(__always)
-func intDivU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+func intDivU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
-  guard b != 0 else { throw WasmError.divisionByZero }
+  guard b != 0 else { throw InterpreterError.divisionByZero }
   stack.append((a / b).toValue())
 }
 
 /// rem_s: signed remainder; traps on /0; returns 0 for T.Signed.min % -1.
 @inline(__always)
-func intRemS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+func intRemS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = (try T.fromValue(stack.removeLast())).toSigned()
   let a = (try T.fromValue(stack.removeLast())).toSigned()
-  guard b != 0 else { throw WasmError.divisionByZero }
+  guard b != 0 else { throw InterpreterError.divisionByZero }
   let result: T.Signed = a == T.Signed.min && b == -1 ? 0 : a % b
   stack.append(T.fromSigned(result).toValue())
 }
 
 /// rem_u: unsigned remainder; traps on /0.
 @inline(__always)
-func intRemU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+func intRemU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
-  guard b != 0 else { throw WasmError.divisionByZero }
+  guard b != 0 else { throw InterpreterError.divisionByZero }
   stack.append((a % b).toValue())
 }
 
 /// shl: left shift; shift amount is masked to the bit-width of T.
 @inline(__always)
-func intShl<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+func intShl<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
   let shift = b & T(T.bitWidth - 1)
@@ -461,8 +473,10 @@ func intShl<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) t
 
 /// shr_s: arithmetic (signed) right shift; shift amount masked to bit-width of T.
 @inline(__always)
-func intShrS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+func intShrS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = (try T.fromValue(stack.removeLast())).toSigned()
   // T.Signed and T have the same bit-width; mask shift to that width.
@@ -476,8 +490,10 @@ func intShrS<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) 
 
 /// shr_u: logical (unsigned) right shift; shift amount masked to bit-width of T.
 @inline(__always)
-func intShrU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+func intShrU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
   let shift = b & T(T.bitWidth - 1)
@@ -486,8 +502,10 @@ func intShrU<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) 
 
 /// rotl: left rotation; rotation amount masked to bit-width of T.
 @inline(__always)
-func intRotl<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+func intRotl<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
   let shift = b & T(T.bitWidth - 1)
@@ -497,8 +515,10 @@ func intRotl<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) 
 
 /// rotr: right rotation; rotation amount masked to bit-width of T.
 @inline(__always)
-func intRotr<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack) throws(WasmError) {
-  guard stack.count >= 2 else { throw WasmError.stackUnderflow }
+func intRotr<T: WasmInteger>(_ type: T.Type, _ stack: inout EmbeddedValueStack)
+  throws(InterpreterError)
+{
+  guard stack.count >= 2 else { throw InterpreterError.stackUnderflow }
   let b = try T.fromValue(stack.removeLast())
   let a = try T.fromValue(stack.removeLast())
   let shift = b & T(T.bitWidth - 1)
@@ -562,7 +582,7 @@ extension WasmInterpreter {
     functionIndex: Int,
     args: [Value],
     fuelLimit: Int = 10_000_000
-  ) throws(WasmError) -> [Value] {
+  ) throws(InterpreterError) -> [Value] {
     #if hasFeature(Embedded)
       _wasmValueStack.reset()
       _wasmCallStack.reset()
@@ -595,7 +615,7 @@ extension WasmInterpreter {
     fuelLimit: Int,
     valueStack: inout EmbeddedValueStack,
     frames: inout EmbeddedCallStack
-  ) throws(WasmError) -> [Value] {
+  ) throws(InterpreterError) -> [Value] {
     var fuel = fuelLimit
 
     var localMemory = memory
@@ -652,11 +672,11 @@ extension WasmInterpreter {
 
     /// Pop the current frame, sliding return values down to localBase.
     @inline(__always)
-    func embeddedReturn(fi: Int) throws(WasmError) {
+    func embeddedReturn(fi: Int) throws(InterpreterError) {
       let resultCount = frames.resultCount(at: fi)
       let localBase = frames.localBase(at: fi)
       guard valueStack.count >= localBase + resultCount else {
-        throw WasmError.stackUnderflow
+        throw InterpreterError.stackUnderflow
       }
       let src = valueStack.count - resultCount
       for i in 0..<resultCount { valueStack[localBase + i] = valueStack[src + i] }
@@ -711,7 +731,7 @@ extension WasmInterpreter {
       }
 
       fuel -= 1
-      if fuel < 0 { throw WasmError.executionLimitExceeded }
+      if fuel < 0 { throw InterpreterError.executionLimitExceeded }
 
       // Phase 4 Part A: read the opcode byte and advance ip BEFORE calling dispatchEmbedded.
       //
@@ -742,11 +762,11 @@ extension WasmInterpreter {
       #else
         // On macOS, rawBytes is [UInt8]. withUnsafeBytes closure cannot throw directly
         // (it is typed throws(Never)), so we capture the error in a local and re-throw.
-        var opcodeErr: WasmError? = nil
+        var opcodeErr: InterpreterError? = nil
         localModulePtr.pointee.rawBytes.withUnsafeBytes { rawBuf throws(Never) in
           let typedBuf = rawBuf.bindMemory(to: UInt8.self)
           var reader = BinaryReader(buffer: typedBuf, offset: Int(frames.ip(at: fi)))
-          do throws(WasmError) {
+          do throws(InterpreterError) {
             opcode = try reader.readByte()
             nextIp = UInt32(reader.offset)
           } catch {
@@ -835,8 +855,8 @@ extension WasmInterpreter {
     _ funcIdx: Int, _ argCount: Int,
     _ valueStack: inout EmbeddedValueStack, _ frames: inout EmbeddedCallStack,
     _ memory: inout UnsafeMutableBufferPointer<UInt8>
-  ) throws(WasmError) {
-    guard valueStack.count >= argCount else { throw WasmError.stackUnderflow }
+  ) throws(InterpreterError) {
+    guard valueStack.count >= argCount else { throw InterpreterError.stackUnderflow }
     let importedCount = moduleRef.pointee.importedFunctionCount
     if funcIdx < importedCount {
       let argsStart = valueStack.count - argCount
@@ -879,11 +899,11 @@ extension WasmInterpreter {
     }
 
     let localIdx = funcIdx - importedCount
-    guard localIdx < moduleRef.pointee.code.count else { throw WasmError.functionNotFound }
+    guard localIdx < moduleRef.pointee.code.count else { throw InterpreterError.functionNotFound }
     let handle = moduleRef.pointee.code[localIdx]
     let typeIdx = Int(moduleRef.pointee.functions[localIdx])
     let funcType = moduleRef.pointee.types[typeIdx]
-    guard argCount == funcType.params.count else { throw WasmError.argumentCountMismatch }
+    guard argCount == funcType.params.count else { throw InterpreterError.argumentCountMismatch }
 
     let localBase = valueStack.count - argCount
 
@@ -918,7 +938,7 @@ extension WasmInterpreter {
     _ moduleRef: UnsafePointer<WasmModule>,
     _ depth: UInt32, _ fi: Int,
     _ valueStack: inout EmbeddedValueStack, _ frames: inout EmbeddedCallStack
-  ) throws(WasmError) {
+  ) throws(InterpreterError) {
     let d = Int(depth)
     let labelCount = frames.labelsCount(at: fi)
 
@@ -926,7 +946,7 @@ extension WasmInterpreter {
       let resultCount = frames.resultCount(at: fi)
       let localBase = frames.localBase(at: fi)
       let src = valueStack.count - resultCount
-      guard src >= localBase else { throw WasmError.stackUnderflow }
+      guard src >= localBase else { throw InterpreterError.stackUnderflow }
       for i in 0..<resultCount { valueStack[localBase + i] = valueStack[src + i] }
       valueStack.removeSubrange((localBase + resultCount)...)
       frames.clearLabels(at: fi)
@@ -939,7 +959,7 @@ extension WasmInterpreter {
     let target = frames.label(at: fi, index: targetIdx)
 
     let src = valueStack.count - target.brArity
-    guard src >= target.stackBase else { throw WasmError.stackUnderflow }
+    guard src >= target.stackBase else { throw InterpreterError.stackUnderflow }
     for i in 0..<target.brArity { valueStack[target.stackBase + i] = valueStack[src + i] }
     valueStack.removeSubrange((target.stackBase + target.brArity)...)
 
@@ -991,7 +1011,7 @@ extension WasmInterpreter {
     droppedData: inout UInt64,
     droppedElem: inout UInt64,
     execInstr: inout UInt64
-  ) throws(WasmError) {
+  ) throws(InterpreterError) {
 
     // moduleRef is an UnsafePointer to _embeddedModule (BSS global); field accesses via
     // moduleRef.pointee.xxx compile to direct loads — no WasmModule copy on the stack.
@@ -1004,15 +1024,15 @@ extension WasmInterpreter {
     execInstr &+= 1
 
     @inline(__always)
-    func readByteLocal() throws(WasmError) -> UInt8 {
-      guard cursor < moduleRef.pointee.rawBytes.count else { throw WasmError.unexpectedEnd }
+    func readByteLocal() throws(InterpreterError) -> UInt8 {
+      guard cursor < moduleRef.pointee.rawBytes.count else { throw InterpreterError.unexpectedEnd }
       let b = moduleRef.pointee.rawBytes[cursor]
       cursor &+= 1
       return b
     }
 
     @inline(__always)
-    func readU32Local() throws(WasmError) -> UInt32 {
+    func readU32Local() throws(InterpreterError) -> UInt32 {
       var result: UInt32 = 0
       var shift: UInt = 0
       while true {
@@ -1020,12 +1040,12 @@ extension WasmInterpreter {
         result |= UInt32(b & 0x7F) << shift
         if b & 0x80 == 0 { return result }
         shift += 7
-        if shift >= 35 { throw WasmError.unexpectedEnd }
+        if shift >= 35 { throw InterpreterError.unexpectedEnd }
       }
     }
 
     @inline(__always)
-    func readS32Local() throws(WasmError) -> Int32 {
+    func readS32Local() throws(InterpreterError) -> Int32 {
       var result: Int32 = 0
       var shift = 0
       var byte: UInt8 = 0
@@ -1034,14 +1054,14 @@ extension WasmInterpreter {
         result |= Int32(byte & 0x7F) &<< shift
         shift += 7
         if byte & 0x80 == 0 { break }
-        if shift > 35 { throw WasmError.unexpectedEnd }
+        if shift > 35 { throw InterpreterError.unexpectedEnd }
       }
       if shift < 32 && (byte & 0x40) != 0 { result |= ~Int32(0) &<< shift }
       return result
     }
 
     @inline(__always)
-    func readS64Local() throws(WasmError) -> Int64 {
+    func readS64Local() throws(InterpreterError) -> Int64 {
       var result: Int64 = 0
       var shift = 0
       var byte: UInt8 = 0
@@ -1050,19 +1070,21 @@ extension WasmInterpreter {
         result |= Int64(byte & 0x7F) &<< shift
         shift += 7
         if byte & 0x80 == 0 { break }
-        if shift > 70 { throw WasmError.unexpectedEnd }
+        if shift > 70 { throw InterpreterError.unexpectedEnd }
       }
       if shift < 64 && (byte & 0x40) != 0 { result |= ~Int64(0) &<< shift }
       return result
     }
 
     @inline(__always)
-    func readBlockTypeLocal() throws(WasmError) -> BlockType {
+    func readBlockTypeLocal() throws(InterpreterError) -> BlockType {
       let raw = try readS32Local()
       if raw >= 0 { return .typeIndex(UInt32(raw)) }
       let byte = UInt8(raw & 0x7F)
       if byte == 0x40 { return .void }
-      guard let vt = ValueType(rawValue: byte) else { throw WasmError.invalidValueType(byte) }
+      guard let vt = ValueType(rawValue: byte) else {
+        throw InterpreterError.invalidValueType(byte)
+      }
       return .value(vt)
     }
 
@@ -1073,7 +1095,7 @@ extension WasmInterpreter {
     // MARK: Control — unreachable / nop
 
     case 0x00:  // unreachable
-      throw WasmError.unreachableReached
+      throw InterpreterError.unreachableReached
 
     case 0x01:  // nop
       frames.setIp(at: fi, nextIp)
@@ -1142,8 +1164,10 @@ extension WasmInterpreter {
           brArity: brArity,
           continuationPc: continuationPc))
       // Pop condition and branch to else-start (or end) if false.
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let cond) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let cond) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       if cond == 0 {
         // Jump to else clause (or to the end when there is no else).
         let target = entry.target1
@@ -1160,7 +1184,7 @@ extension WasmInterpreter {
     case 0x05:
       // Reached by normal fall-through from the then-body into the else opcode.
       // Jump to the continuation PC stored in the current (if/else) label, then pop it.
-      guard !frames.labelsIsEmpty(at: fi) else { throw WasmError.stackUnderflow }
+      guard !frames.labelsIsEmpty(at: fi) else { throw InterpreterError.stackUnderflow }
       let contPc = UInt32(frames.removeLastLabel(at: fi).continuationPc)
       frames.setIp(at: fi, contPc)
       frames.setJumpCursor(
@@ -1193,8 +1217,10 @@ extension WasmInterpreter {
 
     case 0x0D:
       let depth = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let cond) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let cond) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       if cond != 0 {
         frames.setIp(at: fi, UInt32(cursor))
         try handleEmbeddedBranch(moduleRef, depth, fi, &valueStack, &frames)
@@ -1210,8 +1236,10 @@ extension WasmInterpreter {
       var targets: [UInt32] = []
       for _ in 0..<count { targets.append(try readU32Local()) }
       let default_ = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let idx) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let idx) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ui = UInt32(bitPattern: idx)
       let depth = ui < count ? targets[Int(ui)] : default_
       frames.setIp(at: fi, UInt32(cursor))
@@ -1223,7 +1251,7 @@ extension WasmInterpreter {
       let resultCount = frames.resultCount(at: fi)
       let localBase = frames.localBase(at: fi)
       let src = valueStack.count - resultCount
-      guard src >= localBase else { throw WasmError.stackUnderflow }
+      guard src >= localBase else { throw InterpreterError.stackUnderflow }
       for i in 0..<resultCount { valueStack[localBase + i] = valueStack[src + i] }
       valueStack.removeSubrange((localBase + resultCount)...)
       frames.clearLabels(at: fi)
@@ -1236,7 +1264,7 @@ extension WasmInterpreter {
       let funcIdx = try readU32Local()
       let funcType = moduleRef.pointee.functionType(at: Int(funcIdx))
       let argCount = funcType.params.count
-      guard valueStack.count >= argCount else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= argCount else { throw InterpreterError.stackUnderflow }
       frames.setIp(at: fi, UInt32(cursor))
       try pushEmbeddedFrame(moduleRef, Int(funcIdx), argCount, &valueStack, &frames, &memory)
 
@@ -1245,34 +1273,38 @@ extension WasmInterpreter {
     case 0x11:
       let typeIdx = try readU32Local()
       let tableIdxOp = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let elemIdx) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let elemIdx) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let eIdx = Int(elemIdx)
       let ti = Int(tableIdxOp)
-      guard ti < tables.tableCount else { throw WasmError.undefinedElement }
-      guard eIdx >= 0 && eIdx < tables.count(ofTable: ti) else { throw WasmError.undefinedElement }
+      guard ti < tables.tableCount else { throw InterpreterError.undefinedElement }
+      guard eIdx >= 0 && eIdx < tables.count(ofTable: ti) else {
+        throw InterpreterError.undefinedElement
+      }
       guard case .funcref(let optFuncIdx) = tables[ti, eIdx], let resolvedFuncIdx = optFuncIdx
       else {
-        throw WasmError.undefinedElement
+        throw InterpreterError.undefinedElement
       }
       let expectedType = moduleRef.pointee.types[Int(typeIdx)]
       let actualType = moduleRef.pointee.functionType(at: Int(resolvedFuncIdx))
       guard
         expectedType.params.count == actualType.params.count
           && expectedType.results.count == actualType.results.count
-      else { throw WasmError.indirectCallTypeMismatch }
+      else { throw InterpreterError.indirectCallTypeMismatch }
       for i in 0..<expectedType.params.count {
         guard expectedType.params[i] == actualType.params[i] else {
-          throw WasmError.indirectCallTypeMismatch
+          throw InterpreterError.indirectCallTypeMismatch
         }
       }
       for i in 0..<expectedType.results.count {
         guard expectedType.results[i] == actualType.results[i] else {
-          throw WasmError.indirectCallTypeMismatch
+          throw InterpreterError.indirectCallTypeMismatch
         }
       }
       let argCount = expectedType.params.count
-      guard valueStack.count >= argCount else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= argCount else { throw InterpreterError.stackUnderflow }
       frames.setIp(at: fi, UInt32(cursor))
       try pushEmbeddedFrame(
         moduleRef, Int(resolvedFuncIdx), argCount, &valueStack, &frames, &memory)
@@ -1280,13 +1312,15 @@ extension WasmInterpreter {
     // MARK: Parametric — drop (0x1A) / select (0x1B)
 
     case 0x1A:  // drop
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
       valueStack.removeLast()
       frames.setIp(at: fi, nextIp)
 
     case 0x1B:  // select
-      guard valueStack.count >= 3 else { throw WasmError.stackUnderflow }
-      guard case .i32(let cond) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 3 else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let cond) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let v2 = valueStack.removeLast()
       let v1 = valueStack.removeLast()
       valueStack.append(cond != 0 ? v1 : v2)
@@ -1301,13 +1335,13 @@ extension WasmInterpreter {
 
     case 0x21:  // local.set
       let idx = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
       valueStack[frames.localBase(at: fi) + Int(idx)] = valueStack.removeLast()
       frames.setIp(at: fi, UInt32(cursor))
 
     case 0x22:  // local.tee
       let idx = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
       valueStack[frames.localBase(at: fi) + Int(idx)] = valueStack[valueStack.count - 1]
       frames.setIp(at: fi, UInt32(cursor))
 
@@ -1320,7 +1354,7 @@ extension WasmInterpreter {
 
     case 0x24:  // global.set
       let idx = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
       globals[Int(idx)] = valueStack.removeLast()
       frames.setIp(at: fi, UInt32(cursor))
 
@@ -1328,30 +1362,34 @@ extension WasmInterpreter {
 
     case 0x25:  // table.get
       let tableIdx25 = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let idx) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let idx) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ti25 = Int(tableIdx25)
-      guard ti25 < tables.tableCount else { throw WasmError.undefinedElement }
+      guard ti25 < tables.tableCount else { throw InterpreterError.undefinedElement }
       let i25 = Int(UInt32(bitPattern: idx))
-      guard i25 < tables.count(ofTable: ti25) else { throw WasmError.undefinedElement }
+      guard i25 < tables.count(ofTable: ti25) else { throw InterpreterError.undefinedElement }
       valueStack.append(tables[ti25, i25])
       frames.setIp(at: fi, UInt32(cursor))
 
     case 0x26:  // table.set
       let tableIdx26 = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       let refVal = valueStack.removeLast()
-      guard case .i32(let idx) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard case .i32(let idx) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ti26 = Int(tableIdx26)
-      guard ti26 < tables.tableCount else { throw WasmError.undefinedElement }
+      guard ti26 < tables.tableCount else { throw InterpreterError.undefinedElement }
       let tableRefType =
         ti26 < moduleRef.pointee.tables.count ? moduleRef.pointee.tables[ti26].refType : .funcRef
       switch (tableRefType, refVal) {
       case (.funcRef, .funcref), (.externRef, .externref): break
-      default: throw WasmError.typeMismatch
+      default: throw InterpreterError.typeMismatch
       }
       let i26 = Int(UInt32(bitPattern: idx))
-      guard i26 < tables.count(ofTable: ti26) else { throw WasmError.undefinedElement }
+      guard i26 < tables.count(ofTable: ti26) else { throw InterpreterError.undefinedElement }
       tables[ti26, i26] = refVal
       frames.setIp(at: fi, UInt32(cursor))
 
@@ -1360,10 +1398,12 @@ extension WasmInterpreter {
     case 0x28:  // i32.load
       _ = try readU32Local()  // align (ignored)
       let offset28 = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea28 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset28)
-      guard ea28 + 4 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea28 + 4 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p28 = Int(ea28)
       let v28 =
         UInt32(memory[p28]) | (UInt32(memory[p28 + 1]) << 8)
@@ -1374,10 +1414,12 @@ extension WasmInterpreter {
     case 0x29:  // i64.load
       _ = try readU32Local()  // align (ignored)
       let offset29 = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea29 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset29)
-      guard ea29 + 8 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea29 + 8 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p29 = Int(ea29)
       let v29 =
         UInt64(memory[p29]) | (UInt64(memory[p29 + 1]) << 8)
@@ -1390,10 +1432,12 @@ extension WasmInterpreter {
     case 0x2A:  // f32.load
       _ = try readU32Local()  // align (ignored)
       let offset2A = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea2A = UInt64(UInt32(bitPattern: addr)) + UInt64(offset2A)
-      guard ea2A + 4 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea2A + 4 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p2A = Int(ea2A)
       let bits2A =
         UInt32(memory[p2A]) | (UInt32(memory[p2A + 1]) << 8)
@@ -1404,10 +1448,12 @@ extension WasmInterpreter {
     case 0x2B:  // f64.load
       _ = try readU32Local()  // align (ignored)
       let offset2B = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea2B = UInt64(UInt32(bitPattern: addr)) + UInt64(offset2B)
-      guard ea2B + 8 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea2B + 8 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p2B = Int(ea2B)
       let bits2B =
         UInt64(memory[p2B]) | (UInt64(memory[p2B + 1]) << 8)
@@ -1420,30 +1466,36 @@ extension WasmInterpreter {
     case 0x2C:  // i32.load8_s
       _ = try readU32Local()  // align (ignored)
       let offset2C = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea2C = UInt64(UInt32(bitPattern: addr)) + UInt64(offset2C)
-      guard ea2C + 1 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea2C + 1 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       valueStack.append(.i32(Int32(Int8(bitPattern: memory[Int(ea2C)]))))
       frames.setIp(at: fi, UInt32(cursor))
 
     case 0x2D:  // i32.load8_u
       _ = try readU32Local()  // align (ignored)
       let offset2D = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea2D = UInt64(UInt32(bitPattern: addr)) + UInt64(offset2D)
-      guard ea2D + 1 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea2D + 1 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       valueStack.append(.i32(Int32(memory[Int(ea2D)])))
       frames.setIp(at: fi, UInt32(cursor))
 
     case 0x2E:  // i32.load16_s
       _ = try readU32Local()  // align (ignored)
       let offset2E = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea2E = UInt64(UInt32(bitPattern: addr)) + UInt64(offset2E)
-      guard ea2E + 2 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea2E + 2 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p2E = Int(ea2E)
       let raw2E = UInt16(memory[p2E]) | (UInt16(memory[p2E + 1]) << 8)
       valueStack.append(.i32(Int32(Int16(bitPattern: raw2E))))
@@ -1452,10 +1504,12 @@ extension WasmInterpreter {
     case 0x2F:  // i32.load16_u
       _ = try readU32Local()  // align (ignored)
       let offset2F = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea2F = UInt64(UInt32(bitPattern: addr)) + UInt64(offset2F)
-      guard ea2F + 2 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea2F + 2 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p2F = Int(ea2F)
       let raw2F = UInt16(memory[p2F]) | (UInt16(memory[p2F + 1]) << 8)
       valueStack.append(.i32(Int32(raw2F)))
@@ -1464,30 +1518,36 @@ extension WasmInterpreter {
     case 0x30:  // i64.load8_s
       _ = try readU32Local()  // align (ignored)
       let offset30 = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea30 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset30)
-      guard ea30 + 1 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea30 + 1 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       valueStack.append(.i64(Int64(Int8(bitPattern: memory[Int(ea30)]))))
       frames.setIp(at: fi, UInt32(cursor))
 
     case 0x31:  // i64.load8_u
       _ = try readU32Local()  // align (ignored)
       let offset31 = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea31 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset31)
-      guard ea31 + 1 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea31 + 1 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       valueStack.append(.i64(Int64(memory[Int(ea31)])))
       frames.setIp(at: fi, UInt32(cursor))
 
     case 0x32:  // i64.load16_s
       _ = try readU32Local()  // align (ignored)
       let offset32 = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea32 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset32)
-      guard ea32 + 2 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea32 + 2 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p32 = Int(ea32)
       let raw32 = UInt16(memory[p32]) | (UInt16(memory[p32 + 1]) << 8)
       valueStack.append(.i64(Int64(Int16(bitPattern: raw32))))
@@ -1496,10 +1556,12 @@ extension WasmInterpreter {
     case 0x33:  // i64.load16_u
       _ = try readU32Local()  // align (ignored)
       let offset33 = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea33 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset33)
-      guard ea33 + 2 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea33 + 2 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p33 = Int(ea33)
       let raw33 = UInt16(memory[p33]) | (UInt16(memory[p33 + 1]) << 8)
       valueStack.append(.i64(Int64(raw33)))
@@ -1508,10 +1570,12 @@ extension WasmInterpreter {
     case 0x34:  // i64.load32_s
       _ = try readU32Local()  // align (ignored)
       let offset34 = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea34 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset34)
-      guard ea34 + 4 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea34 + 4 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p34 = Int(ea34)
       let raw34 =
         UInt32(memory[p34]) | (UInt32(memory[p34 + 1]) << 8)
@@ -1522,10 +1586,12 @@ extension WasmInterpreter {
     case 0x35:  // i64.load32_u
       _ = try readU32Local()  // align (ignored)
       let offset35 = try readU32Local()
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea35 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset35)
-      guard ea35 + 4 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea35 + 4 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p35 = Int(ea35)
       let raw35 =
         UInt32(memory[p35]) | (UInt32(memory[p35 + 1]) << 8)
@@ -1538,11 +1604,15 @@ extension WasmInterpreter {
     case 0x36:  // i32.store
       _ = try readU32Local()  // align (ignored)
       let offset36 = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let value) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let value) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea36 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset36)
-      guard ea36 + 4 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea36 + 4 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p36 = Int(ea36)
       let u36 = UInt32(bitPattern: value)
       memory[p36] = UInt8(u36 & 0xFF)
@@ -1554,11 +1624,15 @@ extension WasmInterpreter {
     case 0x37:  // i64.store
       _ = try readU32Local()  // align (ignored)
       let offset37 = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let value) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let value) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea37 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset37)
-      guard ea37 + 8 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea37 + 8 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p37 = Int(ea37)
       let u37 = UInt64(bitPattern: value)
       memory[p37] = UInt8(u37 & 0xFF)
@@ -1574,11 +1648,15 @@ extension WasmInterpreter {
     case 0x38:  // f32.store
       _ = try readU32Local()  // align (ignored)
       let offset38 = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .f32(let value) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let value) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea38 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset38)
-      guard ea38 + 4 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea38 + 4 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p38 = Int(ea38)
       let u38 = value.bitPattern
       memory[p38] = UInt8(u38 & 0xFF)
@@ -1590,11 +1668,15 @@ extension WasmInterpreter {
     case 0x39:  // f64.store
       _ = try readU32Local()  // align (ignored)
       let offset39 = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .f64(let value) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let value) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea39 = UInt64(UInt32(bitPattern: addr)) + UInt64(offset39)
-      guard ea39 + 8 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea39 + 8 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p39 = Int(ea39)
       let u39 = value.bitPattern
       memory[p39] = UInt8(u39 & 0xFF)
@@ -1610,22 +1692,30 @@ extension WasmInterpreter {
     case 0x3A:  // i32.store8
       _ = try readU32Local()  // align (ignored)
       let offset3A = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let value) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let value) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea3A = UInt64(UInt32(bitPattern: addr)) + UInt64(offset3A)
-      guard ea3A + 1 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea3A + 1 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       memory[Int(ea3A)] = UInt8(UInt32(bitPattern: value) & 0xFF)
       frames.setIp(at: fi, UInt32(cursor))
 
     case 0x3B:  // i32.store16
       _ = try readU32Local()  // align (ignored)
       let offset3B = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i32(let value) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let value) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea3B = UInt64(UInt32(bitPattern: addr)) + UInt64(offset3B)
-      guard ea3B + 2 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea3B + 2 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p3B = Int(ea3B)
       let u3B = UInt32(bitPattern: value)
       memory[p3B] = UInt8(u3B & 0xFF)
@@ -1635,22 +1725,30 @@ extension WasmInterpreter {
     case 0x3C:  // i64.store8
       _ = try readU32Local()  // align (ignored)
       let offset3C = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let value) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let value) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea3C = UInt64(UInt32(bitPattern: addr)) + UInt64(offset3C)
-      guard ea3C + 1 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea3C + 1 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       memory[Int(ea3C)] = UInt8(UInt64(bitPattern: value) & 0xFF)
       frames.setIp(at: fi, UInt32(cursor))
 
     case 0x3D:  // i64.store16
       _ = try readU32Local()  // align (ignored)
       let offset3D = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let value) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let value) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea3D = UInt64(UInt32(bitPattern: addr)) + UInt64(offset3D)
-      guard ea3D + 2 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea3D + 2 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p3D = Int(ea3D)
       let u3D = UInt64(bitPattern: value)
       memory[p3D] = UInt8(u3D & 0xFF)
@@ -1660,11 +1758,15 @@ extension WasmInterpreter {
     case 0x3E:  // i64.store32
       _ = try readU32Local()  // align (ignored)
       let offset3E = try readU32Local()
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-      guard case .i64(let value) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard case .i32(let addr) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let value) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
+      guard case .i32(let addr) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let ea3E = UInt64(UInt32(bitPattern: addr)) + UInt64(offset3E)
-      guard ea3E + 4 <= UInt64(memory.count) else { throw WasmError.memoryAccessOutOfBounds }
+      guard ea3E + 4 <= UInt64(memory.count) else { throw InterpreterError.memoryAccessOutOfBounds }
       let p3E = Int(ea3E)
       let u3E = UInt64(bitPattern: value)
       memory[p3E] = UInt8(u3E & 0xFF)
@@ -1683,8 +1785,10 @@ extension WasmInterpreter {
 
     case 0x40:  // memory.grow
       _ = try readByteLocal()  // reserved byte (must be 0x00)
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let delta) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let delta) = valueStack.removeLast() else {
+        throw InterpreterError.typeMismatch
+      }
       let pageSize40: UInt64 = 65536
       let oldPages40 = memory.count / Int(pageSize40)
       let oldPagesI32_40 = Int32(oldPages40)
@@ -1850,100 +1954,100 @@ extension WasmInterpreter {
     // MARK: f32 comparisons (0x5B-0x60)
 
     case 0x5B:  // f32.eq
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a == b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x5C:  // f32.ne
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a != b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x5D:  // f32.lt
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a < b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x5E:  // f32.gt
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a > b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x5F:  // f32.le
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a <= b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x60:  // f32.ge
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a >= b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     // MARK: f64 comparisons (0x61-0x66)
 
     case 0x61:  // f64.eq
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a == b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x62:  // f64.ne
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a != b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x63:  // f64.lt
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a < b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x64:  // f64.gt
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a > b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x65:  // f64.le
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a <= b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
     case 0x66:  // f64.ge
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(a >= b ? 1 : 0))
       frames.setIp(at: fi, nextIp)
 
@@ -2098,84 +2202,84 @@ extension WasmInterpreter {
     // MARK: f32 unary / arithmetic (0x8B-0x98)
 
     case 0x8B:  // f32.abs
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a.magnitude))
       frames.setIp(at: fi, nextIp)
 
     case 0x8C:  // f32.neg
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(-a))
       frames.setIp(at: fi, nextIp)
 
     case 0x8D:  // f32.ceil
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a.rounded(.up)))
       frames.setIp(at: fi, nextIp)
 
     case 0x8E:  // f32.floor
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a.rounded(.down)))
       frames.setIp(at: fi, nextIp)
 
     case 0x8F:  // f32.trunc
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a.rounded(.towardZero)))
       frames.setIp(at: fi, nextIp)
 
     case 0x90:  // f32.nearest
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a.rounded(.toNearestOrEven)))
       frames.setIp(at: fi, nextIp)
 
     case 0x91:  // f32.sqrt
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a.squareRoot()))
       frames.setIp(at: fi, nextIp)
 
     case 0x92:  // f32.add
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a + b))
       frames.setIp(at: fi, nextIp)
 
     case 0x93:  // f32.sub
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a - b))
       frames.setIp(at: fi, nextIp)
 
     case 0x94:  // f32.mul
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a * b))
       frames.setIp(at: fi, nextIp)
 
     case 0x95:  // f32.div
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(a / b))
       frames.setIp(at: fi, nextIp)
 
     case 0x96:  // f32.min
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       // Wasm f32.min: propagates NaN; treats -0 < +0
       let min96: Float
       if a.isNaN || b.isNaN {
@@ -2189,10 +2293,10 @@ extension WasmInterpreter {
       frames.setIp(at: fi, nextIp)
 
     case 0x97:  // f32.max
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       // Wasm f32.max: propagates NaN; treats +0 > -0
       let max97: Float
       if a.isNaN || b.isNaN {
@@ -2206,95 +2310,95 @@ extension WasmInterpreter {
       frames.setIp(at: fi, nextIp)
 
     case 0x98:  // f32.copysign
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f32(let b) = valueStack.removeLast(),
         case .f32(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(Float(signOf: b, magnitudeOf: a)))
       frames.setIp(at: fi, nextIp)
 
     // MARK: f64 unary / arithmetic (0x99-0xA6)
 
     case 0x99:  // f64.abs
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(a.magnitude))
       frames.setIp(at: fi, nextIp)
 
     case 0x9A:  // f64.neg
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(-a))
       frames.setIp(at: fi, nextIp)
 
     case 0x9B:  // f64.ceil
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(a.rounded(.up)))
       frames.setIp(at: fi, nextIp)
 
     case 0x9C:  // f64.floor
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(a.rounded(.down)))
       frames.setIp(at: fi, nextIp)
 
     case 0x9D:  // f64.trunc
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(a.rounded(.towardZero)))
       frames.setIp(at: fi, nextIp)
 
     case 0x9E:  // f64.nearest
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(a.rounded(.toNearestOrEven)))
       frames.setIp(at: fi, nextIp)
 
     case 0x9F:  // f64.sqrt
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(a.squareRoot()))
       frames.setIp(at: fi, nextIp)
 
     case 0xA0:  // f64.add
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(a + b))
       frames.setIp(at: fi, nextIp)
 
     case 0xA1:  // f64.sub
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(a - b))
       frames.setIp(at: fi, nextIp)
 
     case 0xA2:  // f64.mul
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(a * b))
       frames.setIp(at: fi, nextIp)
 
     case 0xA3:  // f64.div
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       // f64.div follows IEEE 754: division by zero yields ±infinity, not a trap.
       valueStack.append(.f64(a / b))
       frames.setIp(at: fi, nextIp)
 
     case 0xA4:  // f64.min
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       // Wasm f64.min: propagates NaN; treats -0 < +0
       let minA4: Double
       if a.isNaN || b.isNaN {
@@ -2308,10 +2412,10 @@ extension WasmInterpreter {
       frames.setIp(at: fi, nextIp)
 
     case 0xA5:  // f64.max
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       // Wasm f64.max: propagates NaN; treats +0 > -0
       let maxA5: Double
       if a.isNaN || b.isNaN {
@@ -2325,218 +2429,222 @@ extension WasmInterpreter {
       frames.setIp(at: fi, nextIp)
 
     case 0xA6:  // f64.copysign
-      guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
+      guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
       guard case .f64(let b) = valueStack.removeLast(),
         case .f64(let a) = valueStack.removeLast()
-      else { throw WasmError.typeMismatch }
+      else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(Double(signOf: b, magnitudeOf: a)))
       frames.setIp(at: fi, nextIp)
 
     // MARK: Conversion instructions (0xA7-0xC4)
 
     case 0xA7:  // i32.wrap_i64 — keep lower 32 bits of i64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(Int32(truncatingIfNeeded: a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xA8:  // i32.trunc_f32_s — f32 → signed i32; traps on NaN, Inf, out-of-range
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard !a.isNaN && !a.isInfinite else { throw WasmError.invalidConversionToInteger }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
+      guard !a.isNaN && !a.isInfinite else { throw InterpreterError.invalidConversionToInteger }
       guard a >= -2_147_483_648.0 && a < 2_147_483_648.0
-      else { throw WasmError.invalidConversionToInteger }
+      else { throw InterpreterError.invalidConversionToInteger }
       valueStack.append(.i32(Int32(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xA9:  // i32.trunc_f32_u — f32 → unsigned i32; values in (-1,0) truncate to 0
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard !a.isNaN && !a.isInfinite else { throw WasmError.invalidConversionToInteger }
-      guard a > -1.0 && a < 4_294_967_296.0 else { throw WasmError.invalidConversionToInteger }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
+      guard !a.isNaN && !a.isInfinite else { throw InterpreterError.invalidConversionToInteger }
+      guard a > -1.0 && a < 4_294_967_296.0 else {
+        throw InterpreterError.invalidConversionToInteger
+      }
       let u32A9: UInt32 = a < 0.0 ? 0 : UInt32(a)
       valueStack.append(.i32(Int32(bitPattern: u32A9)))
       frames.setIp(at: fi, nextIp)
 
     case 0xAA:  // i32.trunc_f64_s — f64 → signed i32; values in (-2147483649,-2147483648] are valid
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard !a.isNaN && !a.isInfinite else { throw WasmError.invalidConversionToInteger }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
+      guard !a.isNaN && !a.isInfinite else { throw InterpreterError.invalidConversionToInteger }
       guard a > -2_147_483_649.0 && a < 2_147_483_648.0
-      else { throw WasmError.invalidConversionToInteger }
+      else { throw InterpreterError.invalidConversionToInteger }
       valueStack.append(.i32(Int32(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xAB:  // i32.trunc_f64_u — f64 → unsigned i32; values in (-1,0) truncate to 0
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard !a.isNaN && !a.isInfinite else { throw WasmError.invalidConversionToInteger }
-      guard a > -1.0 && a < 4_294_967_296.0 else { throw WasmError.invalidConversionToInteger }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
+      guard !a.isNaN && !a.isInfinite else { throw InterpreterError.invalidConversionToInteger }
+      guard a > -1.0 && a < 4_294_967_296.0 else {
+        throw InterpreterError.invalidConversionToInteger
+      }
       let u32AB: UInt32 = a < 0.0 ? 0 : UInt32(a)
       valueStack.append(.i32(Int32(bitPattern: u32AB)))
       frames.setIp(at: fi, nextIp)
 
     case 0xAC:  // i64.extend_i32_s — sign-extend i32 to i64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i64(Int64(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xAD:  // i64.extend_i32_u — zero-extend i32 to i64 (treat i32 as UInt32)
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i64(Int64(UInt32(bitPattern: a))))
       frames.setIp(at: fi, nextIp)
 
     case 0xAE:  // i64.trunc_f32_s — f32 → signed i64; -2^63 is exactly representable in f32
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard !a.isNaN && !a.isInfinite else { throw WasmError.invalidConversionToInteger }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
+      guard !a.isNaN && !a.isInfinite else { throw InterpreterError.invalidConversionToInteger }
       guard a >= -9_223_372_036_854_775_808.0 && a < 9_223_372_036_854_775_808.0
-      else { throw WasmError.invalidConversionToInteger }
+      else { throw InterpreterError.invalidConversionToInteger }
       valueStack.append(.i64(Int64(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xAF:  // i64.trunc_f32_u — f32 → unsigned i64; values in (-1,0) truncate to 0
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard !a.isNaN && !a.isInfinite else { throw WasmError.invalidConversionToInteger }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
+      guard !a.isNaN && !a.isInfinite else { throw InterpreterError.invalidConversionToInteger }
       guard a > -1.0 && a < 18_446_744_073_709_551_616.0
-      else { throw WasmError.invalidConversionToInteger }
+      else { throw InterpreterError.invalidConversionToInteger }
       let u64AF: UInt64 = a < 0.0 ? 0 : UInt64(a)
       valueStack.append(.i64(Int64(bitPattern: u64AF)))
       frames.setIp(at: fi, nextIp)
 
     case 0xB0:  // i64.trunc_f64_s — f64 → signed i64; lower bound -2^63 is exactly representable
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard !a.isNaN && !a.isInfinite else { throw WasmError.invalidConversionToInteger }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
+      guard !a.isNaN && !a.isInfinite else { throw InterpreterError.invalidConversionToInteger }
       guard a >= -9_223_372_036_854_775_808.0 && a < 9_223_372_036_854_775_808.0
-      else { throw WasmError.invalidConversionToInteger }
+      else { throw InterpreterError.invalidConversionToInteger }
       valueStack.append(.i64(Int64(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xB1:  // i64.trunc_f64_u — f64 → unsigned i64; values in (-1,0) truncate to 0
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-      guard !a.isNaN && !a.isInfinite else { throw WasmError.invalidConversionToInteger }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
+      guard !a.isNaN && !a.isInfinite else { throw InterpreterError.invalidConversionToInteger }
       guard a > -1.0 && a < 18_446_744_073_709_551_616.0
-      else { throw WasmError.invalidConversionToInteger }
+      else { throw InterpreterError.invalidConversionToInteger }
       let u64B1: UInt64 = a < 0.0 ? 0 : UInt64(a)
       valueStack.append(.i64(Int64(bitPattern: u64B1)))
       frames.setIp(at: fi, nextIp)
 
     case 0xB2:  // f32.convert_i32_s — signed i32 to f32
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(Float(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xB3:  // f32.convert_i32_u — unsigned i32 (stored as signed i32) to f32
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(Float(UInt32(bitPattern: a))))
       frames.setIp(at: fi, nextIp)
 
     case 0xB4:  // f32.convert_i64_s — signed i64 to f32
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(Float(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xB5:  // f32.convert_i64_u — unsigned i64 (stored as signed i64) to f32
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(Float(UInt64(bitPattern: a))))
       frames.setIp(at: fi, nextIp)
 
     case 0xB6:  // f32.demote_f64 — reduce f64 to f32 (may lose precision; NaN/Inf preserved)
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(Float(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xB7:  // f64.convert_i32_s — signed i32 to f64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(Double(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xB8:  // f64.convert_i32_u — unsigned i32 (stored as signed i32) to f64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(Double(UInt32(bitPattern: a))))
       frames.setIp(at: fi, nextIp)
 
     case 0xB9:  // f64.convert_i64_s — signed i64 to f64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(Double(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xBA:  // f64.convert_i64_u — unsigned i64 (stored as signed i64) to f64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(Double(UInt64(bitPattern: a))))
       frames.setIp(at: fi, nextIp)
 
     case 0xBB:  // f64.promote_f32 — extend f32 to f64 (exact; NaN/Inf preserved)
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(Double(a)))
       frames.setIp(at: fi, nextIp)
 
     case 0xBC:  // i32.reinterpret_f32 — reinterpret IEEE 754 bit pattern of f32 as i32
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(Int32(bitPattern: a.bitPattern)))
       frames.setIp(at: fi, nextIp)
 
     case 0xBD:  // i64.reinterpret_f64 — reinterpret IEEE 754 bit pattern of f64 as i64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .f64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i64(Int64(bitPattern: a.bitPattern)))
       frames.setIp(at: fi, nextIp)
 
     case 0xBE:  // f32.reinterpret_i32 — reinterpret i32 bits as f32 IEEE 754 value
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f32(Float(bitPattern: UInt32(bitPattern: a))))
       frames.setIp(at: fi, nextIp)
 
     case 0xBF:  // f64.reinterpret_i64 — reinterpret i64 bits as f64 IEEE 754 value
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.f64(Double(bitPattern: UInt64(bitPattern: a))))
       frames.setIp(at: fi, nextIp)
 
     case 0xC0:  // i32.extend8_s — sign-extend low 8 bits of i32 to full i32
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(Int32(Int8(bitPattern: UInt8(a & 0xFF)))))
       frames.setIp(at: fi, nextIp)
 
     case 0xC1:  // i32.extend16_s — sign-extend low 16 bits of i32 to full i32
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i32(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i32(Int32(Int16(bitPattern: UInt16(a & 0xFFFF)))))
       frames.setIp(at: fi, nextIp)
 
     case 0xC2:  // i64.extend8_s — sign-extend low 8 bits of i64 to full i64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i64(Int64(Int8(bitPattern: UInt8(a & 0xFF)))))
       frames.setIp(at: fi, nextIp)
 
     case 0xC3:  // i64.extend16_s — sign-extend low 16 bits of i64 to full i64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i64(Int64(Int16(bitPattern: UInt16(a & 0xFFFF)))))
       frames.setIp(at: fi, nextIp)
 
     case 0xC4:  // i64.extend32_s — sign-extend low 32 bits of i64 to full i64
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-      guard case .i64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+      guard case .i64(let a) = valueStack.removeLast() else { throw InterpreterError.typeMismatch }
       valueStack.append(.i64(Int64(Int32(bitPattern: UInt32(a & 0xFFFF_FFFF)))))
       frames.setIp(at: fi, nextIp)
 
@@ -2547,17 +2655,17 @@ extension WasmInterpreter {
       switch refTypeByte {
       case 0x70: valueStack.append(.funcref(nil))
       case 0x6F: valueStack.append(.externref(nil))
-      default: throw WasmError.invalidValueType(refTypeByte)
+      default: throw InterpreterError.invalidValueType(refTypeByte)
       }
       frames.setIp(at: fi, UInt32(cursor))
 
     case 0xD1:  // ref.is_null  no immediate
       // Pops any reference type; pushes 1 if null, 0 if non-null.
-      guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
+      guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
       switch valueStack.removeLast() {
       case .funcref(let r): valueStack.append(.i32(r == nil ? 1 : 0))
       case .externref(let r): valueStack.append(.i32(r == nil ? 1 : 0))
-      default: throw WasmError.typeMismatch
+      default: throw InterpreterError.typeMismatch
       }
       frames.setIp(at: fi, nextIp)
 
@@ -2566,7 +2674,7 @@ extension WasmInterpreter {
       let funcIdxD2 = try readU32Local()
       let totalFunctions =
         moduleRef.pointee.importedFunctionCount + moduleRef.pointee.functions.count
-      guard Int(funcIdxD2) < totalFunctions else { throw WasmError.functionNotFound }
+      guard Int(funcIdxD2) < totalFunctions else { throw InterpreterError.functionNotFound }
       valueStack.append(.funcref(funcIdxD2))
       frames.setIp(at: fi, UInt32(cursor))
 
@@ -2579,8 +2687,10 @@ extension WasmInterpreter {
       // --- saturating truncation (sub-opcodes 0-7, no further immediates) ---
 
       case 0:  // i32.trunc_sat_f32_s
-        guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-        guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let satFC0: Int32
         if a.isNaN {
           satFC0 = 0
@@ -2595,8 +2705,10 @@ extension WasmInterpreter {
         frames.setIp(at: fi, UInt32(cursor))
 
       case 1:  // i32.trunc_sat_f32_u
-        guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-        guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let satFC1: UInt32
         if a.isNaN || a < 0.0 {
           satFC1 = 0
@@ -2609,8 +2721,10 @@ extension WasmInterpreter {
         frames.setIp(at: fi, UInt32(cursor))
 
       case 2:  // i32.trunc_sat_f64_s
-        guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-        guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let satFC2: Int32
         if a.isNaN {
           satFC2 = 0
@@ -2625,8 +2739,10 @@ extension WasmInterpreter {
         frames.setIp(at: fi, UInt32(cursor))
 
       case 3:  // i32.trunc_sat_f64_u
-        guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-        guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let satFC3: UInt32
         if a.isNaN || a < 0.0 {
           satFC3 = 0
@@ -2639,8 +2755,10 @@ extension WasmInterpreter {
         frames.setIp(at: fi, UInt32(cursor))
 
       case 4:  // i64.trunc_sat_f32_s
-        guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-        guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let satFC4: Int64
         if a.isNaN {
           satFC4 = 0
@@ -2655,8 +2773,10 @@ extension WasmInterpreter {
         frames.setIp(at: fi, UInt32(cursor))
 
       case 5:  // i64.trunc_sat_f32_u
-        guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-        guard case .f32(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+        guard case .f32(let a) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let satFC5: UInt64
         if a.isNaN || a < 0.0 {
           satFC5 = 0
@@ -2669,8 +2789,10 @@ extension WasmInterpreter {
         frames.setIp(at: fi, UInt32(cursor))
 
       case 6:  // i64.trunc_sat_f64_s
-        guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-        guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let satFC6: Int64
         if a.isNaN {
           satFC6 = 0
@@ -2685,8 +2807,10 @@ extension WasmInterpreter {
         frames.setIp(at: fi, UInt32(cursor))
 
       case 7:  // i64.trunc_sat_f64_u
-        guard !valueStack.isEmpty else { throw WasmError.stackUnderflow }
-        guard case .f64(let a) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard !valueStack.isEmpty else { throw InterpreterError.stackUnderflow }
+        guard case .f64(let a) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let satFC7: UInt64
         if a.isNaN || a < 0.0 {
           satFC7 = 0
@@ -2703,12 +2827,20 @@ extension WasmInterpreter {
       case 8:  // memory.init  immediates: dataidx (u32), reserved u32 (must be 0)
         let segIdxFC8 = try readU32Local()
         _ = try readU32Local()  // reserved (ignored)
-        guard valueStack.count >= 3 else { throw WasmError.stackUnderflow }
-        guard case .i32(let n) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let src) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let dst) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard valueStack.count >= 3 else { throw InterpreterError.stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let src) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let dst) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let siFC8 = Int(segIdxFC8)
-        guard siFC8 < moduleRef.pointee.data.count else { throw WasmError.memoryAccessOutOfBounds }
+        guard siFC8 < moduleRef.pointee.data.count else {
+          throw InterpreterError.memoryAccessOutOfBounds
+        }
         let copyCountFC8 = Int(UInt32(bitPattern: n))
         let srcOffFC8 = Int(UInt32(bitPattern: src))
         let dstOffFC8 = Int(UInt32(bitPattern: dst))
@@ -2717,10 +2849,10 @@ extension WasmInterpreter {
           droppedData & (UInt64(1) << siFC8) != 0 ? 0 : moduleRef.pointee.data[siFC8].bytes.count
         // Bounds check: applied unconditionally (n=0 with out-of-range src/dst still traps).
         guard srcOffFC8 + copyCountFC8 <= segLenFC8 else {
-          throw WasmError.memoryAccessOutOfBounds
+          throw InterpreterError.memoryAccessOutOfBounds
         }
         guard dstOffFC8 + copyCountFC8 <= memory.count else {
-          throw WasmError.memoryAccessOutOfBounds
+          throw InterpreterError.memoryAccessOutOfBounds
         }
         if copyCountFC8 > 0 {
           let segBytes = moduleRef.pointee.data[siFC8].bytes
@@ -2733,26 +2865,34 @@ extension WasmInterpreter {
       case 9:  // data.drop  immediate: dataidx (u32)
         let segIdxFC9 = try readU32Local()
         let siFC9 = Int(segIdxFC9)
-        guard siFC9 < moduleRef.pointee.data.count else { throw WasmError.memoryAccessOutOfBounds }
+        guard siFC9 < moduleRef.pointee.data.count else {
+          throw InterpreterError.memoryAccessOutOfBounds
+        }
         droppedData |= UInt64(1) << siFC9
         frames.setIp(at: fi, UInt32(cursor))
 
       case 10:  // memory.copy  immediates: dst_memidx (u32=0), src_memidx (u32=0)
         _ = try readU32Local()  // dst memory index (reserved, must be 0)
         _ = try readU32Local()  // src memory index (reserved, must be 0)
-        guard valueStack.count >= 3 else { throw WasmError.stackUnderflow }
-        guard case .i32(let n) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let src) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let dst) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard valueStack.count >= 3 else { throw InterpreterError.stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let src) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let dst) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let copyCountFC10 = Int(UInt32(bitPattern: n))
         let srcOffFC10 = Int(UInt32(bitPattern: src))
         let dstOffFC10 = Int(UInt32(bitPattern: dst))
         // Bounds check: applied unconditionally.
         guard srcOffFC10 + copyCountFC10 <= memory.count else {
-          throw WasmError.memoryAccessOutOfBounds
+          throw InterpreterError.memoryAccessOutOfBounds
         }
         guard dstOffFC10 + copyCountFC10 <= memory.count else {
-          throw WasmError.memoryAccessOutOfBounds
+          throw InterpreterError.memoryAccessOutOfBounds
         }
         if copyCountFC10 > 0 {
           // Overlap-safe copy (memmove semantics).
@@ -2775,15 +2915,21 @@ extension WasmInterpreter {
 
       case 11:  // memory.fill  immediate: memidx (u32=0)
         _ = try readU32Local()  // memory index (reserved, must be 0)
-        guard valueStack.count >= 3 else { throw WasmError.stackUnderflow }
-        guard case .i32(let n) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let val) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let dst) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard valueStack.count >= 3 else { throw InterpreterError.stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let val) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let dst) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let fillCountFC11 = Int(UInt32(bitPattern: n))
         let dstOffFC11 = Int(UInt32(bitPattern: dst))
         // Bounds check: applied unconditionally.
         guard dstOffFC11 + fillCountFC11 <= memory.count else {
-          throw WasmError.memoryAccessOutOfBounds
+          throw InterpreterError.memoryAccessOutOfBounds
         }
         if fillCountFC11 > 0 {
           let byteFC11 = UInt8(UInt32(bitPattern: val) & 0xFF)
@@ -2799,14 +2945,22 @@ extension WasmInterpreter {
       case 12:  // table.init  immediates: elemidx (u32), tableidx (u32)
         let elemIdxFC12 = try readU32Local()
         let tableIdxFC12 = try readU32Local()
-        guard valueStack.count >= 3 else { throw WasmError.stackUnderflow }
-        guard case .i32(let n) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let src) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let dst) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard valueStack.count >= 3 else { throw InterpreterError.stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let src) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let dst) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let eiFC12 = Int(elemIdxFC12)
         let tiFC12 = Int(tableIdxFC12)
-        guard eiFC12 < moduleRef.pointee.elements.count else { throw WasmError.undefinedElement }
-        guard tiFC12 < tables.tableCount else { throw WasmError.undefinedElement }
+        guard eiFC12 < moduleRef.pointee.elements.count else {
+          throw InterpreterError.undefinedElement
+        }
+        guard tiFC12 < tables.tableCount else { throw InterpreterError.undefinedElement }
         let copyCountFC12 = Int(UInt32(bitPattern: n))
         // A dropped element segment has effective length 0.
         let elemLenFC12 =
@@ -2815,9 +2969,11 @@ extension WasmInterpreter {
         let srcOffFC12 = Int(UInt32(bitPattern: src))
         let dstOffFC12 = Int(UInt32(bitPattern: dst))
         // Bounds check: applied unconditionally.
-        guard srcOffFC12 + copyCountFC12 <= elemLenFC12 else { throw WasmError.undefinedElement }
+        guard srcOffFC12 + copyCountFC12 <= elemLenFC12 else {
+          throw InterpreterError.undefinedElement
+        }
         guard dstOffFC12 + copyCountFC12 <= tables.count(ofTable: tiFC12) else {
-          throw WasmError.undefinedElement
+          throw InterpreterError.undefinedElement
         }
         if copyCountFC12 > 0 {
           let elemsFC12 = moduleRef.pointee.elements[eiFC12].functionIndices
@@ -2835,31 +2991,39 @@ extension WasmInterpreter {
       case 13:  // elem.drop  immediate: elemidx (u32)
         let elemIdxFC13 = try readU32Local()
         let eiFC13 = Int(elemIdxFC13)
-        guard eiFC13 < moduleRef.pointee.elements.count else { throw WasmError.undefinedElement }
+        guard eiFC13 < moduleRef.pointee.elements.count else {
+          throw InterpreterError.undefinedElement
+        }
         droppedElem |= UInt64(1) << eiFC13
         frames.setIp(at: fi, UInt32(cursor))
 
       case 14:  // table.copy  immediates: dst_tableidx (u32), src_tableidx (u32)
         let dstIdxFC14 = try readU32Local()
         let srcIdxFC14 = try readU32Local()
-        guard valueStack.count >= 3 else { throw WasmError.stackUnderflow }
-        guard case .i32(let n) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let src) = valueStack.removeLast() else { throw WasmError.typeMismatch }
-        guard case .i32(let dst) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard valueStack.count >= 3 else { throw InterpreterError.stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let src) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
+        guard case .i32(let dst) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let diFC14 = Int(dstIdxFC14)
         let siFC14 = Int(srcIdxFC14)
         guard diFC14 < tables.tableCount && siFC14 < tables.tableCount else {
-          throw WasmError.undefinedElement
+          throw InterpreterError.undefinedElement
         }
         let copyCountFC14 = Int(UInt32(bitPattern: n))
         let srcOffFC14 = Int(UInt32(bitPattern: src))
         let dstOffFC14 = Int(UInt32(bitPattern: dst))
         // Bounds check: applied unconditionally.
         guard srcOffFC14 + copyCountFC14 <= tables.count(ofTable: siFC14) else {
-          throw WasmError.undefinedElement
+          throw InterpreterError.undefinedElement
         }
         guard dstOffFC14 + copyCountFC14 <= tables.count(ofTable: diFC14) else {
-          throw WasmError.undefinedElement
+          throw InterpreterError.undefinedElement
         }
         if copyCountFC14 > 0 {
           if diFC14 == siFC14 {
@@ -2884,16 +3048,18 @@ extension WasmInterpreter {
 
       case 15:  // table.grow  immediate: tableidx (u32)
         let tableIdxFC15 = try readU32Local()
-        guard valueStack.count >= 2 else { throw WasmError.stackUnderflow }
-        guard case .i32(let delta) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard valueStack.count >= 2 else { throw InterpreterError.stackUnderflow }
+        guard case .i32(let delta) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         // Accept any reference type (funcref or externref) as the fill value.
         let refValFC15 = valueStack.removeLast()
         switch refValFC15 {
         case .funcref, .externref: break
-        default: throw WasmError.typeMismatch
+        default: throw InterpreterError.typeMismatch
         }
         let tiFC15 = Int(tableIdxFC15)
-        guard tiFC15 < tables.tableCount else { throw WasmError.undefinedElement }
+        guard tiFC15 < tables.tableCount else { throw InterpreterError.undefinedElement }
         // Treat delta as unsigned per Wasm spec — guard before converting to Int
         // to avoid a trap on 32-bit RP2350 when the unsigned value > Int32.max.
         let nFC15u = UInt32(bitPattern: delta)
@@ -2914,31 +3080,35 @@ extension WasmInterpreter {
       case 16:  // table.size  immediate: tableidx (u32)
         let tableIdxFC16 = try readU32Local()
         let tiFC16 = Int(tableIdxFC16)
-        guard tiFC16 < tables.tableCount else { throw WasmError.undefinedElement }
+        guard tiFC16 < tables.tableCount else { throw InterpreterError.undefinedElement }
         valueStack.append(.i32(Int32(tables.count(ofTable: tiFC16))))
         frames.setIp(at: fi, UInt32(cursor))
 
       case 17:  // table.fill  immediate: tableidx (u32)
         let tableIdxFC17 = try readU32Local()
-        guard valueStack.count >= 3 else { throw WasmError.stackUnderflow }
-        guard case .i32(let n) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard valueStack.count >= 3 else { throw InterpreterError.stackUnderflow }
+        guard case .i32(let n) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let fillRefFC17 = valueStack.removeLast()
-        guard case .i32(let dst) = valueStack.removeLast() else { throw WasmError.typeMismatch }
+        guard case .i32(let dst) = valueStack.removeLast() else {
+          throw InterpreterError.typeMismatch
+        }
         let tiFC17 = Int(tableIdxFC17)
-        guard tiFC17 < tables.tableCount else { throw WasmError.undefinedElement }
+        guard tiFC17 < tables.tableCount else { throw InterpreterError.undefinedElement }
         // Verify the fill value type matches the table's declared refType.
         let tableFillRefTypeFC17 =
           tiFC17 < moduleRef.pointee.tables.count
           ? moduleRef.pointee.tables[tiFC17].refType : .funcRef
         switch (tableFillRefTypeFC17, fillRefFC17) {
         case (.funcRef, .funcref), (.externRef, .externref): break
-        default: throw WasmError.typeMismatch
+        default: throw InterpreterError.typeMismatch
         }
         let dstOffFC17 = Int(UInt32(bitPattern: dst))
         let fillCountFC17 = Int(UInt32(bitPattern: n))
         // Bounds check: applied unconditionally.
         guard dstOffFC17 + fillCountFC17 <= tables.count(ofTable: tiFC17) else {
-          throw WasmError.undefinedElement
+          throw InterpreterError.undefinedElement
         }
         for i in 0..<fillCountFC17 {
           tables[tiFC17, dstOffFC17 + i] = fillRefFC17
@@ -2946,13 +3116,13 @@ extension WasmInterpreter {
         frames.setIp(at: fi, UInt32(cursor))
 
       default:
-        throw WasmError.invalidInstruction(0xFC)
+        throw InterpreterError.invalidInstruction(0xFC)
       }
 
     // MARK: Default — unimplemented opcode
 
     default:
-      throw WasmError.invalidInstruction(opcode)
+      throw InterpreterError.invalidInstruction(opcode)
     }
   }
 }

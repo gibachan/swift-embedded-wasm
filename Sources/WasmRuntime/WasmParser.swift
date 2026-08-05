@@ -259,14 +259,14 @@ struct WasmParser {
   ///
   /// brArity   = result count of the block type (carried on br / fall-through).
   /// paramCount = parameter count (consumed and re-pushed when entering the block).
-  private func blockArityForBlock(_ bt: BlockType) throws(WasmError) -> (
+  private func blockArityForBlock(_ bt: BlockType) throws(ParserError) -> (
     brArity: Int, paramCount: Int
   ) {
     switch bt {
     case .void: return (brArity: 0, paramCount: 0)
     case .value: return (brArity: 1, paramCount: 0)
     case .typeIndex(let idx):
-      guard Int(idx) < types.count else { throw WasmError.typeMismatch }
+      guard Int(idx) < types.count else { throw ParserError.typeMismatch }
       let ft = types[Int(idx)]
       return (brArity: ft.results.count, paramCount: ft.params.count)
     }
@@ -276,19 +276,19 @@ struct WasmParser {
   ///
   /// For loops, `br` restarts the loop — the continuation takes the loop's *parameters*,
   /// not its results.  So brArity = param count of the block type.
-  private func loopBrArityFromBlockType(_ bt: BlockType) throws(WasmError) -> Int {
+  private func loopBrArityFromBlockType(_ bt: BlockType) throws(ParserError) -> Int {
     switch bt {
     case .void: return 0
     case .value: return 0  // single-result loop has 0 params → br restarts with 0 values
     case .typeIndex(let idx):
-      guard Int(idx) < types.count else { throw WasmError.typeMismatch }
+      guard Int(idx) < types.count else { throw ParserError.typeMismatch }
       return types[Int(idx)].params.count
     }
   }
 
   // MARK: - Public
 
-  mutating func parse() throws(WasmError) -> WasmModule {
+  mutating func parse() throws(ParserError) -> WasmModule {
     try validateHeader()
 
     var types: [FunctionType] = []
@@ -409,7 +409,7 @@ struct WasmParser {
 
   // MARK: - Header
 
-  private mutating func validateHeader() throws(WasmError) {
+  private mutating func validateHeader() throws(ParserError) {
     let magic: [UInt8] = [try readByte(), try readByte(), try readByte(), try readByte()]
     guard magic == wasmMagic else { throw .invalidMagic }
 
@@ -424,7 +424,7 @@ struct WasmParser {
   /// The Wasm spec (§5.5.3) requires the section name to be a valid UTF-8 string.
   /// We validate the name and skip the section payload, as the runtime does not
   /// use custom section content.
-  private mutating func parseCustomSection(size: Int) throws(WasmError) {
+  private mutating func parseCustomSection(size: Int) throws(ParserError) {
     // Read the name length and name bytes within the section.
     // We must be careful: 'size' includes the name-length field and name bytes.
     let startOffset = stream.offset
@@ -450,7 +450,7 @@ struct WasmParser {
   ///   - No overlong encodings (e.g. 0xC0 0x80 for U+0000).
   ///   - No surrogate pairs (U+D800..U+DFFF).
   ///   - Code points are within the valid Unicode range (≤ U+10FFFF).
-  private func validateUTF8(_ bytes: [UInt8]) throws(WasmError) {
+  private func validateUTF8(_ bytes: [UInt8]) throws(ParserError) {
     var i = 0
     while i < bytes.count {
       let b = bytes[i]
@@ -508,7 +508,7 @@ struct WasmParser {
   /// Type section (id=1): array of function signatures
   ///
   /// Format: [count] ([0x60][params][results])*
-  private mutating func parseTypeSection() throws(WasmError) -> [FunctionType] {
+  private mutating func parseTypeSection() throws(ParserError) -> [FunctionType] {
     let count = try readU32()
     guard count <= WasmLimits.maxTypes else { throw .resourceLimitExceeded }
     var types: [FunctionType] = []
@@ -534,7 +534,7 @@ struct WasmParser {
   ///
   /// Imported functions occupy the front of the function index space;
   /// local functions follow after them.
-  private mutating func parseImportSection() throws(WasmError) -> [Import] {
+  private mutating func parseImportSection() throws(ParserError) -> [Import] {
     let count = try readU32()
     guard count <= WasmLimits.maxImports else { throw .resourceLimitExceeded }
     var imports: [Import] = []
@@ -568,7 +568,7 @@ struct WasmParser {
   /// Table section (id=4): table definitions (e.g. funcref tables for call_indirect)
   ///
   /// Format: [count] ([reftype][limits])*
-  private mutating func parseTableSection() throws(WasmError) -> [TableType] {
+  private mutating func parseTableSection() throws(ParserError) -> [TableType] {
     let count = try readU32()
     guard count <= WasmLimits.maxTables else { throw .resourceLimitExceeded }
     var tables: [TableType] = []
@@ -584,7 +584,7 @@ struct WasmParser {
   }
 
   /// Memory section (id=5): linear memory definitions
-  private mutating func parseMemorySection() throws(WasmError) -> [MemoryType] {
+  private mutating func parseMemorySection() throws(ParserError) -> [MemoryType] {
     let count = try readU32()
     guard count <= WasmLimits.maxMemories else { throw .resourceLimitExceeded }
     var memories: [MemoryType] = []
@@ -596,7 +596,7 @@ struct WasmParser {
   }
 
   /// Reads memory limits (min and optional max page count)
-  private mutating func parseMemoryLimits() throws(WasmError) -> (min: UInt32, max: UInt32?) {
+  private mutating func parseMemoryLimits() throws(ParserError) -> (min: UInt32, max: UInt32?) {
     let limtype = try readByte()
     let min = try readU32()
     switch limtype {
@@ -610,7 +610,7 @@ struct WasmParser {
   ///
   /// Format: [count] ([valtype][mutability][init_expr])*
   /// init_expr is a constant expression followed by end (0x0B).
-  private mutating func parseGlobalSection() throws(WasmError) -> [GlobalDef] {
+  private mutating func parseGlobalSection() throws(ParserError) -> [GlobalDef] {
     let count = try readU32()
     guard count <= WasmLimits.maxGlobals else { throw .resourceLimitExceeded }
     var globals: [GlobalDef] = []
@@ -657,7 +657,7 @@ struct WasmParser {
   ///   5 — passive, reftype byte, init_expr* list
   ///   6 — active, explicit table index, offset expr, reftype byte, init_expr* list
   ///   7 — declarative, reftype byte, init_expr* list
-  private mutating func parseElementSection() throws(WasmError) -> [ElementSegment] {
+  private mutating func parseElementSection() throws(ParserError) -> [ElementSegment] {
     let count = try readU32()
     guard count <= WasmLimits.maxElements else { throw .resourceLimitExceeded }
     var segments: [ElementSegment] = []
@@ -792,7 +792,7 @@ struct WasmParser {
   ///   ref.func funcidx 0x0B  → funcidx
   ///
   /// Returns nil for a null reference, or the function index for a non-null funcref.
-  private mutating func readFuncrefInitExpr() throws(WasmError) -> UInt32? {
+  private mutating func readFuncrefInitExpr() throws(ParserError) -> UInt32? {
     let opcode = try readByte()
     switch opcode {
     case 0xD0:  // ref.null
@@ -811,7 +811,7 @@ struct WasmParser {
   }
 
   /// Function section (id=3): type index for each local function
-  private mutating func parseFunctionSection() throws(WasmError) -> [UInt32] {
+  private mutating func parseFunctionSection() throws(ParserError) -> [UInt32] {
     let count = try readU32()
     guard count <= WasmLimits.maxFunctions else { throw .resourceLimitExceeded }
     var indices: [UInt32] = []
@@ -822,7 +822,7 @@ struct WasmParser {
   /// Export section (id=7): array of externally visible symbols
   ///
   /// Format: [count] ([name_len][name_bytes][kind][index])*
-  private mutating func parseExportSection() throws(WasmError) -> [Export] {
+  private mutating func parseExportSection() throws(ParserError) -> [Export] {
     let count = try readU32()
     guard count <= WasmLimits.maxExports else { throw .resourceLimitExceeded }
     var exports: [Export] = []
@@ -843,7 +843,7 @@ struct WasmParser {
   }
 
   /// Start section (id=8): index of the function to run automatically at instantiation
-  private mutating func parseStartSection() throws(WasmError) -> UInt32 {
+  private mutating func parseStartSection() throws(ParserError) -> UInt32 {
     return try readU32()
   }
 
@@ -854,7 +854,7 @@ struct WasmParser {
   /// [Instruction] array and the jump table), then stores the byte range, local types, bulk-memory
   /// flag, and jump table in a FunctionHandle.
   // TODO: Phase 5 — replace parseFlatBodyTracked call with a zero-allocation byte skipper.
-  private mutating func parseFunctionHandles() throws(WasmError) -> Fixed64_FunctionHandle {
+  private mutating func parseFunctionHandles() throws(ParserError) -> Fixed64_FunctionHandle {
     let count = try readU32()
     // Check before allocating any FunctionHandle entries to fail fast on oversized modules.
     guard count <= WasmLimits.maxFunctions else { throw .resourceLimitExceeded }
@@ -917,7 +917,7 @@ struct WasmParser {
     into output: inout Out,
     hasBulkMemory: inout Bool,
     jumpTable: inout FixedJumpTable_JumpEntry
-  ) throws(WasmError) {
+  ) throws(ParserError) {
     var pending = FixedPendingBlocks_PendingBlock()
 
     while true {
@@ -982,14 +982,14 @@ struct WasmParser {
             jumpEntryIdx: jumpEntryIdx, opcodeByteOffset: opcodeByteOffset))
 
       case 0x05:  // else: closes then-body, opens else-body
-        guard !pending.isEmpty else { throw WasmError.invalidInstruction(0x05) }
+        guard !pending.isEmpty else { throw ParserError.invalidInstruction(0x05) }
         let top = pending.pop()
         guard
           let top,
           case .ifThen(
             let headerPc, let bt, let brArity, let paramCount,
             let jumpEntryIdx, let outerByteOffset) = top
-        else { throw WasmError.invalidInstruction(0x05) }
+        else { throw ParserError.invalidInstruction(0x05) }
         _ = headerPc  // used below in ifElse push
         output.append(.blockEnd)  // ends the then-path
         let jumpPc = output.count
@@ -1441,7 +1441,7 @@ struct WasmParser {
   /// heap-allocated [UInt8] copy, because WasmModule (and thus DataSegment) can be copied
   /// on macOS, which would make a pointer into a copied buffer unsafe.
   #if hasFeature(Embedded)
-    private mutating func readDataBytes(byteLen: UInt32) throws(WasmError)
+    private mutating func readDataBytes(byteLen: UInt32) throws(ParserError)
       -> UnsafeBufferPointer<UInt8>
     {
       let bytesStart = stream.offset
@@ -1449,7 +1449,7 @@ struct WasmParser {
       return UnsafeBufferPointer(rebasing: buffer[bytesStart..<stream.offset])
     }
   #else
-    private mutating func readDataBytes(byteLen: UInt32) throws(WasmError) -> [UInt8] {
+    private mutating func readDataBytes(byteLen: UInt32) throws(ParserError) -> [UInt8] {
       var bytes: [UInt8] = []
       bytes.reserveCapacity(Int(byteLen))
       for _ in 0..<byteLen { bytes.append(try readByte()) }
@@ -1463,7 +1463,7 @@ struct WasmParser {
   ///   0 — active, memory 0, i32.const offset expression, data bytes
   ///   1 — passive: no offset expression; segment is not applied at instantiation
   ///   2 — active with explicit memory index, i32.const offset expression, data bytes
-  private mutating func parseDataSection() throws(WasmError) -> [DataSegment] {
+  private mutating func parseDataSection() throws(ParserError) -> [DataSegment] {
     let count = try readU32()
     guard count <= WasmLimits.maxData else { throw .resourceLimitExceeded }
     var segments: [DataSegment] = []
@@ -1518,7 +1518,7 @@ struct WasmParser {
       handle: FunctionHandle,
       rawBytes: [UInt8],
       types: Fixed64_FunctionType
-    ) throws(WasmError) -> [Instruction] {
+    ) throws(ParserError) -> [Instruction] {
       // Convert Fixed64_FunctionType to [FunctionType] for the internal parser types field.
       // This is a macOS-only path (wrapped in #if !hasFeature(Embedded)) and module loading
       // is a one-time cost, so the allocation is acceptable here.
@@ -1528,7 +1528,7 @@ struct WasmParser {
       var instructions: [Instruction] = []
       var hasBulkMemory = false
       var jumpTable = FixedJumpTable_JumpEntry()
-      // withUnsafeBufferPointer is rethrows; catch and rethrow as typed WasmError
+      // withUnsafeBufferPointer is rethrows; catch and rethrow as typed ParserError
       // to satisfy the typed-throws function signature.
       do {
         try rawBytes.withUnsafeBufferPointer { buf in
@@ -1538,7 +1538,7 @@ struct WasmParser {
           try parser.parseFlatBodyTracked(
             into: &instructions, hasBulkMemory: &hasBulkMemory, jumpTable: &jumpTable)
         }
-      } catch let e as WasmError {
+      } catch let e as ParserError {
         throw e
       } catch {
         fatalError("unexpected error from parseFlatBodyTracked: \(error)")
@@ -1547,7 +1547,7 @@ struct WasmParser {
     }
   #endif
 
-  private mutating func readBlockType() throws(WasmError) -> BlockType {
+  private mutating func readBlockType() throws(ParserError) -> BlockType {
     // Block types are encoded as signed LEB128 (s33):
     //   non-negative values → type index (multi-value extension)
     //   negative values    → value type byte or void (0x40 = -64)
@@ -1564,7 +1564,7 @@ struct WasmParser {
   // MARK: - Primitives
 
   @inline(__always)
-  private mutating func readByte() throws(WasmError) -> UInt8 {
+  private mutating func readByte() throws(ParserError) -> UInt8 {
     do {
       return try stream.consume()
     } catch {
@@ -1573,7 +1573,7 @@ struct WasmParser {
   }
 
   @inline(__always)
-  private mutating func readU32() throws(WasmError) -> UInt32 {
+  private mutating func readU32() throws(ParserError) -> UInt32 {
     do {
       return try decodeULEB128(from: &stream)
     } catch {
@@ -1582,7 +1582,7 @@ struct WasmParser {
   }
 
   @inline(__always)
-  private mutating func readI32() throws(WasmError) -> Int32 {
+  private mutating func readI32() throws(ParserError) -> Int32 {
     do {
       return try decodeSLEB128(from: &stream)
     } catch {
@@ -1591,7 +1591,7 @@ struct WasmParser {
   }
 
   @inline(__always)
-  private mutating func readI64() throws(WasmError) -> Int64 {
+  private mutating func readI64() throws(ParserError) -> Int64 {
     do {
       return try decodeSLEB128(from: &stream)
     } catch {
@@ -1601,7 +1601,7 @@ struct WasmParser {
 
   // Reads a 4-byte little-endian IEEE 754 float (used by f32.const)
   @inline(__always)
-  private mutating func readF32() throws(WasmError) -> Float {
+  private mutating func readF32() throws(ParserError) -> Float {
     let b0 = UInt32(try readByte())
     let b1 = UInt32(try readByte())
     let b2 = UInt32(try readByte())
@@ -1612,7 +1612,7 @@ struct WasmParser {
 
   // Reads an 8-byte little-endian IEEE 754 double (used by f64.const)
   @inline(__always)
-  private mutating func readF64() throws(WasmError) -> Double {
+  private mutating func readF64() throws(ParserError) -> Double {
     let b0 = UInt64(try readByte())
     let b1 = UInt64(try readByte())
     let b2 = UInt64(try readByte())
@@ -1627,7 +1627,7 @@ struct WasmParser {
     return Double(bitPattern: bits)
   }
 
-  private mutating func readValueType() throws(WasmError) -> ValueType {
+  private mutating func readValueType() throws(ParserError) -> ValueType {
     let byte = try readByte()
     guard let vt = ValueType(rawValue: byte) else { throw .invalidValueType(byte) }
     return vt

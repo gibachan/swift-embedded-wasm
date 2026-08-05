@@ -6,7 +6,7 @@
 // The validator implements the Wasm binary-format type-checking algorithm:
 //   - Maintains a value-type stack and a control-frame stack.
 //   - For each instruction, pops the expected operand types and pushes the result types.
-//   - Throws WasmError.typeMismatch on any type violation.
+//   - Throws ParserError.typeMismatch on any type violation.
 //
 // Scope: full type-tracking for all instructions the parser recognises,
 // with strict checking for i32 operations (the initial validation target).
@@ -20,8 +20,8 @@
     let module: WasmModule
 
     /// Validates all local function bodies in the module.
-    /// Throws WasmError.typeMismatch on the first type error found.
-    func validate() throws(WasmError) {
+    /// Throws ParserError.typeMismatch on the first type error found.
+    func validate() throws(ParserError) {
       guard module.code.count == module.functions.count else { throw .typeMismatch }
       // All function type indices (local + imported) must reference existing types.
       // Index-based loops work on both Fixed64_UInt32 (Embedded) and [UInt32] (macOS).
@@ -99,7 +99,7 @@
       ]
     }
 
-    mutating func run() throws(WasmError) {
+    mutating func run() throws(ParserError) {
       for (ip, instr) in instructions.enumerated() {
         // Push a pending else-frame when execution reaches elsePc.
         if let elseFrame = pendingElseFrames.removeValue(forKey: ip) {
@@ -127,7 +127,7 @@
 
     // MARK: - Instruction dispatch
 
-    private mutating func check(_ instr: Instruction, at ip: Int) throws(WasmError) {
+    private mutating func check(_ instr: Instruction, at ip: Int) throws(ParserError) {
       switch instr {
 
       // MARK: Constants
@@ -280,7 +280,7 @@
             let entryPc = ip + 1 + i
             guard entryPc < instructions.count,
               case .brTableEntry(let d) = instructions[entryPc]
-            else { throw WasmError.invalidInstruction(0x0E) }
+            else { throw ParserError.invalidInstruction(0x0E) }
             try checkBranch(depth: d)
           }
           try checkBranch(depth: default_)
@@ -617,7 +617,7 @@
     }
 
     /// Pops and returns any type, or nil when in unreachable (polymorphic) mode.
-    private mutating func popAny() throws(WasmError) -> ValueType? {
+    private mutating func popAny() throws(ParserError) -> ValueType? {
       guard !isUnreachable() else { return nil }
       guard let frame = frames.last, stack.count > frame.startHeight else { throw .typeMismatch }
       return stack.removeLast()
@@ -625,7 +625,7 @@
 
     /// Pops the top value and asserts it equals `expected`.
     /// In unreachable mode, the pop is skipped (polymorphic type accepted).
-    private mutating func popExpecting(_ expected: ValueType) throws(WasmError) {
+    private mutating func popExpecting(_ expected: ValueType) throws(ParserError) {
       guard !isUnreachable() else { return }
       guard let frame = frames.last, stack.count > frame.startHeight else { throw .typeMismatch }
       let actual = stack.removeLast()
@@ -641,7 +641,7 @@
     }
 
     /// Returns (params, results) for a block type.
-    private func blockTypes(_ bt: BlockType) throws(WasmError) -> ([ValueType], [ValueType]) {
+    private func blockTypes(_ bt: BlockType) throws(ParserError) -> ([ValueType], [ValueType]) {
       switch bt {
       case .void: return ([], [])
       case .value(let vt): return ([], [vt])
@@ -654,7 +654,7 @@
 
     /// Validates a frame's results at `blockEnd`.
     /// In unreachable frames the stack is reset to startHeight without type-checking.
-    private mutating func checkFrameResults(_ frame: ControlFrame) throws(WasmError) {
+    private mutating func checkFrameResults(_ frame: ControlFrame) throws(ParserError) {
       if frame.unreachable {
         if frame.startHeight <= stack.count {
           stack.removeSubrange(frame.startHeight...)
@@ -672,7 +672,7 @@
     }
 
     /// Checks that the label types of `frames[count-1-depth]` are on top of the stack.
-    private func checkBranch(depth: UInt32) throws(WasmError) {
+    private func checkBranch(depth: UInt32) throws(ParserError) {
       let d = Int(depth)
       guard d < frames.count else { throw .typeMismatch }
       let target = frames[frames.count - 1 - d]

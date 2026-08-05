@@ -6,7 +6,7 @@
 ///
 /// These constants serve two purposes:
 ///   1. Parser validation — the parser rejects binaries that exceed these counts with
-///      `WasmError.resourceLimitExceeded`, providing early detection of modules that
+///      `ParserError.resourceLimitExceeded`, providing early detection of modules that
 ///      cannot run on the Embedded target.
 ///   2. Embedded phase migration — when dynamic `Array<T>` fields of `WasmModule` are
 ///      replaced with fixed-size buffers (Phase 4 / 5), these constants determine the

@@ -131,7 +131,7 @@ struct WasmParserTests {
   @Test func rejectsInvalidMagic() throws {
     var bad = try loadWasm("i32-add")
     bad[0] = 0xFF
-    #expect(throws: WasmError.invalidMagic) {
+    #expect(throws: ParserError.invalidMagic) {
       try parseBytes(bad)
     }
   }
@@ -172,7 +172,7 @@ struct WasmInterpreterTests {
     let module = try parseModule("i32-add")
     var arena = WasmArena(capacity: 256 * 1024)
     var interp = try WasmInterpreter(module: module, arena: &arena)
-    #expect(throws: WasmError.functionNotFound) {
+    #expect(throws: InterpreterError.functionNotFound) {
       try interp.callExport(nameBytes: Array("nonexistent".utf8), args: [])
     }
   }
@@ -181,7 +181,7 @@ struct WasmInterpreterTests {
     let module = try parseModule("i32-add")
     var arena = WasmArena(capacity: 256 * 1024)
     var interp = try WasmInterpreter(module: module, arena: &arena)
-    #expect(throws: WasmError.argumentCountMismatch) {
+    #expect(throws: InterpreterError.argumentCountMismatch) {
       try interp.callExport(nameBytes: i32AddName, args: [.i32(1)])
     }
   }
@@ -363,7 +363,7 @@ struct WasmInterpreterTests {
     let module = try parseModule("i32-add")  // exports "i32-add", not "add"
     var arena = WasmArena(capacity: 256 * 1024)
     var interp = try WasmInterpreter(module: module, arena: &arena)
-    #expect(throws: WasmError.functionNotFound) {
+    #expect(throws: InterpreterError.functionNotFound) {
       try interp.callExport(nameBytes: Array("add".utf8), args: [.i32(3), .i32(4)])
     }
   }

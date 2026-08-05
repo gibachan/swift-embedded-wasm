@@ -11,7 +11,7 @@
 // Supported command types:
 //   module          - instantiate a .wasm file
 //   assert_return   - invoke a function and compare results
-//   assert_trap     - invoke a function and expect any WasmError
+//   assert_trap     - invoke a function and expect any InterpreterError
 //   assert_invalid  - parse a binary .wasm and expect parse failure
 //   assert_malformed (binary) - same as assert_invalid
 //
@@ -114,7 +114,7 @@ private struct ConformanceRunner {
   // Set to true after an assert_uninstantiable that we handled (pass or skip).
   // The spec applies element segments before a trap-on-instantiation, producing
   // side effects we cannot replicate without cross-module linking support.
-  // When true, an unexpected WasmError in the next assert_return is treated as
+  // When true, an unexpected InterpreterError in the next assert_return is treated as
   // skip rather than fail, since the missing side effect is the root cause.
   var hadUninstantiableSkip = false
 
@@ -181,8 +181,15 @@ private struct ConformanceRunner {
         namedModules[name] = slot
       }
       passCount += 1
-    } catch WasmError.invalidInstruction(_) {
-      // Module uses an instruction we haven't implemented yet.
+    } catch ParserError.invalidInstruction(_) {
+      // Module uses an instruction we haven't implemented yet (eager decode
+      // during parsing, e.g. in a global/element/data offset expression).
+      currentSlot = nil
+      currentModuleSkipped = true
+      skipCount += 1
+    } catch InterpreterError.invalidInstruction(_) {
+      // Instantiation ran the module's start function, which hit an
+      // instruction we haven't implemented yet.
       currentSlot = nil
       currentModuleSkipped = true
       skipCount += 1
@@ -277,9 +284,9 @@ private struct ConformanceRunner {
           "Line \(cmd.line): expected [\(describeValues(expected))], got [\(actual)]"
         )
       }
-    } catch WasmError.invalidInstruction(_) {
+    } catch InterpreterError.invalidInstruction(_) {
       skipCount += 1
-    } catch WasmError.executionLimitExceeded {
+    } catch InterpreterError.executionLimitExceeded {
       skipCount += 1
     } catch {
       // If a preceding assert_uninstantiable was skipped, its element-segment
@@ -319,12 +326,12 @@ private struct ConformanceRunner {
       Issue.record(
         "Line \(cmd.line): expected trap '\(cmd.text ?? "")' but execution succeeded"
       )
-    } catch WasmError.invalidInstruction(_) {
+    } catch InterpreterError.invalidInstruction(_) {
       skipCount += 1
-    } catch WasmError.executionLimitExceeded {
+    } catch InterpreterError.executionLimitExceeded {
       skipCount += 1
     } catch {
-      // Any WasmError = some trap occurred = pass.
+      // Any InterpreterError = some trap occurred = pass.
       passCount += 1
     }
   }
@@ -361,7 +368,7 @@ private struct ConformanceRunner {
   // We lack the full validation and cross-module linking required to verify this
   // correctly, so we skip rather than attempt instantiation.
   // hadUninstantiableSkip is set so that the immediately following assert_return
-  // can absorb an unexpected WasmError that results from missing element-segment
+  // can absorb an unexpected InterpreterError that results from missing element-segment
   // side effects (which the spec applies before the instantiation trap).
   private mutating func handleAssertUninstantiable(_ cmd: WastCommand) {
     hadUninstantiableSkip = true
@@ -386,9 +393,9 @@ private struct ConformanceRunner {
     do {
       _ = try invoke(action)
       passCount += 1
-    } catch WasmError.invalidInstruction(_) {
+    } catch InterpreterError.invalidInstruction(_) {
       skipCount += 1
-    } catch WasmError.executionLimitExceeded {
+    } catch InterpreterError.executionLimitExceeded {
       skipCount += 1
     } catch {
       failCount += 1
@@ -398,11 +405,11 @@ private struct ConformanceRunner {
 
   // MARK: Invoke
 
-  private mutating func invoke(_ action: WastAction) throws -> [Value] {
+  private mutating func invoke(_ action: WastAction) throws(InterpreterError) -> [Value] {
     // "get" (global read) is not yet supported.
-    guard action.type == "invoke" else { throw WasmError.functionNotFound }
+    guard action.type == "invoke" else { throw InterpreterError.functionNotFound }
     guard var slot = resolveSlot(named: action.module) else {
-      throw WasmError.functionNotFound
+      throw InterpreterError.functionNotFound
     }
     var args: [Value] = []
     for v in (action.args ?? []) {
@@ -432,13 +439,17 @@ private struct ConformanceRunner {
       || type == "externref"
   }
 
-  private func convertValue(_ v: WastValue) throws -> Value {
+  // Converting a spec-test JSON argument/expected literal into a runtime Value is
+  // test-harness logic, not the parser or interpreter proper — but the failure mode
+  // (a literal's bit-pattern string doesn't parse, or the type tag is unrecognized)
+  // matches runtime value-type semantics, so InterpreterError.typeMismatch is used here.
+  private func convertValue(_ v: WastValue) throws(InterpreterError) -> Value {
     switch v.type {
     case "i32":
-      guard let str = v.value, let bits = UInt32(str) else { throw WasmError.typeMismatch }
+      guard let str = v.value, let bits = UInt32(str) else { throw InterpreterError.typeMismatch }
       return .i32(Int32(bitPattern: bits))
     case "i64":
-      guard let str = v.value, let bits = UInt64(str) else { throw WasmError.typeMismatch }
+      guard let str = v.value, let bits = UInt64(str) else { throw InterpreterError.typeMismatch }
       return .i64(Int64(bitPattern: bits))
     case "f32":
       let str = v.value ?? "nan:canonical"
@@ -446,27 +457,27 @@ private struct ConformanceRunner {
       if str == "nan:canonical" || str == "nan:arithmetic" {
         return .f32(.nan)
       }
-      guard let bits = UInt32(str) else { throw WasmError.typeMismatch }
+      guard let bits = UInt32(str) else { throw InterpreterError.typeMismatch }
       return .f32(Float(bitPattern: bits))
     case "f64":
       let str = v.value ?? "nan:canonical"
       if str == "nan:canonical" || str == "nan:arithmetic" {
         return .f64(.nan)
       }
-      guard let bits = UInt64(str) else { throw WasmError.typeMismatch }
+      guard let bits = UInt64(str) else { throw InterpreterError.typeMismatch }
       return .f64(Double(bitPattern: bits))
     case "funcref":
       let str = v.value ?? "null"
       if str == "null" { return .funcref(nil) }
-      guard let idx = UInt32(str) else { throw WasmError.typeMismatch }
+      guard let idx = UInt32(str) else { throw InterpreterError.typeMismatch }
       return .funcref(idx)
     case "externref":
       let str = v.value ?? "null"
       if str == "null" { return .externref(nil) }
-      guard let idx = UInt32(str) else { throw WasmError.typeMismatch }
+      guard let idx = UInt32(str) else { throw InterpreterError.typeMismatch }
       return .externref(idx)
     default:
-      throw WasmError.typeMismatch
+      throw InterpreterError.typeMismatch
     }
   }
 

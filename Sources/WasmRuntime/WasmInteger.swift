@@ -27,7 +27,7 @@ protocol WasmInteger: FixedWidthInteger & UnsignedInteger {
   static func fromSigned(_ s: Signed) -> Self
 
   /// Extract the bit-pattern from a `Value` stack slot, or throw `.typeMismatch`.
-  static func fromValue(_ v: Value) throws(WasmError) -> Self
+  static func fromValue(_ v: Value) throws(InterpreterError) -> Self
 
   /// Wrap the bit-pattern back into the appropriate `Value` variant.
   func toValue() -> Value
@@ -40,8 +40,8 @@ extension UInt32: WasmInteger {
   @inline(__always) static func fromSigned(_ s: Int32) -> UInt32 { UInt32(bitPattern: s) }
 
   @inline(__always)
-  static func fromValue(_ v: Value) throws(WasmError) -> UInt32 {
-    guard case .i32(let s) = v else { throw WasmError.typeMismatch }
+  static func fromValue(_ v: Value) throws(InterpreterError) -> UInt32 {
+    guard case .i32(let s) = v else { throw InterpreterError.typeMismatch }
     return UInt32(bitPattern: s)
   }
 
@@ -56,8 +56,8 @@ extension UInt64: WasmInteger {
   @inline(__always) static func fromSigned(_ s: Int64) -> UInt64 { UInt64(bitPattern: s) }
 
   @inline(__always)
-  static func fromValue(_ v: Value) throws(WasmError) -> UInt64 {
-    guard case .i64(let s) = v else { throw WasmError.typeMismatch }
+  static func fromValue(_ v: Value) throws(InterpreterError) -> UInt64 {
+    guard case .i64(let s) = v else { throw InterpreterError.typeMismatch }
     return UInt64(bitPattern: s)
   }
 

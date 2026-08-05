@@ -1080,8 +1080,8 @@ struct FlatTableStorage {
 
   /// Initialise a table with `size` null-reference slots.
   @inline(__always)
-  mutating func initTable(_ ti: Int, size: Int, nullValue: Value) throws(WasmError) {
-    guard size <= WasmLimits.maxTableElements else { throw WasmError.resourceLimitExceeded }
+  mutating func initTable(_ ti: Int, size: Int, nullValue: Value) throws(InterpreterError) {
+    guard size <= WasmLimits.maxTableElements else { throw InterpreterError.resourceLimitExceeded }
     for i in 0..<size { self[ti, i] = nullValue }
     setCount(size, ofTable: ti)
     if ti >= tableCount { tableCount = ti + 1 }
@@ -1225,7 +1225,7 @@ struct WasmInterpreter {
   private static func applyDataSegments(
     _ data: Fixed16_DataSegment, into memSlice: UnsafeMutableBufferPointer<UInt8>,
     initialByteCount: Int
-  ) throws(WasmError) {
+  ) throws(InterpreterError) {
     for di in 0..<data.count {
       let seg = data[di]
       guard let offset = seg.offset else { continue }
@@ -1242,7 +1242,7 @@ struct WasmInterpreter {
   /// true passive segments (flags 1, 5) remain available for table.init at runtime.
   private static func initialDroppedElementSegments(
     _ elements: Fixed16_ElementSegment
-  ) throws(WasmError) -> UInt64 {
+  ) throws(InterpreterError) -> UInt64 {
     guard elements.count <= 64 else { throw .resourceLimitExceeded }
     var droppedElems: UInt64 = 0
     for ei in 0..<elements.count {
@@ -1256,7 +1256,7 @@ struct WasmInterpreter {
   /// dropped) — data.drop only ever sets bits at runtime — but instantiation still enforces
   /// the same 64-segment ceiling the bitmap's width allows, matching the element-segment
   /// counterpart above.
-  private static func droppedDataSegmentsInitial(count: Int) throws(WasmError) -> UInt64 {
+  private static func droppedDataSegmentsInitial(count: Int) throws(InterpreterError) -> UInt64 {
     guard count <= 64 else { throw .resourceLimitExceeded }
     return 0
   }
@@ -1271,7 +1271,9 @@ struct WasmInterpreter {
     // The solution: keep WasmModule in _embeddedModule (BSS global) and pass an UnsafeMutablePointer.
 
     /// Convenience: instantiate module with no host imports (Embedded only).
-    init(moduleRef: UnsafeMutablePointer<WasmModule>, arena: inout WasmArena) throws(WasmError) {
+    init(moduleRef: UnsafeMutablePointer<WasmModule>, arena: inout WasmArena)
+      throws(InterpreterError)
+    {
       try self.init(moduleRef: moduleRef, arena: &arena, hostImports: Fixed4_HostImport())
     }
 
@@ -1286,7 +1288,7 @@ struct WasmInterpreter {
     init<S: Sequence>(
       moduleRef: UnsafeMutablePointer<WasmModule>, arena: inout WasmArena, hostImports: S
     )
-      throws(WasmError) where S.Element == HostImport
+      throws(InterpreterError) where S.Element == HostImport
     {
       self.moduleRef = UnsafePointer(moduleRef)
       // Access _embeddedModule fields directly (not through moduleRef.pointee) so each access
@@ -1375,7 +1377,7 @@ struct WasmInterpreter {
       let initialByteCount = byteCounts.initial
       let capacityByteCount = byteCounts.capacity
       guard let memSlice = arena.allocate(count: capacityByteCount, alignment: 4) else {
-        throw WasmError.resourceLimitExceeded
+        throw InterpreterError.resourceLimitExceeded
       }
       memSlice.initialize(repeating: 0)
       try Self.applyDataSegments(
@@ -1412,7 +1414,7 @@ struct WasmInterpreter {
     // ── macOS init ─────────────────────────────────────────────────────────────────────────────
 
     /// Convenience: instantiate module with no host imports.
-    init(module: WasmModule, arena: inout WasmArena) throws(WasmError) {
+    init(module: WasmModule, arena: inout WasmArena) throws(InterpreterError) {
       try self.init(module: module, arena: &arena, hostImports: Fixed4_HostImport())
     }
 
@@ -1424,7 +1426,8 @@ struct WasmInterpreter {
     ///   Accepts any Sequence of HostImport — pass [HostImport] on macOS or Fixed4_HostImport
     ///   on Embedded to avoid heap allocation. Throws .importNotFound if an import is declared
     ///   but no matching entry is provided.
-    init<S: Sequence>(module: WasmModule, arena: inout WasmArena, hostImports: S) throws(WasmError)
+    init<S: Sequence>(module: WasmModule, arena: inout WasmArena, hostImports: S)
+      throws(InterpreterError)
     where S.Element == HostImport {
       self.module = module
 
@@ -1538,7 +1541,7 @@ struct WasmInterpreter {
       let initialByteCount = byteCounts.initial
       let capacityByteCount = byteCounts.capacity
       guard let memSlice = arena.allocate(count: capacityByteCount, alignment: 4) else {
-        throw WasmError.resourceLimitExceeded
+        throw InterpreterError.resourceLimitExceeded
       }
       // Zero-initialise: arena does not guarantee zeroed memory after reset().
       // This matches the Wasm spec (§4.5.4): linear memory is zero-initialised at
@@ -1570,7 +1573,7 @@ struct WasmInterpreter {
   // MARK: - Public
 
   /// Calls an exported function by name (UTF-8 bytes)
-  mutating func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value] {
+  mutating func callExport(nameBytes: [UInt8], args: [Value]) throws(InterpreterError) -> [Value] {
     // Index-based loop works on both Fixed32_Export (Embedded) and [Export] (macOS)
     // now that Fixed32_Export exposes count + subscript on both platforms.
     for i in 0..<module.exports.count {
@@ -1579,21 +1582,22 @@ struct WasmInterpreter {
         return try call(functionIndex: Int(exp.index), args: args)
       }
     }
-    throw WasmError.functionNotFound
+    throw InterpreterError.functionNotFound
   }
 
   /// Calls an exported function by StaticString name — zero-copy, no heap allocation.
-  mutating func callExport(_ name: StaticString, args: [Value]) throws(WasmError) -> [Value] {
+  mutating func callExport(_ name: StaticString, args: [Value]) throws(InterpreterError) -> [Value]
+  {
     for i in 0..<module.exports.count {
       let exp = module.exports[i]
       let matches = name.withUTF8Buffer { exp.nameBytes.elementsEqual($0) && exp.kind == .function }
       if matches { return try call(functionIndex: Int(exp.index), args: args) }
     }
-    throw WasmError.functionNotFound
+    throw InterpreterError.functionNotFound
   }
 
   /// Calls a function by its unified function index (including imports)
-  mutating func call(functionIndex: Int, args: [Value]) throws(WasmError) -> [Value] {
+  mutating func call(functionIndex: Int, args: [Value]) throws(InterpreterError) -> [Value] {
     let importedCount = module.importedFunctionCount
 
     if functionIndex < importedCount {
