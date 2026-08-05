@@ -41,14 +41,14 @@ These rules apply to ALL code you write. Violations will cause build failures in
 | `class` (reference types) | Heap allocation, ARC overhead | `struct` with `mutating` methods |
 | `any Protocol` (existentials) | Dynamic dispatch, heap boxing | Generic constraints `<T: Protocol>` |
 | `String` comparisons with `==` | `String` unavailable in Embedded Swift | Compare as `UTF8View` bytes or `[UInt8]` |
-| Untyped `throws` | Disallowed in Embedded Swift | `throws(WasmError)` — typed throws only |
+| Untyped `throws` | Disallowed in Embedded Swift | `throws(ParserError)` / `throws(InterpreterError)` — typed throws only |
 | `actor` | Swift Concurrency runtime unavailable | Single-threaded `struct` design |
 | Heap-capturing closures | Closure heap capture unsupported | `@convention(c)` function pointers + static tables |
 | Dynamic `Array<T>` (Embedded phase) | `malloc` may be unavailable | Fixed-size buffers, `UnsafeBufferPointer` |
 
 ### REQUIRED patterns:
 - `struct` as the primary abstraction unit; `mutating` methods for state changes.
-- `enum WasmError` with typed throws: `func f() throws(WasmError)`.
+- `enum ParserError` (binary parser / validator) and `enum InterpreterError` (instantiation / execution) with typed throws: `func f() throws(ParserError)` / `func f() throws(InterpreterError)`. These are two separate types by design — see `Documentations/SWIFT_VM_DESIGN.md` Section 3.4 for why 5 case names are intentionally duplicated across them.
 - `enum WasmValue { case i32(Int32); case i64(Int64); case f32(Float); case f64(Double) }` for value representation.
 - `switch`-based interpreter loop (no threaded code / function pointer arrays).
 - `UnsafeBufferPointer` / `UnsafeMutableRawBufferPointer` for linear memory access with explicit bounds checking.
@@ -86,7 +86,7 @@ Follow these decisions from `docs/SWIFT_VM_DESIGN.md`:
 
 1. **Interpreter Loop**: `switch` over `WasmInstruction` enum. No computed-goto, no function pointer dispatch.
 2. **Value Stack**: Array of `WasmValue` enum cases (macOS phase). Fixed-size buffer (Embedded phase).
-3. **Error Handling**: Typed throws everywhere. `enum WasmError: Error` with associated values for context.
+3. **Error Handling**: Typed throws everywhere. `enum ParserError: Error` (binary parser / validator) and `enum InterpreterError: Error` (instantiation / execution), each with associated values for context.
 4. **Generics Policy**: Use generics for zero-cost abstractions; avoid existentials.
 5. **Parser Strategy**: Code section — record byte range only; decode lazily at execution time (wasm3 pattern).
 6. **Memory Model**: Linear memory as `UnsafeMutableRawBufferPointer` with explicit bounds checks on every access.
@@ -118,7 +118,7 @@ For each implementation task, follow this sequence:
 - Write the implementation in Swift, strictly following Embedded Swift rules.
 - Annotate macOS-phase allowances with `// TODO: Embedded` comments.
 - Add explicit bounds checks on all unsafe memory accesses.
-- Ensure every thrown error is of the typed `WasmError` type.
+- Ensure every thrown error is of the typed `ParserError` or `InterpreterError` type, matching the subsystem (parser/validator vs. interpreter).
 
 ### Step 5: Self-Review Checklist
 Before finalizing any code, verify:
@@ -180,7 +180,7 @@ Examples of what to record:
 - Specific wasm3 strategies adapted for Swift (e.g., lazy Code section decoding pattern)
 - Fixed-size buffer dimensions chosen for stack/locals/globals
 - Custom LEB128 decoder implementation location and signature
-- `WasmError` cases defined and their associated value types
+- `ParserError` / `InterpreterError` cases defined and their associated value types
 - Section parsing completion status and any spec deviations noted
 - Patterns from WasmKit that were rejected and why (Embedded incompatibility)
 

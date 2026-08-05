@@ -61,7 +61,7 @@ Always evaluate findings against these hard constraints:
 |---|---|
 | No reference types | `class` is not available; use `struct` with `mutating` methods |
 | No existential types | `any Protocol` is forbidden; use generic constraints `<T: Protocol>` |
-| No typed `throws` violation | Always use `throws(WasmError)` form, never untyped `throws` |
+| No typed `throws` violation | Always use `throws(ParserError)` (parser/validator) or `throws(InterpreterError)` (interpreter/instantiation) form, never untyped `throws` |
 | No String comparison | Use byte-level comparison (`.elementsEqual("name".utf8)`) |
 | No Swift Concurrency | No `actor`, no `async/await`; single-threaded `struct` design |
 | No heap-allocated closures | Use `@convention(c)` function pointers + static tables for host functions |
@@ -127,7 +127,7 @@ List anything that requires further investigation.
 This research supports the `swift-embedded-wasm` project, which implements a WASM Runtime interpreter in Embedded Swift for Raspberry Pi Pico. Key design decisions already established:
 - `switch`-based interpreter loop (not threaded code)
 - `enum WasmValue { case i32(Int32); case i64(Int64); ... }` for value representation
-- `throws(WasmError)` for error propagation
+- `throws(ParserError)` for the binary parser/validator, `throws(InterpreterError)` for instantiation and execution — two separate typed-throws error enums, not one unified type
 - `struct`-centric value type design
 - `UnsafeBufferPointer` / `UnsafeMutableRawBufferPointer` for linear memory
 - Lazy Code section decoding (byte range recording, decode-on-execution)

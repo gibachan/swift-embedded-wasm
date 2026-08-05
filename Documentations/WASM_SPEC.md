@@ -386,11 +386,13 @@ Implemented as `var memory: [UInt8]` (`pico_stdlib` provides `malloc`, enabling 
 
 When an invalid operation occurs, the Wasm runtime raises a **trap** (halts execution).
 
-This project unifies parse-time errors and runtime traps in `WasmError`.
+Runtime traps are represented as cases of `InterpreterError`, one of two typed-throws error
+enums the project uses (the other, `ParserError`, covers binary-format decode errors — see
+`Documentations/SWIFT_VM_DESIGN.md` Section 3.4).
 
 ```swift
-// WasmError.swift (cases corresponding to runtime traps)
-enum WasmError: Error {
+// InterpreterError.swift (cases corresponding to runtime traps)
+enum InterpreterError: Error, Equatable, Sendable {
     case stackUnderflow
     case typeMismatch
     case memoryAccessOutOfBounds
@@ -401,6 +403,7 @@ enum WasmError: Error {
     case undefinedElement
     case invalidConversionToInteger  // trunc of NaN/Inf → int
     case executionLimitExceeded      // infinite loop prevention
+    // ... other cases (see InterpreterError.swift)
 }
 ```
 

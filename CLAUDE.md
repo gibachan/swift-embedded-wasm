@@ -67,7 +67,7 @@ For detailed constraints, patterns, and rationale, see Sections 8–10 of `Docum
 | No reference types | `class GlobalStore { ... }` | `private var globals: [Value]` + `mutating` methods |
 | No existentials | `any Protocol` | Generic constraints `<T: Protocol>` |
 | No `String ==` comparisons | `name == "increment"` | `nameBytes.elementsEqual("increment".utf8)` |
-| No untyped `throws` | `func f() throws` | `func f() throws(WasmError)` |
+| No untyped `throws` | `func f() throws` | `func f() throws(ParserError)` / `func f() throws(InterpreterError)` |
 
 Note: `indirect case` previously used to store child instructions for `block` / `loop` / `if` instructions has been removed as part of the migration to flat bytecode (jump-offset instruction sequences) completed in Phase 1.5.
 
@@ -77,7 +77,7 @@ Even in the macOS phase, implement to match Embedded Swift constraints from the 
 
 - Do not create intermediate copies in hot paths (e.g., `Array(xxx.suffix(n))`)
 - Do not use `String ==` comparisons (use `[UInt8]` byte comparisons instead)
-- Always use typed throws: `throws(WasmError)`
+- Always use typed throws: `throws(ParserError)` for the binary parser/validator, `throws(InterpreterError)` for instantiation and execution (see `Documentations/SWIFT_VM_DESIGN.md` Section 3.4)
 - Mark locations where dynamic `Array<T>` allocation is structurally unavoidable with `// TODO: Embedded Phase 5`
   - Frame `locals`: in the Embedded path (`WasmInterpreterEmbedded.swift`), locals are stored on the shared `valueStack` (no per-frame `[Value]` allocation). The macOS path still uses `[Value]` locals.
   - Frame `labels` (`EmbeddedFrame.labels: LabelStack`): both macOS and Embedded now use `LabelStack`. Internally, Embedded uses a 32-element tuple (stack-allocated), macOS uses `[Label]` (heap) — the difference is encapsulated inside `LabelStack` with a single `#if hasFeature(Embedded)`. Call sites in `dispatchEmbedded` / `handleEmbeddedBranch` / `pushEmbeddedFrame` require no conditional compilation.

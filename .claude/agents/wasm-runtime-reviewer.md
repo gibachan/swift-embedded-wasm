@@ -60,7 +60,7 @@ Verify compliance with `docs/EMBEDDED_SWIFT.md`. Flag any violation as a **BLOCK
 |---|---|---|
 | No reference types | `class GlobalStore { }` | `struct GlobalStore { }` + `mutating` |
 | No existential types | `any WasmInstruction` | `<T: WasmInstruction>` or concrete enum |
-| No untyped throws | `func exec() throws` | `func exec() throws(WasmError)` |
+| No untyped throws | `func exec() throws` | `func exec() throws(ParserError)` / `func exec() throws(InterpreterError)` |
 | No String equality | `name == "add"` | `nameBytes.elementsEqual("add".utf8)` |
 | No heap closures | Captured-variable closures stored in structs | `@convention(c)` function pointers |
 | No dynamic Array in hot paths | Stack as `var stack: [WasmValue] = []` with unbounded growth | Fixed-size buffer or capacity-bounded design |
@@ -76,7 +76,7 @@ Note: In the current macOS development phase, `Array<T>`, `String`, and `indirec
 - Does the implementation follow the VM design principles in `docs/SWIFT_VM_DESIGN.md`?
 - Is the interpreter loop implemented as a `switch`-based dispatch (not threaded code or function pointer tables)?
 - Are values represented as `enum WasmValue { case i32(Int32); case i64(Int64); case f32(Float); case f64(Double) }`?
-- Are errors handled via typed throws and `enum WasmError`?
+- Are errors handled via typed throws, using `enum ParserError` for the parser/validator and `enum InterpreterError` for instantiation/execution?
 - Is memory access done via `UnsafeBufferPointer` / `UnsafeMutableRawBufferPointer`?
 - Is the parser using lazy evaluation (recording byte ranges, decoding at execution time)?
 
@@ -176,7 +176,7 @@ Update your agent memory as you discover recurring patterns, design decisions, c
 
 Examples of what to record:
 - Recurring Embedded Swift violations found in this codebase and their preferred fixes
-- Project-specific conventions (e.g., how WasmError cases are structured, naming patterns for instruction handling)
+- Project-specific conventions (e.g., how `ParserError` / `InterpreterError` cases are structured, naming patterns for instruction handling)
 - Locations of key architectural components (e.g., where the main interpreter switch lives, where value stack is defined)
 - Techniques borrowed from wasm3 or WasmKit and how they were adapted
 - macOS-phase-OK items flagged for future Embedded migration

@@ -116,32 +116,73 @@ struct FunctionType: Sendable {
 ### 3.4 Error Type
 
 wasm3 uses `M3Result = const char*` (NULL = success, non-NULL = error message).
-Swift unifies parse-time errors and runtime traps in a type-safe `Error` enum.
+Swift represents parse-time errors and runtime traps as two separate type-safe `Error` enums,
+`ParserError` and `InterpreterError`, rather than one unified type. The two are genuinely
+distinct responsibilities — binary-format decode errors vs. runtime trap errors — used by
+different subsystems (`WasmParser` / `WasmValidator` vs. `WasmInterpreter` /
+`WasmInterpreterEmbedded` / `WasmInteger`).
 
 ```swift
-// WasmError.swift: enum WasmError
-enum WasmError: Error, Equatable, Sendable {
-    // --- Parser ---
+// ParserError.swift: enum ParserError
+enum ParserError: Error, Equatable, Sendable {
     case invalidMagic
     case unexpectedEnd
+    case invalidValueType(UInt8)
     case invalidInstruction(UInt8)
     case leb128Error(LEB128Error)
-    // ... other parse errors
+    // ... other section/format decode errors
 
-    // --- Interpreter (trap equivalents) ---
+    // WasmValidator (macOS-only static type checker) detects a type
+    // violation while statically checking the module before execution
+    case typeMismatch
+
+    // a section's item count exceeds the fixed-buffer capacity defined in
+    // WasmLimits while parsing
+    case resourceLimitExceeded
+}
+```
+
+```swift
+// InterpreterError.swift: enum InterpreterError
+enum InterpreterError: Error, Equatable, Sendable {
     case stackUnderflow
     case stackOverflow   // value stack, call stack, or label stack exceeded the fixed-size limit
-    case typeMismatch
     case memoryAccessOutOfBounds
     case divisionByZero
     case unreachableReached
     case indirectCallTypeMismatch
     // ... other runtime errors
+
+    // the interpreter decodes opcodes/operands on the fly from rawBytes
+    // during dispatch (post flat-bytecode migration) — the same
+    // decode-style failures the parser can hit, but discovered at
+    // execution time instead of parse time
+    case unexpectedEnd
+    case invalidValueType(UInt8)
+    case invalidInstruction(UInt8)
+
+    // a runtime stack-type trap: the interpreter pops a value of the
+    // wrong type off the value stack during execution
+    case typeMismatch
+
+    // a table/element-segment count exceeds the runtime's fixed capacity
+    // during module instantiation — a separate limit enforced at a later
+    // phase than parsing
+    case resourceLimitExceeded
 }
 ```
 
-Typed throws (`throws(WasmError)`) are used throughout to avoid `any Error` existentials.
-This also satisfies the Embedded Swift constraint against existential types.
+Five case names — `unexpectedEnd`, `invalidValueType(UInt8)`, `invalidInstruction(UInt8)`,
+`typeMismatch`, `resourceLimitExceeded` — are intentionally duplicated across both types.
+This isn't accidental overlap: each condition genuinely occurs independently in both phases.
+The interpreter decodes bytecode on the fly at runtime (a consequence of the Phase 1.5 flat-bytecode
+migration and the Phase 4 on-the-fly decoder — see Section 5), so it can hit the same decode-style
+errors the parser hits, just later. `WasmValidator` throws `.typeMismatch` at validate time as a
+static check, while the interpreter throws its own `.typeMismatch` as a runtime stack-type trap —
+same name, different phase, same underlying meaning ("a value of the wrong type showed up").
+
+Typed throws (`throws(ParserError)` / `throws(InterpreterError)`) are used throughout to avoid
+`any Error` existentials. This also satisfies the Embedded Swift constraint against existential types.
 
 ---
 
@@ -155,7 +196,7 @@ wasm3 has no validation phase; type checking is unimplemented. This project uses
 
 - Function signature type consistency checking
 - Per-instruction stack type checking (type stack tracking)
-- Invalid Wasm detected as `WasmError` before execution
+- Invalid Wasm detected as `ParserError` before execution
 
 ```swift
 // WasmParser.swift
@@ -168,7 +209,7 @@ try WasmValidator(module: module).validate()
 // WasmValidator.swift
 #if !hasFeature(Embedded)
 struct WasmValidator {
-    func validate() throws(WasmError) { ... }
+    func validate() throws(ParserError) { ... }
 }
 #endif
 ```
@@ -180,7 +221,7 @@ Goal: catch bad Wasm binaries and implementation bugs early during development.
 **Type validation skipped; resource-limit checks always run.**
 
 - Magic number / version check (always performed in the parser)
-- `WasmLimits` section-count checks (always performed in the parser — throws `WasmError.resourceLimitExceeded` if any section's item count exceeds the fixed-buffer limits defined in `WasmLimits`; runtime stack limits `maxValueStackDepth`, `maxCallDepth`, `maxLabelDepth` are enforced by `precondition` in Embedded builds)
+- `WasmLimits` section-count checks (always performed in the parser — throws `ParserError.resourceLimitExceeded` if any section's item count exceeds the fixed-buffer limits defined in `WasmLimits`; runtime stack limits `maxValueStackDepth`, `maxCallDepth`, `maxLabelDepth` are enforced by `precondition` in Embedded builds)
 - No type stack tracking (saves RAM and load time)
 - Assumes trusted input (developer-controlled binaries)
 
@@ -314,12 +355,12 @@ struct BinaryReader {
     var offset: Int                         // current read position within buffer
 
     @inline(__always)
-    mutating func readByte() throws(WasmError) -> UInt8 { ... }
-    mutating func readU32() throws(WasmError) -> UInt32 { ... }  // unsigned LEB128
-    mutating func readS32() throws(WasmError) -> Int32  { ... }  // signed LEB128
-    mutating func readS64() throws(WasmError) -> Int64  { ... }  // signed LEB128
-    mutating func readF32() throws(WasmError) -> Float  { ... }  // 4-byte LE IEEE 754
-    mutating func readF64() throws(WasmError) -> Double { ... }  // 8-byte LE IEEE 754
+    mutating func readByte() throws(InterpreterError) -> UInt8 { ... }
+    mutating func readU32() throws(InterpreterError) -> UInt32 { ... }  // unsigned LEB128
+    mutating func readS32() throws(InterpreterError) -> Int32  { ... }  // signed LEB128
+    mutating func readS64() throws(InterpreterError) -> Int64  { ... }  // signed LEB128
+    mutating func readF32() throws(InterpreterError) -> Float  { ... }  // 4-byte LE IEEE 754
+    mutating func readF64() throws(InterpreterError) -> Double { ... }  // 8-byte LE IEEE 754
 }
 ```
 
@@ -411,7 +452,7 @@ static let maxJumpEntriesPerFunction: Int = 64 // max block/loop/if instructions
 
 Overflow is currently caught by `precondition` in runtime stacks (traps on violation) and by
 `throws(.resourceLimitExceeded)` in the parser for locals and jump-table limits.
-`WasmError.stackOverflow` is defined and reserved for future explicit `throw` paths on runtime
+`InterpreterError.stackOverflow` is defined and reserved for future explicit `throw` paths on runtime
 stack overflows. The macOS execution path retains dynamic `[Value]` / `[EmbeddedFrame]` storage
 with `// TODO: Embedded Phase 5` markers.
 
@@ -551,10 +592,10 @@ linear memory is allocated from the arena at init time:
 
 ```swift
 // Convenience: no host imports
-init(module: WasmModule, arena: inout WasmArena) throws(WasmError)
+init(module: WasmModule, arena: inout WasmArena) throws(InterpreterError)
 
 // Primary generic initialiser — accepts [HostImport] or Fixed4_HostImport
-init<S: Sequence>(module: WasmModule, arena: inout WasmArena, hostImports: S) throws(WasmError)
+init<S: Sequence>(module: WasmModule, arena: inout WasmArena, hostImports: S) throws(InterpreterError)
 where S.Element == HostImport
 ```
 
@@ -594,10 +635,10 @@ Two overloads exist for calling exported functions by name:
 
 ```swift
 // Zero-copy StaticString name matching — preferred on Embedded
-mutating func callExport(_ name: StaticString, args: [Value]) throws(WasmError) -> [Value]
+mutating func callExport(_ name: StaticString, args: [Value]) throws(InterpreterError) -> [Value]
 
 // Legacy [UInt8] byte-array overload — for test infrastructure
-mutating func callExport(nameBytes: [UInt8], args: [Value]) throws(WasmError) -> [Value]
+mutating func callExport(nameBytes: [UInt8], args: [Value]) throws(InterpreterError) -> [Value]
 ```
 
 The `StaticString` overload uses `withUTF8Buffer` for zero-copy byte comparison against
@@ -964,7 +1005,7 @@ keeps peak usage well within it.
 
 | Aspect | wasm3 (C) | This project (Swift) |
 |--------|-----------|----------------------|
-| Error type | `const char*` (NULL = success) | `enum WasmError: Error` (parser + interpreter unified) |
+| Error type | `const char*` (NULL = success) | `enum ParserError: Error` (parser) / `enum InterpreterError: Error` (interpreter) — split types, 5 case names intentionally duplicated (see Section 3.4) |
 | Value storage | `union + u8 type` | `enum Value` with associated values |
 | Validation | None (stub) | `#if !hasFeature(Embedded)`: full (`WasmValidator`) / Embedded: skipped |
 | Host function registration | String signature `"v(ii)"` | macOS: closure array; Embedded: `@convention(c)` function pointer array |
@@ -996,8 +1037,9 @@ case .i32Sub: ...
 
 ### 12.2 Structured Traps via Typed Throws
 
-`throws(WasmError)` expresses which errors can occur directly in the function signature,
-replacing wasm3's `M3Result = const char*` string comparison with type-safe alternatives.
+`throws(ParserError)` / `throws(InterpreterError)` express which errors can occur directly in
+the function signature, replacing wasm3's `M3Result = const char*` string comparison with
+type-safe alternatives.
 
 ### 12.3 Value Semantics for Explicit State
 
@@ -1033,7 +1075,7 @@ protocol WasmInteger: FixedWidthInteger & UnsignedInteger {
     init(bitPattern: Signed)
     func toSigned() -> Signed
     static func fromSigned(_ s: Signed) -> Self
-    static func fromValue(_ v: Value) throws(WasmError) -> Self
+    static func fromValue(_ v: Value) throws(InterpreterError) -> Self
     func toValue() -> Value
 }
 extension UInt32: WasmInteger { typealias Signed = Int32 }
@@ -1105,7 +1147,7 @@ Since the opcode knows the type, a runtime type tag is unnecessary — a deliber
 |--------|---------|--------------|--------|
 | Instruction dispatch | Integer switch (performance) | `switch` on enum (safety/learning) | Leverage exhaustiveness during learning |
 | Value representation | `UntypedValue` (UInt64) | `Value` enum (type-safe) | 1:1 spec mapping for comprehensibility |
-| Errors | Plain `throws` | `throws(WasmError)` | Embedded Swift recommended pattern |
+| Errors | Plain `throws` | `throws(ParserError)` / `throws(InterpreterError)` | Embedded Swift recommended pattern |
 
 This project prioritises type safety over performance because the goal is "understanding the mechanics
 and catching errors early", not raw throughput. If profiling identifies a bottleneck on Pico,
