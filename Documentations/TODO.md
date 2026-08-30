@@ -24,6 +24,14 @@ Steps 1–4 are complete. See `Documentations/ARENA_ALLOCATOR.md` for the full d
 - [ ] **Step 5**: Measure `wasmArena.usedBytes` on real hardware via BLE notification; adjust Arena size based on actual measurements
   - Implementation complete: `bleNotifyStats` now sends `STATS:<instr>,<vs>,<cs>,<arenaBytes>\n`; iOS StatsView shows "Arena Used" in Latest Run and a bar chart across runs
   - Pending: flash to Pico, run demo Wasm binaries, read arenaUsed values, tune `WASM_ARENA_SIZE` in `wasm_arena.c`
+  - Baseline confirmed 2026-07-10: all 3 test levels (`swift test`, `make compile`, BLE `make build`) pass on current `main`; both demo `.wasm` binaries build and are bundled in the iOS app (see below)
+  - Fixed gap: `Demo/wasm/i32-add.wasm` was missing from the repo (only `gpio-blink-swift.wasm` was checked in) even though `WasmEntry.swift` and `Main.swift`'s `callExport("add")` fallback both reference it. Regenerated via `Examples/RaspberryPiPicoW-BLE/iOS/Makefile` (`make` in that directory rebuilds both `.wasm` files from `gpio-blink-swift.swift` / `i32-add.swift`). Confirmed both files bundle into `Demo.app` via the Xcode 16 synchronized-folder group (no manual pbxproj edit needed) with a simulator build.
+  - Measurement procedure (once hardware is available):
+    1. `cd Examples/RaspberryPiPicoW-BLE/Embedded && make flash` (or copy `build/pico-ble.uf2` to the BOOTSEL mass-storage volume)
+    2. Launch the iOS `Demo` app; it auto-connects to `PicoLED` over BLE
+    3. Send `i32-add.wasm` (small, no host imports — good minimum-footprint baseline), then `gpio-blink-swift.wasm` (exercises host imports + loop) — read `arenaUsedBytes` for each from the "Latest Run" section / bar chart in `StatsView`
+    4. Compare `arenaUsedBytes` against `WASM_ARENA_SIZE` (currently 96 KB, `Embedded/wasm_arena.c:3`) and note headroom
+    5. If headroom is much larger than needed, shrink `WASM_ARENA_SIZE` and re-measure; feed the confirmed number into the RAM budget table under "Measure RAM usage on real hardware" below
 
 ### Host Function Extensions
 
