@@ -222,6 +222,7 @@ Goal: catch bad Wasm binaries and implementation bugs early during development.
 
 - Magic number / version check (always performed in the parser)
 - `WasmLimits` section-count checks (always performed in the parser — throws `ParserError.resourceLimitExceeded` if any section's item count exceeds the fixed-buffer limits defined in `WasmLimits`; runtime stack limits `maxValueStackDepth`, `maxCallDepth`, `maxLabelDepth` are enforced by `precondition` in Embedded builds)
+- UTF-8 well-formedness of `name` fields — custom-section names plus import module/field names and export names — always performed in the parser via `validateUTF8`, throwing `ParserError.malformedUTF8`. Per the Wasm spec (§5.2.4 "Names") this is a *decoding* property, so the official test suite asserts `assert_malformed` (not `assert_invalid`); the check is deliberately not behind `#if !hasFeature(Embedded)` and is distinct from `WasmValidator`'s macOS-only type validation.
 - No type stack tracking (saves RAM and load time)
 - Assumes trusted input (developer-controlled binaries)
 
@@ -1007,7 +1008,7 @@ keeps peak usage well within it.
 |--------|-----------|----------------------|
 | Error type | `const char*` (NULL = success) | `enum ParserError: Error` (parser) / `enum InterpreterError: Error` (interpreter) — split types, 5 case names intentionally duplicated (see Section 3.4) |
 | Value storage | `union + u8 type` | `enum Value` with associated values |
-| Validation | None (stub) | `#if !hasFeature(Embedded)`: full (`WasmValidator`) / Embedded: skipped |
+| Validation | None (stub) | `#if !hasFeature(Embedded)`: full (`WasmValidator`) / Embedded: type validation skipped (magic/version, `WasmLimits`, and UTF-8 `name` well-formedness checks still run) |
 | Host function registration | String signature `"v(ii)"` | macOS: closure array; Embedded: `@convention(c)` function pointer array |
 | Opcode dispatch | Threaded Code (function pointer + tail call) | macOS: `switch` on `Instruction` enum; Embedded: `switch` on raw opcode byte decoded on-the-fly from `rawBytes` |
 | Code representation | Compiled threaded code | macOS: flat `[Instruction]`; Embedded: `FunctionHandle` (byte range + pre-computed `[JumpEntry]`) |

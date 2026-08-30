@@ -307,6 +307,12 @@ The Wasm specification guarantees sections appear in order.
 Sections must appear in ascending ID order (custom sections with ID=0 are exempt).
 Each known section ID may appear at most once. The declared section size must match the actual consumed byte count.
 
+**`name` field well-formedness**: Every `name` field in the binary — custom-section names,
+import module names, import field names, and export names — is checked for well-formed UTF-8
+while decoding (`WasmParser.validateUTF8`, throwing `ParserError.malformedUTF8`). Per the Wasm
+spec §5.2.4 this is a decoding property (the official suite uses `assert_malformed`), so the
+check runs on all targets, including Embedded builds where type validation is otherwise skipped.
+
 ---
 
 ## LEB128

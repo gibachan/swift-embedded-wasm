@@ -135,6 +135,146 @@ struct WasmParserTests {
       try parseBytes(bad)
     }
   }
+
+  // MARK: - Name field UTF-8 validation (Wasm spec §5.2.4)
+
+  /// Magic + version header shared by the hand-built modules below.
+  private static let wasmHeader: [UInt8] = [
+    0x00, 0x61, 0x73, 0x6D,  // \0asm
+    0x01, 0x00, 0x00, 0x00,  // version 1
+  ]
+
+  /// Builds a minimal module whose single import has `fieldName` as its raw
+  /// field-name bytes, so a test can probe `validateUTF8` with an arbitrary
+  /// payload. Layout mirrors `rejectsInvalidUTF8InImportFieldName`.
+  private static func importModule(fieldName: [UInt8]) -> [UInt8] {
+    // count(1) + module name(2) + field-name length(1) + field bytes + kind(1) + type index(1)
+    let sectionSize = 6 + fieldName.count
+    return wasmHeader + [
+      0x02, UInt8(sectionSize),  // section id=2, size
+      0x01,  // count = 1
+      0x01, 0x61,  // module name: len=1, "a"
+      UInt8(fieldName.count),  // field name: length
+    ] + fieldName + [
+      0x00, 0x00,  // kind=function, type index=0
+    ]
+  }
+
+  /// 0xFF is never a valid UTF-8 leading byte (it falls in the 0xF8..0xFF range).
+  @Test func rejectsInvalidUTF8InImportModuleName() throws {
+    // Import section (id=2): 1 import, module name = [0xFF, 0xFF] (ill-formed),
+    // field name = "a", function import of type index 0.
+    let bytes =
+      Self.wasmHeader + [
+        0x02, 0x08,  // section id=2, size=8
+        0x01,  // count = 1
+        0x02, 0xFF, 0xFF,  // module name: len=2, bytes=0xFF 0xFF (invalid)
+        0x01, 0x61,  // field name: len=1, "a"
+        0x00, 0x00,  // kind=function, type index=0
+      ]
+    #expect(throws: ParserError.malformedUTF8) {
+      try parseBytes(bytes)
+    }
+  }
+
+  @Test func rejectsInvalidUTF8InImportFieldName() throws {
+    // Import section (id=2): 1 import, module name = "a",
+    // field name = [0xFF, 0xFF] (ill-formed).
+    let bytes =
+      Self.wasmHeader + [
+        0x02, 0x08,  // section id=2, size=8
+        0x01,  // count = 1
+        0x01, 0x61,  // module name: len=1, "a"
+        0x02, 0xFF, 0xFF,  // field name: len=2, bytes=0xFF 0xFF (invalid)
+        0x00, 0x00,  // kind=function, type index=0
+      ]
+    #expect(throws: ParserError.malformedUTF8) {
+      try parseBytes(bytes)
+    }
+  }
+
+  @Test func rejectsInvalidUTF8InExportName() throws {
+    // Export section (id=7): 1 export, name = [0xFF, 0xFF] (ill-formed),
+    // function export of index 0.
+    let bytes =
+      Self.wasmHeader + [
+        0x07, 0x06,  // section id=7, size=6
+        0x01,  // count = 1
+        0x02, 0xFF, 0xFF,  // export name: len=2, bytes=0xFF 0xFF (invalid)
+        0x00, 0x00,  // kind=function, index=0
+      ]
+    #expect(throws: ParserError.malformedUTF8) {
+      try parseBytes(bytes)
+    }
+  }
+
+  /// Truncated multi-byte sequence: 0xE2 announces a 3-byte sequence but only one
+  /// continuation byte follows. Exercises the `i + seqLen <= bytes.count` guard.
+  @Test func rejectsTruncatedUTF8InImportName() throws {
+    #expect(throws: ParserError.malformedUTF8) {
+      try parseBytes(Self.importModule(fieldName: [0xE2, 0x82]))
+    }
+  }
+
+  /// Overlong encoding: 0xC0 0x80 encodes U+0000 in two bytes instead of one.
+  /// Exercises the `cp >= 0x80` overlong guard for 2-byte sequences.
+  @Test func rejectsOverlongUTF8InImportName() throws {
+    #expect(throws: ParserError.malformedUTF8) {
+      try parseBytes(Self.importModule(fieldName: [0xC0, 0x80]))
+    }
+  }
+
+  /// Surrogate code point: 0xED 0xA0 0x80 decodes to U+D800. Exercises the
+  /// 3-byte surrogate-range (U+D800..U+DFFF) guard.
+  @Test func rejectsSurrogateUTF8InImportName() throws {
+    #expect(throws: ParserError.malformedUTF8) {
+      try parseBytes(Self.importModule(fieldName: [0xED, 0xA0, 0x80]))
+    }
+  }
+
+  /// A well-formed 3-byte (module name, U+20AC) and 2-byte (field name, U+00E9)
+  /// UTF-8 name must parse and validate without error.
+  @Test func acceptsValidMultiByteUTF8InImportNames() throws {
+    let bytes =
+      Self.wasmHeader + [
+        0x01, 0x04,  // type section: size=4
+        0x01, 0x60, 0x00, 0x00,  // 1 type: () -> ()
+        0x02, 0x0A,  // import section: size=10
+        0x01,  // count = 1
+        0x03, 0xE2, 0x82, 0xAC,  // module name: len=3, U+20AC "€"
+        0x02, 0xC3, 0xA9,  // field name: len=2, U+00E9 "é"
+        0x00, 0x00,  // kind=function, type index=0
+      ]
+    let module = try parseBytes(bytes)
+    #expect(module.imports.count == 1)
+    guard case .function(let fn) = module.imports[0] else {
+      Issue.record("Expected a function import")
+      return
+    }
+    #expect(fn.module == [0xE2, 0x82, 0xAC])
+    #expect(fn.name == [0xC3, 0xA9])
+  }
+
+  /// A well-formed 2-byte UTF-8 export name (U+00E9) must parse and validate.
+  @Test func acceptsValidMultiByteUTF8InExportName() throws {
+    let bytes =
+      Self.wasmHeader + [
+        0x01, 0x04,  // type section: size=4
+        0x01, 0x60, 0x00, 0x00,  // 1 type: () -> ()
+        0x03, 0x02,  // function section: size=2
+        0x01, 0x00,  // 1 function, type index 0
+        0x07, 0x06,  // export section: size=6
+        0x01,  // count = 1
+        0x02, 0xC3, 0xA9,  // export name: len=2, U+00E9 "é"
+        0x00, 0x00,  // kind=function, index=0
+        0x0A, 0x04,  // code section: size=4
+        0x01, 0x02, 0x00, 0x0B,  // 1 body: size=2, 0 locals, `end`
+      ]
+    let module = try parseBytes(bytes)
+    #expect(module.exports.count == 1)
+    #expect(module.exports[0].nameBytes == [0xC3, 0xA9])
+    #expect(module.exports[0].kind == .function)
+  }
 }
 
 // MARK: - Interpreter Tests

@@ -547,6 +547,14 @@ struct WasmParser {
       var nameBytes: [UInt8] = []
       for _ in 0..<nameLen { nameBytes.append(try readByte()) }
 
+      // The Wasm spec (§5.2.4 "Names") requires every `name` field — including
+      // import module names and field names — to be well-formed UTF-8.
+      // This is a decode-level (malformed) check and runs on ALL targets — it is
+      // deliberately not behind `#if !hasFeature(Embedded)`, mirroring the
+      // unconditional `validateUTF8` call in `parseCustomSection`.
+      try validateUTF8(modBytes)
+      try validateUTF8(nameBytes)
+
       let kind = try readByte()
       switch kind {
       case 0x00:  // function import: read type index
@@ -830,6 +838,13 @@ struct WasmParser {
       let nameLen = try readU32()
       var nameBytes: [UInt8] = []
       for _ in 0..<Int(nameLen) { nameBytes.append(try readByte()) }
+
+      // The Wasm spec (§5.2.4 "Names") requires every `name` field — including
+      // export names — to be well-formed UTF-8.
+      // This is a decode-level (malformed) check and runs on ALL targets — it is
+      // deliberately not behind `#if !hasFeature(Embedded)`, mirroring the
+      // unconditional `validateUTF8` call in `parseCustomSection`.
+      try validateUTF8(nameBytes)
 
       let kindByte = try readByte()
       guard let kind = ExportKind(rawValue: kindByte) else {
